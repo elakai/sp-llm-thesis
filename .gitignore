@@ -1,0 +1,23 @@
+--- IGNORE VIRTUAL ENVIRONMENTS (Crucial!) ---
+
+csea-assistant/
+venv/
+.venv/
+env/
+pycache/
+*.pyc
+
+--- IGNORE CHROMA DB (The Brain) ---
+
+chroma_db/
+
+--- IGNORE LARGE DOCUMENTS ---
+
+documents/
+*.pdf
+*.docx
+
+--- IGNORE SECRETS ---
+
+.env
+.streamlit/secrets.toml
