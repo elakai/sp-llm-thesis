@@ -1,41 +1,52 @@
-
 # CSEA Information Assistant
-### Thesis Prototype – College of Science, Engineering and Architecture  
+
+**Thesis Prototype**  
+College of Science, Engineering and Architecture  
 Ateneo de Naga University
 
-A Retrieval-Augmented Generation (RAG) chatbot that answers student inquiries using official CSEA documents (Student Handbook, dress code, etc.).  
-Uses **Llama 3.3 70B** via Groq and **ChromaDB** as vector store.
+A **Retrieval-Augmented Generation (RAG)** chatbot that answers student inquiries using official CSEA documents (Student Handbook, dress code rules, typhoon guidelines, pregnancy exemptions, etc.).
+
+### Key technologies
+- LLM: Llama 3.3 70B via Groq  
+- Embeddings: all-MiniLM-L6-v2 (Sentence Transformers)  
+- Vector database: Chroma (persistent)  
+- PDF handling: PyMuPDF + Tesseract OCR (for scanned/image-based pages)  
+- Frontend: Streamlit
 
 ---
 
-## Setup Instructions (Tested: November 19, 2025)
+## Setup Instructions
 
 ### 1. Python Version
-- Use **Python 3.12.7** (do not use Python 3.13)
+- Recommended: **Python 3.11** or **3.12**  
+  (3.12.7 tested; avoid Python 3.13 due to compatibility issues with some dependencies)
 
-### 2. Install Tesseract OCR (Manual – Required for scanned PDFs)
-- Download installer: https://github.com/UB-Mannheim/tesseract/wiki
-- Run the `.exe` and install to default location  
-  → `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- This is needed because the handbook and dress code.pdf are scanned/image-only.
+### 2. Install Tesseract OCR (Required for scanned PDFs)
+1. Download the Windows installer:  
+   https://github.com/UB-Mannheim/tesseract/wiki  
+2. Install to default location:  
+   `C:\Program Files\Tesseract-OCR\`  
+3. Verify that `tesseract.exe` exists in that folder  
+   → Essential for processing scanned/handwritten pages in the handbook PDFs.
 
 ### 3. Clone the Repository
 ```bash
-git clone https://github.com/elakai/sp-llm-thesis.git
-cd sp-llm-thesis
+git clone https://gitlab.com/pmagnifico/csea-sp-llm.git
+cd csea-sp-llm
 ```
 
-### 4. Create Virtual Environment (Recommended)
-**Windows:**
+### 4. Create & Activate Virtual Environment
+
+**Windows – Command Prompt**
 ```bash
 python -m venv venv
-.\venv\Scripts\activate
+venv\Scripts\activate
 ```
 
-**Mac/Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
+**Windows – PowerShell**
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
 ### 5. Install Dependencies
@@ -43,7 +54,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`requirements.txt` (current working set):
+**Current `requirements.txt` content:**
 ```txt
 streamlit
 langchain-community
@@ -52,70 +63,74 @@ langchain-huggingface
 langchain-groq
 langchain-chroma
 chromadb
-pymupdf
+PyMuPDF
 pytesseract
 pillow
 sentence-transformers
 ```
 
-### 6. Add Documents (Not in Git – too large)
-1. Create a folder named `documents` in the project root.
-2. Download these files from Google Drive:  
-   https://drive.google.com/drive/folders/1HVGwo_GAvfIZna3_6jTanJB2A9ixEYbH?usp=sharing
-3. Place inside `documents` folder
+### 6. Add Documents
+1. Create folder `documents/` in the project root (if not already present)  
+2. Download the PDFs from Google Drive:  
+   https://drive.google.com/drive/folders/1HVGwo_GAvfIZna3_6jTanJB2A9ixEYbH?usp=sharing  
+3. Place all PDF files directly inside the `documents/` folder
 
 ---
 
-## Running the App
+## Running the Application
+
+With the virtual environment activated, from the project root:
 
 ```bash
-streamlit run app.py
+python -m streamlit run src/ui/main.py
 ```
 
-### First-Time Setup (Do this once)
-1. Open the app in browser
-2. Sidebar → Password: `csea2025`
-3. Click **FULL RESET**
-4. Click **TRAIN BOT**  
-   → Takes ~60–90 seconds for both PDFs
-5. Wait for balloons → training complete
+(or shorter: `streamlit run src/ui/main.py`)
 
 
-## Admin Access
-- **Password:** `csea2025`
-- Allows:
-  - Full reset of knowledge base
-  - Retrain from `documents` folder
-  - View current chunk count
+## Admin Features
+**Password:** `csea2025`
 
+- View current number of knowledge chunks  
+- **FULL RESET** → delete entire vector database  
+- **TRAIN ALL PDFs** → re-index all documents in the `documents/` folder (with OCR fallback)
 
-## Project Structure
+## Project Structure (Modular)
+
 ```
-sp-llm-thesis/
-├── app.py              Main application
+csea-sp-llm/
+├── src/
+│   ├── __init__.py
+│   ├── config/
+│   │   └── settings.py           # constants, LLM, embeddings, DB factory
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── ingestion.py          # PDF loading, OCR, chunking, indexing
+│   │   ├── retrieval.py          # retrieval + prompt + generation
+│   │   └── feedback.py           # thumbs up/down saving
+│   └── ui/
+│       ├── __init__.py
+│       ├── components.py         # header, admin panel UI
+│       └── main.py               # ← entry point: streamlit run this file
+├── documents/                    # your PDFs (not in git)
+├── chroma_db/                    # vector store (auto-created, ignore)
+├── feedback.json                 # user ratings (local only)
 ├── requirements.txt
-├── documents/          ← Put PDFs here (not tracked by Git)
-├── chroma_db/          ← Auto-generated (do not commit)
+├── .gitignore
 └── README.md
 ```
 
-### .gitignore should contain:
+## .gitignore – Important Entries
+
 ```
 chroma_db/
 documents/
+feedback.json
 venv/
+.venv/
 __pycache__/
 *.pyc
+*.py[cod]
 ```
 
-
-## Tested Questions (Should answer correctly)
-- What is the uniform rule during typhoon signal no. 2 in Naga City?
-- Can pregnant students be exempted from wearing uniform?
-- What is the vision of ADNU
-
-## Troubleshooting
-- If training hangs → make sure Tesseract is installed correctly
-- If model error → code already uses `llama-3.3-70b-versatile` (current as of Nov 2025)
-- Never commit `chroma_db` or `documents` folder
 
