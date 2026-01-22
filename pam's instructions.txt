@@ -1,0 +1,16 @@
+install: python 3.12.7
+         tesseract ocr, latest ver
+         link: https://github.com/UB-Mannheim/tesseract/wiki
+         
+tapos sa terminal:
+pip install -r requirements.txt
+
+pag may mga modules na di pa nainstall, pip install niyo na lang.
+
+nasa README yung drive link ng documents, lagay niyo nalang sa folder niyo. bawal kasi 100mb
+plus na uploads sa github and gitlab.
+
+tapos, run niyo na ang app. basic ui lang yan, pinagawa ko sa ai haha:
+
+streamlit run app.py
+
