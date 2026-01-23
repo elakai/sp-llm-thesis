@@ -1,10 +1,9 @@
 # src/ui/components.py
 import streamlit as st
-from src.config.settings import get_db
+from src.config.settings import get_vectorstore
 from src.core.ingestion import train_all_pdfs
 
 def render_header():
-    # NO st.set_page_config() here anymore!
     st.markdown("""
     <style>
         .main {background-color: #f8f9fa;}
@@ -17,7 +16,7 @@ def render_header():
 
     st.markdown("<h1 class='header-title'>CSEA Assistant</h1>", unsafe_allow_html=True)
     st.markdown("<p class='header-subtitle'>College of Science, Engineering and Architecture<br>Ateneo de Naga University</p>", unsafe_allow_html=True)
-    
+
 def render_admin_panel():
     with st.sidebar:
         st.markdown("### Admin Panel")
@@ -27,13 +26,18 @@ def render_admin_panel():
             st.success("Access Granted")
 
             try:
-                count = get_db()._collection.count()
+                vectorstore = get_vectorstore()
+                stats = vectorstore._index.describe_index_stats()
+                count = stats.get('total_vector_count', 0)
                 st.info(f"Knowledge chunks: {count}")
             except Exception:
                 st.info("Chunks: 0 (database not initialized yet)")
 
             if st.button("FULL RESET"):
-                get_db().delete_collection()
+                st.warning("Pinecone reset: go to dashboard → delete & recreate index (or delete all vectors manually)")
+                # If you want in-app delete-all (slow for big indexes):
+                # vectorstore = get_vectorstore()
+                # vectorstore.delete(delete_all=True)
                 st.rerun()
 
             if st.button("TRAIN ALL PDFs"):

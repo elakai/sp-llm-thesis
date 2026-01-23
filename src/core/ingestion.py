@@ -1,14 +1,14 @@
 # src/core/ingestion.py
 import os
-import pymupdf as fitz
+import fitz  # PyMuPDF
 from PIL import Image
 import io
 import pytesseract
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.config.settings import DB_PATH, DOCS_FOLDER, get_embeddings, get_db
+from src.config.settings import DOCS_FOLDER, get_vectorstore
 
-# TESSERACT
+# Tesseract path (Windows)
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def load_pdf(path: str) -> str:
@@ -26,7 +26,7 @@ def load_pdf(path: str) -> str:
     return text
 
 def train_all_pdfs():
-    """Rebuild vector database from all PDFs in DOCS_FOLDER."""
+    """Rebuild Pinecone vector store from all PDFs in DOCS_FOLDER."""
     if not os.path.exists(DOCS_FOLDER):
         raise FileNotFoundError(f"Folder not found: {DOCS_FOLDER}. Create it and add PDFs.")
 
@@ -45,5 +45,6 @@ def train_all_pdfs():
         chunk_overlap=200
     ).split_documents(docs)
 
-    db = get_db()
-    db.add_documents(chunks)
+    # Save to Pinecone
+    vectorstore = get_vectorstore()
+    vectorstore.add_documents(chunks)

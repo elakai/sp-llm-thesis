@@ -3,22 +3,28 @@ import os
 from functools import lru_cache
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain_chroma import Chroma
+from langchain_pinecone import PineconeVectorStore
 
-# ── Constants ────────────────────────────────────────────────────────────────
-DB_PATH = "./chroma_db"
+# ── Environment variables ───────────────────────────────────────────────────
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+if not PINECONE_API_KEY:
+    raise ValueError("PINECONE_API_KEY not found in environment variables")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY not found in environment variables")
+
+PINECONE_INDEX_NAME = "csea-assistant"   # ← make sure this matches exactly what you created in Pinecone dashboard
+
 DOCS_FOLDER = "./documents"
 FEEDBACK_FILE = "feedback.json"
 
-# IMPORTANT: Use environment variable in production / thesis demo
-# For now keeping hardcoded as in original
-GROQ_API_KEY = "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"
-
-# ── Models & Factories ───────────────────────────────────────────────────────
+# ── Embedding model ─────────────────────────────────────────────────────────
 @lru_cache(maxsize=1)
 def get_embeddings():
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
+# ── LLM ─────────────────────────────────────────────────────────────────────
 def get_llm():
     return ChatGroq(
         model="llama-3.3-70b-versatile",
@@ -26,12 +32,14 @@ def get_llm():
         groq_api_key=GROQ_API_KEY
     )
 
-# Do NOT initialize Chroma here globally – it can cause issues in some environments
-# We initialize it only when needed (in retrieval / ingestion)
-def get_db():
-    embeddings = get_embeddings()
-    return Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
+# ── Pinecone vector store & retriever ───────────────────────────────────────
+def get_vectorstore():
+    # No 'pinecone_api_key' arg needed anymore - it reads from env var automatically
+    return PineconeVectorStore.from_existing_index(
+        index_name=PINECONE_INDEX_NAME,
+        embedding=get_embeddings()
+    )
 
 def get_retriever():
-    db = get_db()
-    return db.as_retriever(search_kwargs={"k": 15})
+    vectorstore = get_vectorstore()
+    return vectorstore.as_retriever(search_kwargs={"k": 15})
