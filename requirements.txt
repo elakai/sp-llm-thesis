@@ -14,3 +14,4 @@ openpyxl
 pytesseract
 python-docx
 PyMuPDF
+rank_bm25
