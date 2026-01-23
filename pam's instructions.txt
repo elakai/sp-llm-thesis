@@ -4,6 +4,8 @@ install: python 3.12.7
          
 tapos sa terminal:
 pip install -r requirements.txt
+python -c "import pytesseract; pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'; print('Tesseract version:', pytesseract.get_tesseract_version())"
+
 
 pag may mga modules na di pa nainstall, pip install niyo na lang.
 

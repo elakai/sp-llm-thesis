@@ -1,5 +1,6 @@
 # src/core/ingestion.py
 import os
+from datetime import datetime
 import fitz  # PyMuPDF
 from PIL import Image
 import io
@@ -8,20 +9,27 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import DOCS_FOLDER, get_vectorstore
 
-# Tesseract path (Windows)
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# Tesseract path – use the exact one that works on your machine
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
 
 def load_pdf(path: str) -> str:
     """Extract text from PDF, fallback to OCR if page is scanned."""
     doc = fitz.open(path)
     text = ""
-    for page in doc:
+    for page_num, page in enumerate(doc):
         page_text = page.get_text()
-        if len(page_text.strip()) < 100:
-            pix = page.get_pixmap(dpi=250)
+        char_count = len(page_text.strip())
+        print(f"Page {page_num+1}: {char_count} chars from normal extraction")
+
+        if char_count < 100:
+            print(f" → Page {page_num+1} likely scanned, running OCR")
+            pix = page.get_pixmap(dpi=300)  # increased DPI for better OCR
             img = Image.open(io.BytesIO(pix.tobytes()))
             page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
+            print(f" → OCR extracted {len(page_text.strip())} chars")
+
         text += page_text + "\n\n"
+
     doc.close()
     return text
 
@@ -35,16 +43,33 @@ def train_all_pdfs():
         if filename.lower().endswith(".pdf"):
             full_path = os.path.join(DOCS_FOLDER, filename)
             text = load_pdf(full_path)
-            docs.append(Document(page_content=text, metadata={"source": filename}))
+
+            if not text.strip():
+                print(f"Warning: No usable text extracted from {filename} (skipping)")
+                continue
+
+            docs.append(Document(
+                page_content=text,
+                metadata={
+                    "source": filename,
+                    "upload_timestamp": int(datetime.utcnow().timestamp()),  # number for filtering
+                    "document_type": "handbook" if "handbook" in filename.lower() else "dress_code" if "dress" in filename.lower() else "other"
+                }
+            ))
 
     if not docs:
-        raise ValueError("No PDF files found in documents folder.")
+        raise ValueError("No valid PDFs with extractable text found in documents folder.")
+
+    print(f"Processed {len(docs)} valid documents")
 
     chunks = RecursiveCharacterTextSplitter(
-        chunk_size=1200,
-        chunk_overlap=200
+        chunk_size=1000,          # slightly smaller for better precision
+        chunk_overlap=150         # moderate overlap
     ).split_documents(docs)
+
+    print(f"Created {len(chunks)} chunks")
 
     # Save to Pinecone
     vectorstore = get_vectorstore()
     vectorstore.add_documents(chunks)
+    print(f"Successfully added {len(chunks)} chunks to Pinecone")
