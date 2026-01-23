@@ -1,18 +1,21 @@
 # src/ui/main.py
+
 import sys
 from pathlib import Path
 
+# Add project root to sys.path (keep this — it's working for you)
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # ────────────────────────────────────────────────
-# Now normal imports should work
+# Normal imports
 import streamlit as st
 from src.ui.components import render_header, render_admin_panel
 from src.core.retrieval import generate_response
 from src.core.feedback import save_feedback
 
+# MUST BE FIRST Streamlit command
 st.set_page_config(
     page_title="CSEA Assistant",
     page_icon="Eagle",
@@ -22,35 +25,70 @@ st.set_page_config(
 render_header()
 render_admin_panel()
 
-# Chat history
+# Placeholder for future login (you'll replace this later)
+# For now, assume no user_id (anonymous feedback)
+user_id = st.session_state.get("user_id")  # will be None until login is added
+
+# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! I am the CSEA Information Assistant.\n\nAsk me anything!"}
+        {
+            "role": "assistant",
+            "content": "Hello! I am the CSEA Information Assistant.\n\nAsk me anything about CSEA rules, dress code, typhoon guidelines, or exemptions!"
+        }
     ]
 
+# Display existing messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# User input
 if query := st.chat_input("Ask about typhoon uniform rule, pregnancy exemption, dress code, etc."):
+    # Add user message to history and display
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
+    # Generate assistant response
     with st.chat_message("assistant"):
         with st.spinner("Searching official handbook..."):
-            response = generate_response(query)
+            try:
+                response = generate_response(query)
+            except Exception as e:
+                response = f"Sorry, something went wrong while generating the answer: {str(e)}"
 
         st.markdown(response)
 
+        # Feedback buttons
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("Helpful", key=f"good_{len(st.session_state.messages)}"):
-                save_feedback(query, response, "good")
-                st.success("Thank you!")
-        with col2:
-            if st.button("Not helpful", key=f"bad_{len(st.session_state.messages)}"):
-                save_feedback(query, response, "bad")
-                st.error("We'll improve!")
+            good_key = f"good_{len(st.session_state.messages)}"
+            if st.button("Helpful", key=good_key):
+                success = save_feedback(
+                    user_id=user_id,
+                    query=query,
+                    answer=response,
+                    rating="helpful"
+                )
+                if success:
+                    st.success("Thank you for the feedback!")
+                else:
+                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
 
+        with col2:
+            bad_key = f"bad_{len(st.session_state.messages)}"
+            if st.button("Not helpful", key=bad_key):
+                success = save_feedback(
+                    user_id=user_id,
+                    query=query,
+                    answer=response,
+                    rating="not_helpful"
+                )
+                if success:
+                    st.info("Thanks — we'll improve!")
+                else:
+                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
+
+    # Add assistant message to history
     st.session_state.messages.append({"role": "assistant", "content": response})
