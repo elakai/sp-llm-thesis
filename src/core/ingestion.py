@@ -63,7 +63,7 @@ def train_all_pdfs():
     print(f"Processed {len(docs)} valid documents")
 
     chunks = RecursiveCharacterTextSplitter(
-        chunk_size=1000,          # slightly smaller for better precision
+        chunk_size=800,          # slightly smaller for better precision
         chunk_overlap=150         # moderate overlap
     ).split_documents(docs)
 
