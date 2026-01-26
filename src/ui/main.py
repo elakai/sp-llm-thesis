@@ -58,7 +58,7 @@ if query := st.chat_input("Ask about typhoon uniform rule, pregnancy exemption, 
             except Exception as e:
                 response = f"Sorry, something went wrong while generating the answer: {str(e)}"
 
-        st.markdown(response)
+        st.markdown(response, unsafe_allow_html=True)
 
         # Feedback buttons
         col1, col2 = st.columns([1, 1])
