@@ -59,25 +59,13 @@ def load_pdf_pages(path: str, filename: str) -> List[Document]:
 
         # Fallback to OCR if page looks scanned (< 100 chars)
         if char_count < 100:
-            try:
-                pix = page.get_pixmap(dpi=300)
-                img = Image.open(io.BytesIO(pix.tobytes()))
-                # Only runs if Tesseract is configured
-                page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
-            except Exception:
-                page_text = "" # Graceful failure
+            print(f" → Page {page_num+1} likely scanned, running OCR")
+            pix = page.get_pixmap(dpi=300)  # increased DPI for better OCR
+            img = Image.open(io.BytesIO(pix.tobytes()))
+            page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
+            print(f" → OCR extracted {len(page_text.strip())} chars")
 
-        # Create a Document for THIS specific page
-        if page_text.strip():
-            page_docs.append(Document(
-                page_content=page_text,
-                metadata={
-                    "source": filename,
-                    "page": page_num + 1,  # Human-readable page number (starts at 1)
-                    "upload_timestamp": timestamp,
-                    "document_type": doc_type
-                }
-            ))
+        text += page_text + "\n\n"
 
     doc.close()
     return page_docs

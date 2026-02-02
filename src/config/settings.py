@@ -1,9 +1,15 @@
 # src/config/settings.py
 import os
 from functools import lru_cache
+from pathlib import Path
+from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_pinecone import PineconeVectorStore
+
+# Load environment variables from .env file
+env_path = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(env_path)
 
 # ── Environment variables ───────────────────────────────────────────────────
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -14,7 +20,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY not found in environment variables")
 
-PINECONE_INDEX_NAME = "csea-assistant"   # ← make sure this matches exactly what you created in Pinecone dashboard
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "csea-assistant")  # Read from .env, fallback to default
 
 DOCS_FOLDER = "./documents"
 FEEDBACK_FILE = "feedback.json"
