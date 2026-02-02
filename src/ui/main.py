@@ -1,94 +1,48 @@
 # src/ui/main.py
-
-import sys
-from pathlib import Path
-
-# Add project root to sys.path (keep this — it's working for you)
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-# ────────────────────────────────────────────────
-# Normal imports
 import streamlit as st
-from src.ui.components import render_header, render_admin_panel
+from src.ui.components import render_login, render_sidebar_nav, render_chat_styles
 from src.core.retrieval import generate_response
-from src.core.feedback import save_feedback
 
-# MUST BE FIRST Streamlit command
 st.set_page_config(
-    page_title="CSEA Assistant",
-    page_icon="Eagle",
-    layout="centered"
+    page_title="AXIsstant", 
+    page_icon="🏛️", 
+    layout="wide", 
+    initial_sidebar_state="expanded" # This is mandatory to keep it visible
 )
 
-render_header()
-render_admin_panel()
+if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
+if "messages" not in st.session_state: st.session_state.messages = []
 
-# Placeholder for future login (you'll replace this later)
-# For now, assume no user_id (anonymous feedback)
-user_id = st.session_state.get("user_id")  # will be None until login is added
+if not st.session_state["authenticated"]:
+    render_login()
+    st.stop()
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "Hello! I am the CSEA Information Assistant.\n\nAsk me anything about CSEA rules, dress code, typhoon guidelines, or exemptions!"
-        }
-    ]
+# --- CHAT UI ---
+render_chat_styles()
+render_sidebar_nav(st.session_state.get("user_id", "Student"))
 
-# Display existing messages
+# White Header Bar
+st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
+
+# Message Display Loop
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# User input
-if query := st.chat_input("Ask about typhoon uniform rule, pregnancy exemption, dress code, etc."):
-    # Add user message to history and display
+# Fixed Chat Logic: Resolves 'unexpected keyword argument'
+if query := st.chat_input("Ask AXIsstant..."):
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
-
-    # Generate assistant response
+    
     with st.chat_message("assistant"):
         with st.spinner("Searching official handbook..."):
             try:
-                response = generate_response(query)
+                # REMOVED chat_history_list to fix the error
+                response = generate_response(query) 
             except Exception as e:
-                response = f"Sorry, something went wrong while generating the answer: {str(e)}"
-
-        st.markdown(response, unsafe_allow_html=True)
-
-        # Feedback buttons
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            good_key = f"good_{len(st.session_state.messages)}"
-            if st.button("Helpful", key=good_key):
-                success = save_feedback(
-                    user_id=user_id,
-                    query=query,
-                    answer=response,
-                    rating="helpful"
-                )
-                if success:
-                    st.success("Thank you for the feedback!")
-                else:
-                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
-
-        with col2:
-            bad_key = f"bad_{len(st.session_state.messages)}"
-            if st.button("Not helpful", key=bad_key):
-                success = save_feedback(
-                    user_id=user_id,
-                    query=query,
-                    answer=response,
-                    rating="not_helpful"
-                )
-                if success:
-                    st.info("Thanks — we'll improve!")
-                else:
-                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
-
-    # Add assistant message to history
+                response = f"⚠️ Backend Error: {str(e)}"
+            st.markdown(response)
+    
     st.session_state.messages.append({"role": "assistant", "content": response})
+    st.rerun()

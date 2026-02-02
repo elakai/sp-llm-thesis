@@ -9,8 +9,8 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import DOCS_FOLDER, get_vectorstore
 
-# Tesseract path – use the exact one that works on your machine
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+# Tesseract path – set explicitly to avoid PATH issues
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def load_pdf(path: str) -> str:
     """Extract text from PDF, fallback to OCR if page is scanned."""
@@ -23,10 +23,16 @@ def load_pdf(path: str) -> str:
 
         if char_count < 100:
             print(f" → Page {page_num+1} likely scanned, running OCR")
-            pix = page.get_pixmap(dpi=300)  # increased DPI for better OCR
-            img = Image.open(io.BytesIO(pix.tobytes()))
-            page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
-            print(f" → OCR extracted {len(page_text.strip())} chars")
+            try:
+                pix = page.get_pixmap(dpi=300)  # increased DPI for better OCR
+                img = Image.open(io.BytesIO(pix.tobytes()))
+                page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
+                print(f" → OCR extracted {len(page_text.strip())} chars")
+            except pytesseract.TesseractNotFoundError:
+                print(f" ✗ Tesseract not found - skipping OCR for page {page_num+1}")
+                print("   Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
+            except Exception as e:
+                print(f" ✗ OCR error on page {page_num+1}: {str(e)}")
 
         text += page_text + "\n\n"
 
