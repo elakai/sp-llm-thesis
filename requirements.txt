@@ -17,3 +17,4 @@ pytesseract
 python-docx
 PyMuPDF
 rank_bm25
+supabase
