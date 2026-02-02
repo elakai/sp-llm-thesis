@@ -48,6 +48,7 @@ feedback.json
 .env.test.local
 .env.production.local
 .streamlit/secrets.toml
+.env.example
 
 # macOS / Windows / editors
 .DS_Store
@@ -77,3 +78,4 @@ nox/
 *.log
 *.tmp
 *.bak
+
