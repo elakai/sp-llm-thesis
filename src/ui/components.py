@@ -1,19 +1,34 @@
-# src/ui/components.py
 import streamlit as st
 import base64
+import sys
 from pathlib import Path
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. PATH SETUP (For asset loading)
+# ─────────────────────────────────────────────────────────────────────────────
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from src.config.settings import get_vectorstore
 from src.core.ingestion import train_all_pdfs
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. HELPER FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
 def get_base64_logo():
+    """Loads the logo from assets/ folder for the login screen."""
     logo_path = Path("assets/kraken_logo.png") 
     if logo_path.exists():
         with open(logo_path, "rb") as f:
             return base64.b64encode(f.read()).decode()
     return ""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. STYLING COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
 def render_login_styles():
-    """Keeps your high-quality orange card login design"""
+    """CSS specifically for the Login Screen (Orange Gradient)."""
     st.markdown("""
     <style>
         header, footer { visibility: hidden; }
@@ -29,75 +44,74 @@ def render_login_styles():
     """, unsafe_allow_html=True)
 
 def render_chat_styles():
-    """Restores the original dark charcoal chat theme with locked sidebar"""
+    """CSS for the Main Chat Interface (Dark Charcoal & Orange)."""
     st.markdown("""
     <style>
         header, footer {visibility: hidden;}
         
-        /* PERMANENT SIDEBAR LOGIC */
-        /* Hides the collapse button (top left) and the re-open button if collapsed */
+        /* Hides the collapse button to lock sidebar */
         [data-testid="sidebar-button"], 
-        [data-testid="collapsedControl"] {
-            display: none !important;
-        }
+        [data-testid="collapsedControl"] { display: none !important; }
 
-        /* Ensure the sidebar doesn't have a transition effect that shows the button */
-        [data-testid="stSidebar"] {
-            min-width: 280px !important;
-            max-width: 280px !important;
-        }
+        /* Lock sidebar width */
+        [data-testid="stSidebar"] { min-width: 280px !important; max-width: 280px !important; background-color: #F0A52D; }
 
-        /* Rest of your existing styles... */
+        /* Main Background */
         .stApp { background-color: #656565; }
-        [data-testid="stSidebar"] { background-color: #F0A52D; }
         
-        [data-testid="stMetricValue"] {
-            font-size: 1.6rem !important;
-            color: #000000 !important;
-            font-weight: 700 !important;
-        }
+        /* Metric Styles */
+        [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #000000 !important; font-weight: 700 !important; }
         
-        [data-testid="stChatMessageAssistant"] {
-            background-color: #1a1a1a !important;
-            border-left: 5px solid #F0A52D !important;
-            color: #eeeeee !important;
-        }
+        /* Chat Bubble Styles */
+        [data-testid="stChatMessageAssistant"] { background-color: #1a1a1a !important; border-left: 5px solid #F0A52D !important; color: #eeeeee !important; }
 
-        .user-profile {
-            padding: 12px;
-            background-color: #1a1a1a;
-            border-radius: 12px;
-            color: white;
-            position: fixed;
-            bottom: 20px;
-            width: 260px;
-        }
+        /* Profile Footer */
+        .user-profile { padding: 12px; background-color: #1a1a1a; border-radius: 12px; color: white; position: fixed; bottom: 20px; width: 260px; }
     </style>
     """, unsafe_allow_html=True)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. PAGE COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
 def render_login():
+    """Renders the Login Form."""
     render_login_styles()
     logo_base64 = get_base64_logo()
-    st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title">AXIsstant</div></div>', unsafe_allow_html=True)
+    
+    # Logo Display
+    if logo_base64:
+        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title">AXIsstant</div></div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="logo-container"><div class="logo-title">AXIsstant</div></div>', unsafe_allow_html=True)
+
+    # Login Form
     with st.form("login_form"):
         st.markdown("<h2 style='color: white; text-align: center;'>Sign in to continue</h2>", unsafe_allow_html=True)
         username = st.text_input("ID Number / Username")
         password = st.text_input("Password", type="password")
+        
         if st.form_submit_button("Login", use_container_width=True):
+            # Hardcoded credential for now
             if password == "csea_student":
                 st.session_state["authenticated"] = True
                 st.session_state["user_id"] = username
                 st.rerun()
+            else:
+                st.error("Incorrect password")
 
 def render_sidebar_nav(user_id):
-    """Renders original sidebar with authenticated Admin Panel and stats"""
+    """Renders Sidebar + Embedded Admin Panel."""
     with st.sidebar:
         st.title("🏛️ AXIsstant")
         
+        # ─── ADMIN PANEL (Hidden in Expander) ───
         with st.expander("🛠️ Admin Panel"):
             pwd = st.text_input("Admin Password", type="password", key="admin_pwd")
+            
             if pwd == "csea2025":
-                st.success("Admin Access Granted")
+                st.success("Access Granted")
+                
+                # Stats
                 try:
                     vectorstore = get_vectorstore()
                     stats = vectorstore._index.describe_index_stats()
@@ -105,17 +119,26 @@ def render_sidebar_nav(user_id):
                 except:
                     st.metric("Knowledge Chunks", "0")
                 
+                # Actions
                 if st.button("🚀 TRAIN ALL PDFs", use_container_width=True):
                     with st.spinner("Training..."):
-                        train_all_pdfs()
-                    st.success("Trained!")
+                        try:
+                            train_all_pdfs()
+                            st.success("Training Complete!")
+                            st.balloons()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
                 
                 if st.button("⚠️ FULL RESET", use_container_width=True):
                     get_vectorstore().delete(delete_all=True)
+                    st.success("Database Wiped.")
                     st.rerun()
 
         st.markdown("---")
-        if st.button("💬 Chats", use_container_width=True): st.session_state["view"] = "chat"
-        if st.button("🕒 History", use_container_width=True): st.session_state["view"] = "history"
-
-        st.markdown(f"<div class='user-profile'><strong>{user_id}</strong><br><small>{user_id.lower()}@gbox.adnu.edu.ph</small></div>", unsafe_allow_html=True)
+        
+        # Navigation Buttons (Placeholder for future features)
+        if st.button("💬 Chats", use_container_width=True): 
+            st.session_state["view"] = "chat"
+        
+        # User Profile Footer
+        st.markdown(f"<div class='user-profile'><strong>{user_id}</strong><br><small>{str(user_id).lower()}@gbox.adnu.edu.ph</small></div>", unsafe_allow_html=True)
