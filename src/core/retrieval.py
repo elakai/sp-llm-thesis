@@ -1,120 +1,92 @@
 # src/core/retrieval.py
-from datetime import datetime
-from typing import List
-from src.config.settings import get_llm, get_vectorstore
+from typing import List, Dict, Any
+from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
-from langchain_core.documents import Document
+from src.config.settings import get_llm, get_vectorstore
 
-# Reranker: cross-encoder (free, local, high-quality relevance scoring)
+# Global Reranker
 reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
+def format_chat_history(messages: List[Dict[str, str]]) -> str:
+    formatted_history = []
+    # Skip the first message if it's the greeting
+    history_to_process = messages[1:] if len(messages) > 1 else []
+
+    for msg in history_to_process[-6:]:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        content = msg["content"].replace("{", "{{").replace("}", "}}")
+        formatted_history.append(f"{role}: {content}")
+    
+    return "\n".join(formatted_history) if formatted_history else "No previous context."
+
 def rewrite_query(query: str) -> str:
-    """
-    Rewrite query to improve retrieval quality (optional but helpful).
-    """
     llm = get_llm()
-    prompt = f"""Rewrite this user query to be more detailed and precise for searching a university student handbook or policy documents.
-Include relevant keywords like 'Ateneo de Naga University', 'CSEA', 'student handbook', 'dress code', 'typhoon signal', 'pregnancy exemption', 'grading system', 'awards'.
-Keep it factual and natural.
-
-Original: {query}
-
-Rewritten:"""
+    prompt = f"Rewrite this query for a university handbook search: {query}"
     try:
-        rewritten = llm.invoke(prompt).content.strip()
-        return rewritten or query
-    except Exception:
+        return llm.invoke(prompt).content.strip() or query
+    except:
         return query
 
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
-    """
-    Simple hybrid: BM25 keyword scoring + semantic position boost.
-    """
-    if not docs:
-        return []
-
+    if not docs: return []
     tokenized_docs = [doc.page_content.split() for doc in docs]
     bm25 = BM25Okapi(tokenized_docs)
-    tokenized_query = query.lower().split()
-    bm25_scores = bm25.get_scores(tokenized_query)
+    scores = bm25.get_scores(query.lower().split())
+    ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+    return [doc for _, doc in ranked[:15]]
 
-    ranked = []
-    for i, doc in enumerate(docs):
-        score = bm25_scores[i] + (len(docs) - i) * 0.05  # boost top semantic results
-        ranked.append((score, doc))
+def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
+    if not docs: return []
+    grouped = {}
+    for doc in docs:
+        grouped.setdefault(doc.metadata.get("source", "unknown"), []).append(doc)
+    
+    filtered = []
+    for source, group in grouped.items():
+        latest = max((d.metadata.get("upload_timestamp", 0) for d in group), default=0)
+        filtered.extend([d for d in group if d.metadata.get("upload_timestamp", 0) == latest])
+    return filtered
 
-    ranked.sort(reverse=True, key=lambda x: x[0])
-    return [doc for _, doc in ranked[:15]]  # top 15 after hybrid
-
-def generate_response(query: str) -> str:
-    """
-    RAG pipeline with improvements:
-    - Query rewriting
-    - Semantic retrieval + type filter
-    - Hybrid BM25 boost
-    - Cross-encoder reranking (main improvement)
-    - Recency sort
-    - Tuned prompt & low temperature
-    """
+# 👇 THIS IS THE CRITICAL PART THAT MUST MATCH main.py
+def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []) -> str:
     vectorstore = get_vectorstore()
-
-    # Tuned retrieval: 25 candidates (good balance for reranking)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 25})
-
-    rewritten_query = rewrite_query(query)
-    print(f"Rewritten query: {rewritten_query}")
-
-    semantic_results = retriever.invoke(rewritten_query)
-    print(f"Retrieved {len(semantic_results)} semantic chunks")
-
-    # Hybrid boost
-    hybrid_results = hybrid_rerank(rewritten_query, semantic_results)
-
-    # Cross-encoder reranking (core improvement)
-    if hybrid_results:
-        pairs = [(rewritten_query, doc.page_content) for doc in hybrid_results]
+    
+    # 1. Broad Search
+    rewritten = rewrite_query(query)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 60})
+    docs = retriever.invoke(rewritten)
+    
+    # 2. Filter & Rerank
+    docs = prefer_latest_per_source(docs)
+    docs = hybrid_rerank(rewritten, docs)
+    
+    # 3. Cross-Encoder (Top 10)
+    if docs:
+        pairs = [(rewritten, d.page_content) for d in docs[:20]]
         scores = reranker.predict(pairs)
-        sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        top_reranked = [hybrid_results[i] for i in sorted_indices[:8]]  # Tuned: top 8 after rerank
+        sorted_docs = [docs[i] for i in sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]]
     else:
-        top_reranked = []
+        sorted_docs = []
 
-    # Sort by upload_timestamp descending (newest first)
-    sorted_results = sorted(
-        top_reranked,
-        key=lambda d: d.metadata.get("upload_timestamp", 0),
-        reverse=True
-    )
+    # 4. Context & History
+    context = "\n\n".join([
+        f"[[Source: {d.metadata.get('source')} | Page: {d.metadata.get('page')}]]\n{d.page_content}" 
+        for d in sorted_docs
+    ])
+    history = format_chat_history(chat_history_list)
 
-    context = "\n\n".join([doc.page_content for doc in sorted_results])
-    print(f"Final context length: {len(context)} chars")
-
-    # Tuned prompt: less strict, encourages partial answers, strong citation rule
-    prompt = f"""You are the official CSEA Information Assistant at Ateneo de Naga University.
-Use the provided context to answer as completely and helpfully as possible. Be accurate, professional, and detailed.
-If the context has partial or related information, use it and explain.
-If absolutely no relevant information, say: "I'm sorry, this information is not available in the current documents."
-**IMPORTANT FORMATTING RULES:**
-- Always use proper Markdown formatting in your responses:
-  - **Bold** important terms
-  - *Italics* for emphasis
-  - Use bullet points or numbered lists for multiple items
-  - Use headings like ## or ### for sections
-  - Use code blocks ``` for examples or quotes
-  - Use tables when comparing things (e.g. grading scale)
-  - Include inline links if relevant [text](url)
-- If the context lacks information, say: "I'm sorry, this information is not available in the current documents."
-- Cite sources when possible: [Source: filename, upload_date]
+    # 5. Generate
+    prompt = f"""You are the CSEA Information Assistant.
+    
+Conversation History:
+{history}
 
 Context:
 {context}
 
 Question: {query}
-Answer (use Markdown):"""
 
-    # Call LLM with tuned temperature = 0.0 for maximum factuality
-    llm = get_llm()  # make sure get_llm() uses temperature=0.0
-    response = llm.invoke(prompt).content
-
-    return response
+Answer:"""
+    
+    return get_llm().invoke(prompt).content

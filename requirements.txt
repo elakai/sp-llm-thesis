@@ -4,8 +4,10 @@ langchain-core
 langchain-huggingface
 langchain-groq
 langchain-chroma
+langchain-pinecone
 chromadb
-fitz
+pinecone-client>=3.0.0
+python-dotenv
 pillow
 sentence-transformers
 easyocr
