@@ -1,10 +1,9 @@
-import sys
 from pathlib import Path
+import sys
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. PATH SETUP (MUST BE FIRST)
+# 1. PATH SETUP 
 # ─────────────────────────────────────────────────────────────────────────────
-# This tells Python where to look for your 'src' folder
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -15,6 +14,7 @@ if str(project_root) not in sys.path:
 import streamlit as st
 from src.ui.components import render_login, render_sidebar, render_main_styles
 from src.ui.admin_dashboard import render_admin_view  # Importing the separate admin file
+from src.core.feedback import save_feedback, log_conversation 
 from src.core.retrieval import generate_response
 from src.core.feedback import save_feedback
 
@@ -91,6 +91,9 @@ else:
                         query=query,
                         chat_history_list=st.session_state.messages
                     )
+
+                    user_email = st.session_state.get("user_id", "Guest")#new
+                    log_conversation(query, response, user_email)#new
                 except Exception as e:
                     response = f"⚠️ Backend Error: {str(e)}"
             

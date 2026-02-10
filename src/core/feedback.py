@@ -1,33 +1,39 @@
-import os
-import json
-from datetime import datetime
-from src.config.settings import FEEDBACK_FILE
+import streamlit as st
+from src.core.auth import supabase
 
-def save_feedback(query: str, answer: str, rating: str, user_id: str = None):
+def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous"):
     """
-    Saves user feedback to a JSON file.
-    user_id is optional (defaults to None) to support anonymous feedback.
+    Saves user feedback (Thumbs Up/Down) to Supabase.
     """
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "user_id": user_id if user_id else "anonymous",
-        "question": query,
-        "answer": answer,
-        "rating": rating
-    }
+    try:
+        data = {
+            "user_email": user_id,
+            "query": query,
+            "response": response,
+            "rating": rating
+        }
+        
+        # Insert into Supabase
+        supabase.table("chat_logs").insert(data).execute()
+        return True
 
-    data = []
-    # Check if file exists and is not empty
-    if os.path.exists(FEEDBACK_FILE):
-        try:
-            with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            data = [] # Reset if file is corrupted
+    except Exception as e:
+        print(f"❌ Failed to save feedback: {e}")
+        return False
 
-    data.append(entry)
-
-    with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-    return True
+def log_conversation(query: str, response: str, user_id: str):
+    """
+    Automatically logs the conversation to Supabase (without rating).
+    Call this immediately after the bot replies.
+    """
+    try:
+        data = {
+            "user_email": user_id,
+            "query": query,
+            "response": response,
+            "rating": None # No rating yet
+        }
+        supabase.table("chat_logs").insert(data).execute()
+        
+    except Exception as e:
+        print(f"❌ Auto-log failed: {e}")
