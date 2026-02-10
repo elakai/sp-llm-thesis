@@ -1,9 +1,13 @@
+#retrieval.py
 import time
 from typing import List, Dict, Any, Tuple
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 from src.config.settings import get_llm, get_vectorstore
+from src.core.router import route_query  
+import random 
+from src.core.decomposition import decompose_query
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Global Reranker (Load once)
@@ -90,95 +94,137 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # Main Retrieval Function
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []) -> str:
+def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []): # Removed -> str type hint
+    """
+    Generator function that yields chunks of text for streaming.
+    """
+    
+    # 🚀 STEP 1: SMART ROUTER
+    intent = route_query(query)
+    
+    # PATH A: GREETING (Simulate streaming for consistency)
+    if intent == "greeting":
+        greetings = [
+            "Hello! I am AXIsstant. How can I help you with the CSEA Handbook today?",
+            "Hi there! I'm ready to answer your questions about university policies.",
+            "Greetings! Feel free to ask me about uniforms, grading, or curriculum."
+        ]
+        response = random.choice(greetings)
+        # Yield words one by one to simulate typing
+        for word in response.split():
+            yield word + " "
+            time.sleep(0.05)
+        return
+
+    # PATH B: OFF-TOPIC
+    if intent == "off_topic":
+        msg = "I am designed to answer questions about the CSEA Student Handbook... I cannot help with general topics."
+        for word in msg.split():
+            yield word + " "
+            time.sleep(0.05)
+        return
+
+    # PATH C: SEARCH (The Agentic Pipeline)
     vectorstore = get_vectorstore()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 10}) # Reduce k since we might run multiple searches
 
-    # 1. Broad Search with Error Handling
-    try:
-        rewritten_query = rewrite_query(query)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 40})
-        semantic_results = retriever.invoke(rewritten_query)
-    except Exception as e:
-        return f"⚠️ **Connection Error:** I couldn't search the handbook database. Please try again in a moment.\n\n*(Error: {str(e)})*"
+    # 🚀 STEP 2: DECOMPOSE (The New Logic)
+    # We ask the "Brain" if this needs to be split
+    sub_queries = decompose_query(query)
+    
+    # If it actually decomposed (more than 1 query), let the user know!
+    if len(sub_queries) > 1:
+        yield f"🔄 **Complex Query Detected:** I'm splitting this into {len(sub_queries)} searches...\n\n"
+        for i, sub_q in enumerate(sub_queries):
+            yield f"* 🔎 Searching: *'{sub_q}'*...\n"
+            time.sleep(0.1)
+    
+    # 🚀 STEP 3: MULTI-STEP RETRIEVAL
+    all_docs = []
+    
+    for sub_q in sub_queries:
+        try:
+            # We skip 'rewrite_query' here because decompose usually simplifies it enough
+            docs = retriever.invoke(sub_q)
+            all_docs.extend(docs)
+        except Exception:
+            continue
 
-    # 🛡️ EDGE CASE: NO RESULTS FOUND
-    if not semantic_results:
-        return "I couldn't find any information about that in the uploaded documents. Please try rephrasing your question or ask about a different topic."
+    # 🛡️ EDGE CASE: NO RESULTS
+    if not all_docs:
+        yield "I couldn't find any information about that in the uploaded documents."
+        return
 
-    # 2. Filter & Hybrid Rerank
+    # 🚀 STEP 4: DEDUPLICATION
+    # We might find the same document twice. Let's remove duplicates based on page content.
+    unique_docs = {}
+    for doc in all_docs:
+        # Use page number + source as a unique key
+        key = f"{doc.metadata.get('source')}_{doc.metadata.get('page')}"
+        if key not in unique_docs:
+            unique_docs[key] = doc
+    
+    semantic_results = list(unique_docs.values())
+
+    # 2. Filter & Rerank (Keep your existing logic here!)
     latest_per_source = prefer_latest_per_source(semantic_results)
     hybrid_results = hybrid_rerank(rewritten_query, latest_per_source)
 
-    # 3. Cross-Encoder Rerank
+    # 3. Cross-Encoder (Keep your existing logic here!)
     if hybrid_results:
         try:
             top_candidates = hybrid_results[:20]
             pairs = [(rewritten_query, doc.page_content) for doc in top_candidates]
             scores = reranker.predict(pairs)
-            
-            # Sort by score
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
-            # 🛡️ EDGE CASE: LOW RELEVANCE FILTER
-            # If the best match has a negative score (common with CrossEncoders for bad matches), stop.
-            # Adjust -5.0 based on your model; typically < -8 means completely irrelevant.
             if scores[sorted_indices[0]] < -8.0:
-                return "I searched the handbook, but couldn't find a relevant answer to your specific question."
+                yield "I searched the handbook, but couldn't find a relevant answer to your specific question."
+                return
 
-            top_reranked = [top_candidates[i] for i in sorted_indices[:8]] # Keep top 8 strictly
-        except Exception:
-            top_reranked = hybrid_results[:5] # Fallback if reranker fails
+            top_reranked = [top_candidates[i] for i in sorted_indices[:8]]
+        except:
+            top_reranked = hybrid_results[:5]
     else:
         top_reranked = []
 
-    # 4. Build Context (Truncate to ~3000 chars to be safe)
+    # 4. Build Context
     context_pieces = []
     total_chars = 0
     limit = 3500 
     
     for doc in top_reranked:
-        source = doc.metadata.get("source", "Unknown Document")
-        page = doc.metadata.get("page", "?")
+        source = doc.metadata.get("source", "Unknown")
+        page_raw = doc.metadata.get("page", "?")
+        try:
+            page = int(float(page_raw))
+        except:
+            page = page_raw
+
         content = doc.page_content.replace("\n", " ") 
-        
         entry = f"[[Source: {source} | Page: {page}]]\n{content}"
         
         if total_chars + len(entry) > limit:
-            break # Stop adding if we hit the limit
-            
+            break 
         context_pieces.append(entry)
         total_chars += len(entry)
 
     context = "\n\n".join(context_pieces)
     history_text = format_chat_history(chat_history_list)
 
-    # 5. Generate with Retry Logic
-    prompt = f"""You are the official CSEA Information Assistant at Ateneo de Naga University.
-Answer based ONLY on the provided context. If the answer isn't there, say so.
-
-**Citation Rules:**
-- Use the provided source tags [[Source: ... | Page: ...]] at the end of sentences.
-- Do NOT make up page numbers.
-
-Conversation History:
-{history_text}
-
-Context:
-{context}
-
+    # 5. Generate Response (STREAMING MODE)
+    prompt = f"""You are AXIsstant, the official Academic AI...
+(Keep your same Prompt text from before here)
+Context: {context}
+History: {history_text}
 Question: {query}
-
-Answer (in Markdown):"""
+Answer:"""
 
     llm = get_llm()
     
-    # Simple Retry Logic for API Flukes
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            response = llm.invoke(prompt).content
-            return response
-        except Exception as e:
-            if attempt == max_retries - 1:
-                return f"⚠️ **API Error:** I'm having trouble connecting to the brain module right now. Please try again. ({str(e)})"
-            time.sleep(1) # Wait 1s before retry
+    # 🚀 KEY CHANGE: Use .stream() instead of .invoke()
+    try:
+        for chunk in llm.stream(prompt):
+            yield chunk.content
+    except Exception as e:
+        yield f"⚠️ **API Error:** {str(e)}"
