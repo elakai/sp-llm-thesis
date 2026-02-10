@@ -85,6 +85,14 @@ def render_main_styles():
             color: white !important;
             margin-left: auto;
         }
+        
+        /* Increase text size in chat messages */
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li,
+        [data-testid="stChatMessage"] span {
+            font-size: 1.1rem !important;
+            line-height: 1.6 !important;
+        }
 
         /* Floating Chat Input Box */
         [data-testid="stChatInput"] { padding: 1.5rem; background-color: transparent !important; }
@@ -92,6 +100,11 @@ def render_main_styles():
             border-radius: 30px !important; 
             border: 1px solid #F0A52D !important; 
             background-color: #1a1a1a !important; 
+        }
+        
+        /* Increase text size in chat input */
+        [data-testid="stChatInput"] textarea {
+            font-size: 1.1rem !important;
         }
 
         /* Sidebar Profile */
@@ -153,10 +166,45 @@ def render_sidebar():
             st.markdown(f"<h1 style='text-align: center; color: #0A0A0A; font-size: 2.5rem;'>AXIsstant</h1>", unsafe_allow_html=True)
         st.markdown("---")
         
-        # Highlight logic (Basic)
-        history_label = "📜 **History**" if st.session_state.get("view") == "chat" else "📜 History"
-        if st.button(history_label, use_container_width=True):
+        # New Chat button - saves current conversation and starts fresh
+        if st.button("➕ New Chat", use_container_width=True):
+            # Save/update current conversation to history if it has messages
+            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                if "chat_history" not in st.session_state:
+                    st.session_state["chat_history"] = []
+                
+                # If continuing an existing conversation, update it instead of appending
+                if st.session_state.get("active_convo_idx") is not None:
+                    idx = st.session_state["active_convo_idx"]
+                    if 0 <= idx < len(st.session_state["chat_history"]):
+                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                else:
+                    # New conversation, append to history
+                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+            
+            st.session_state["messages"] = []
+            st.session_state["active_convo_idx"] = None  # Reset active conversation
             st.session_state["view"] = "chat"
+            st.rerun()
+        
+        # History button - shows chat history (saves current conversation first)
+        history_label = "📜 **History**" if st.session_state.get("view") == "history" else "📜 History"
+        if st.button(history_label, use_container_width=True):
+            # Save current conversation before viewing history
+            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                if "chat_history" not in st.session_state:
+                    st.session_state["chat_history"] = []
+                
+                if st.session_state.get("active_convo_idx") is not None:
+                    idx = st.session_state["active_convo_idx"]
+                    if 0 <= idx < len(st.session_state["chat_history"]):
+                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                else:
+                    # New unsaved conversation
+                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+                    st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
+            
+            st.session_state["view"] = "history"
             st.rerun()
             
         if st.session_state.get("role") == "admin":
