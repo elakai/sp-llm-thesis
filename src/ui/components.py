@@ -10,9 +10,8 @@ if str(project_root) not in sys.path:
 
 from src.core.auth import login_user, register_user
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS (Logos)
-# ─────────────────────────────────────────────────────────────────────────────
+# Logo
+
 def get_base64_logo():
     logo_path = Path("assets/kraken_logo.png") 
     if logo_path.exists():
@@ -20,21 +19,37 @@ def get_base64_logo():
             return base64.b64encode(f.read()).decode()
     return ""
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # STYLES
-# ─────────────────────────────────────────────────────────────────────────────
+
 def render_login_styles():
     st.markdown("""
     <style>
         header, footer { visibility: hidden; }
         .stApp { background: linear-gradient(to bottom, #1F1F1F, #F09F2D) !important; background-attachment: fixed; }
-        [data-testid="stVerticalBlock"] { width: 100% !important; margin: 0 auto; }
+        
+        /* Center and scale Logo */
         .logo-container { display: flex; flex-direction: column; align-items: center; margin-top: 5vh; width: 100%; }
-        .logo-image { width: 200px; filter: drop-shadow(0 15px 15px rgba(0,0,0,0.4)); }
-        .logo-title { font-size: 3.5rem; color: #fef3c7; font-weight: 700; text-align: center; }
-        [data-testid="stForm"] { background-color: #f59e0b !important; border-radius: 20px !important; padding: 40px !important; width: 420px !important; margin: 0 auto !important; }
-        div.stButton > button { width: 100% !important; background-color: #1a1a1a !important; color: white !important; font-weight: bold !important; }
-        div.stButton > button:hover { background-color: #fef3c7 !important; color: #1a1a1a !important; }
+        .logo-image { width: 150px; filter: drop-shadow(0 15px 15px rgba(0,0,0,0.4)); transition: transform 0.3s ease; }
+        .logo-image:hover { transform: scale(1.05); }
+        .logo-title { font-size: 3.0rem; color: #fef3c7; font-weight: 600; text-align: center; margin-bottom: 10px; }
+        
+        /* Center the Tabs */
+        [data-testid="stTabs"] { display: flex; justify-content: center; border: none !important; }
+        [data-testid="stTab"] { color: #fef3c7 !important; }
+        
+        /* Responsive Form */
+        [data-testid="stForm"] { 
+            background-color: #f59e0b !important; 
+            border-radius: 20px !important; 
+            padding: 40px !important; 
+            max-width: 500px !important; 
+            width: 90% !important; 
+            margin: 0 auto !important; 
+        }
+        
+        div.stButton > button { width: 100% !important; background-color: #1a1a1a !important; color: white !important; font-weight: bold !important; border-radius: 10px; }
+        div.stButton > button:hover { background-color: #fef3c7 !important; color: #1a1a1a !important; border: 1px solid #1a1a1a; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -43,16 +58,57 @@ def render_main_styles():
     <style>
         header, footer {visibility: hidden;}
         [data-testid="sidebar-button"], [data-testid="collapsedControl"] { display: none !important; }
-        [data-testid="stSidebar"] { min-width: 280px !important; max-width: 280px !important; background-color: #F0A52D; }
-        .stApp { background-color: #656565; }
-        .user-profile { padding: 12px; background-color: #1a1a1a; border-radius: 12px; color: white; position: fixed; bottom: 20px; width: 260px; }
+        [data-testid="stSidebar"] { 
+                min-width: 280px !important; 
+                max-width: 280px !important; 
+                background-color: #F3B653;
+                margin-right: auto;  }
         
-        /* Chat Specifics */
-        [data-testid="stChatMessageAssistant"] { background-color: #1a1a1a !important; border-left: 5px solid #F0A52D !important; color: #eeeeee !important; }
+        .stApp { background-color: #0A0A0A; }
         
-        /* Admin Dashboard Cards */
-        div[data-testid="stMetric"] { background-color: #1a1a1a; padding: 20px; border-radius: 10px; border-left: 5px solid #F0A52D; }
-        label[data-testid="stLabel"] { color: #F0A52D !important; font-weight: bold; }
+        .sidebar-top {
+            text-align: center;
+            width: 100%;
+        }
+        /* Better Message Bubbles */
+        [data-testid="stChatMessage"] { border-radius: 15px; padding: 15px; margin-bottom: 15px; max-width: 80%; }
+        [data-testid="stChatMessageAssistant"] { 
+            background-color: #1a1a1a !important; 
+            border-left: 5px solid #F0A52D !important; 
+            color: #eeeeee !important;
+            margin-right: auto; 
+        }
+        
+        [data-testid="stChatMessageUser"] { 
+            background-color: #3d3d3d !important; 
+            border-right: 5px solid #fef3c7 !important; 
+            color: white !important;
+            margin-left: auto;
+        }
+        
+        /* Increase text size in chat messages */
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li,
+        [data-testid="stChatMessage"] span {
+            font-size: 1.1rem !important;
+            line-height: 1.6 !important;
+        }
+
+        /* Floating Chat Input Box */
+        [data-testid="stChatInput"] { padding: 1.5rem; background-color: transparent !important; }
+        [data-testid="stChatInput"] > div { 
+            border-radius: 30px !important; 
+            border: 1px solid #F0A52D !important; 
+            background-color: #1a1a1a !important; 
+        }
+        
+        /* Increase text size in chat input */
+        [data-testid="stChatInput"] textarea {
+            font-size: 1.1rem !important;
+        }
+
+        /* Sidebar Profile */
+        .user-profile { padding: 12px; background-color: #1a1a1a; border-radius: 12px; color: white; position: fixed; bottom: 20px; width: 240px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -97,19 +153,63 @@ def render_login():
                 else: st.error(f"Error: {message}")
 
 def render_sidebar():
-    """Sidebar Navigation Only"""
     with st.sidebar:
-        st.title("🏛️ AXIsstant")
+        logo_base64 = get_base64_logo()
+        if logo_base64:
+            st.markdown(f"""
+                <div style="text-align: center; padding-bottom: 10px;">
+                    <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
+                    <h1 style='color: #0A0A0A; margin-top: 10px; font-size: 2.5rem;'>AXIsstant</h1>
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"<h1 style='text-align: center; color: #0A0A0A; font-size: 2.5rem;'>AXIsstant</h1>", unsafe_allow_html=True)
         st.markdown("---")
         
-        # Navigation Buttons
-        if st.button("💬 Chat Interface", use_container_width=True):
+        # New Chat button - saves current conversation and starts fresh
+        if st.button("➕ New Chat", use_container_width=True):
+            # Save/update current conversation to history if it has messages
+            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                if "chat_history" not in st.session_state:
+                    st.session_state["chat_history"] = []
+                
+                # If continuing an existing conversation, update it instead of appending
+                if st.session_state.get("active_convo_idx") is not None:
+                    idx = st.session_state["active_convo_idx"]
+                    if 0 <= idx < len(st.session_state["chat_history"]):
+                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                else:
+                    # New conversation, append to history
+                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+            
+            st.session_state["messages"] = []
+            st.session_state["active_convo_idx"] = None  # Reset active conversation
             st.session_state["view"] = "chat"
             st.rerun()
+        
+        # History button - shows chat history (saves current conversation first)
+        history_label = "📜 **History**" if st.session_state.get("view") == "history" else "📜 History"
+        if st.button(history_label, use_container_width=True):
+            # Save current conversation before viewing history
+            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                if "chat_history" not in st.session_state:
+                    st.session_state["chat_history"] = []
+                
+                if st.session_state.get("active_convo_idx") is not None:
+                    idx = st.session_state["active_convo_idx"]
+                    if 0 <= idx < len(st.session_state["chat_history"]):
+                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                else:
+                    # New unsaved conversation
+                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+                    st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
             
-        # Admin Button (Conditional)
+            st.session_state["view"] = "history"
+            st.rerun()
+            
         if st.session_state.get("role") == "admin":
-            if st.button("🛠️ Admin Dashboard", use_container_width=True):
+            admin_label = "🛠️ **Admin Dashboard**" if st.session_state.get("view") == "admin" else "🛠️ Admin Dashboard"
+            if st.button(admin_label, use_container_width=True):
                 st.session_state["view"] = "admin"
                 st.rerun()
 
@@ -118,7 +218,6 @@ def render_sidebar():
             st.session_state.clear()
             st.rerun()
             
-        # Footer
         user_email = st.session_state.get("user_id", "Guest")
         role = st.session_state.get("role", "Student").upper()
         st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
