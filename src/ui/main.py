@@ -84,17 +84,31 @@ elif st.session_state["view"] == "history":
                     role_icon = "🐙" if msg["role"] == "assistant" else "👤"
                     st.markdown(f"**{role_icon} {msg['role'].title()}:** {msg['content']}")
                 
-                # Button to load this conversation
-                if st.button("📂 Continue this chat", key=f"load_{i}"):
-                    actual_idx = len(st.session_state["chat_history"]) - 1 - i
-                    st.session_state["messages"] = conv.copy()
-                    st.session_state["active_convo_idx"] = actual_idx
-                    
-                    # 🚀 Generate NEW Session ID when reloading old chats so we don't mix logs
-                    st.session_state["session_id"] = str(uuid.uuid4())
-                    
-                    st.session_state["view"] = "chat"
-                    st.rerun()
+                # Buttons row
+                col1, col2 = st.columns(2)
+                actual_idx = len(st.session_state["chat_history"]) - 1 - i
+                
+                with col1:
+                    # Button to load this conversation
+                    if st.button("📂 Continue", key=f"load_{i}"):
+                        st.session_state["messages"] = conv.copy()
+                        st.session_state["active_convo_idx"] = actual_idx
+                        
+                        # 🚀 Generate NEW Session ID when reloading old chats so we don't mix logs
+                        st.session_state["session_id"] = str(uuid.uuid4())
+                        
+                        st.session_state["view"] = "chat"
+                        st.rerun()
+                
+                with col2:
+                    # Button to delete this conversation
+                    if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
+                        st.session_state["chat_history"].pop(actual_idx)
+                        # Reset active conversation if we deleted it
+                        if st.session_state.get("active_convo_idx") == actual_idx:
+                            st.session_state["active_convo_idx"] = None
+                            st.session_state["messages"] = []
+                        st.rerun()
 
 # --- OPTION C: MAIN CHAT VIEW ---
 else:
@@ -121,14 +135,26 @@ else:
         # 2. Generate Response (STREAMING + LOGGING)
         with st.chat_message("assistant", avatar="assets/kraken_logo.png"):
             try:
-                # Get the generator
-                stream = generate_response(
-                    query=query, 
-                    chat_history_list=st.session_state.messages
-                )
+                # Show thinking status while generating
+                with st.status("🧠 Thinking...", expanded=True) as status:
+                    st.write("Processing your question...")
+                    
+                    # Get the generator
+                    stream = generate_response(
+                        query=query, 
+                        chat_history_list=st.session_state.messages
+                    )
+                    
+                    # Collect the stream response
+                    response_chunks = []
+                    for chunk in stream:
+                        response_chunks.append(chunk)
+                    response = "".join(response_chunks)
+                    
+                    status.update(label="✅ Done!", state="complete", expanded=False)
                 
-                # Write Stream
-                response = st.write_stream(stream)
+                # Display the response
+                st.markdown(response)
                 current_context = st.session_state.get("last_retrieved_context", "")
                 # 🚀 AUTO-LOG to Supabase (FIXED ARGUMENTS)
                 user_email = st.session_state.get("user_id", "Guest")

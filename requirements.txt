@@ -18,5 +18,7 @@ python-docx
 PyMuPDF
 rank_bm25
 supabase
-plotly pandas
-ragas datasets
+plotly 
+pandas
+ragas 
+datasets
