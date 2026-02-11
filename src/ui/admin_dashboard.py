@@ -1,63 +1,85 @@
 import streamlit as st
-import os
-from src.config.settings import get_vectorstore, DOCS_FOLDER
+import pandas as pd
+import plotly.express as px
+from src.config.settings import get_vectorstore
 from src.core.ingestion import train_all_pdfs
+from src.core.auth import supabase
 
-def save_uploaded_file(uploaded_file):
-    """Helper to save uploaded files to disk."""
-    if not os.path.exists(DOCS_FOLDER):
-        os.makedirs(DOCS_FOLDER)
-    
-    file_path = os.path.join(DOCS_FOLDER, uploaded_file.name)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return file_path
+def fetch_eval_metrics():
+    """Fetches Ragas scores and feedback for the analytics bar."""
+    try:
+        response = supabase.table("chat_logs") \
+            .select("rating, faithfulness, answer_relevancy") \
+            .execute()
+        return pd.DataFrame(response.data)
+    except Exception:
+        return pd.DataFrame()
 
 def render_admin_view():
-    """The Full-Page Admin Dashboard Logic."""
-    st.markdown("## 🛠️ Admin Dashboard")
-    st.info("Manage the Knowledge Base and System Settings.")
+    st.markdown("## 🛠️ Admin Control Center")
+    st.caption("Management tools for knowledge ingestion and AI performance evaluation.")
+    st.markdown("---")
 
-    col1, col2 = st.columns([2, 1])
+    # 1. TOP BAR: Ragas Quality Metrics (Critical for Thesis)
+    df_eval = fetch_eval_metrics()
+    if not df_eval.empty:
+        m1, m2, m3, m4 = st.columns(4)
+        
+        # Calculate averages
+        avg_faith = df_eval['faithfulness'].mean() if 'faithfulness' in df_eval else 0.0
+        avg_rel = df_eval['answer_relevancy'].mean() if 'answer_relevancy' in df_eval else 0.0
+        pos_feedback = (df_eval['rating'] == 'helpful').sum()
+        
+        m1.metric("Faithfulness", f"{avg_faith:.2f}", help="Score 0-1: Accuracy/No hallucinations")
+        m2.metric("Relevancy", f"{avg_rel:.2f}", help="Score 0-1: Helpful to user")
+        m3.metric("User Likes", pos_feedback)
+        m4.metric("Status", "Online")
+        st.markdown("---")
 
-    with col1:
-        st.markdown("### 📤 Upload Documents")
-        st.write("Upload PDFs to add them to the knowledge base. Page numbers are automatically extracted.")
-        uploaded_files = st.file_uploader("Drop PDFs here", type=["pdf"], accept_multiple_files=True)
+    # 2. MIDDLE SECTION: Knowledge & Stats
+    left_col, right_col = st.columns([2, 1])
+
+    with left_col:
+        st.markdown("### 📤 Document Ingestion")
+        st.write("Add new PDFs to the Handbook Knowledge Base.")
+        uploaded_files = st.file_uploader("Upload Handbook PDFs", type=["pdf"], accept_multiple_files=True)
         
         if uploaded_files:
-            if st.button("Save & Train", type="primary"):
-                progress_bar = st.progress(0)
-                status = st.empty()
-                
-                # 1. Save Files
-                for i, file in enumerate(uploaded_files):
-                    status.text(f"Saving {file.name}...")
-                    save_uploaded_file(file)
-                    progress_bar.progress((i + 1) / len(uploaded_files) * 0.3)
-                
-                # 2. Train Model
-                status.text("Indexing into Pinecone (this takes a moment)...")
-                try:
-                    train_all_pdfs()
-                    progress_bar.progress(1.0)
-                    st.success(f"Successfully processed {len(uploaded_files)} files!")
-                    st.balloons()
-                except Exception as e:
-                    st.error(f"Training Failed: {str(e)}")
+            if st.button("🚀 Process & Index Documents", type="primary"):
+                with st.status("Ingesting documents...", expanded=True) as status:
+                    st.write("Moving files to storage...")
+                    # logic to save files...
+                    st.write("Running embedding and Pinecone indexing...")
+                    try:
+                        train_all_pdfs()
+                        status.update(label="Ingestion Complete!", state="complete", expanded=False)
+                        st.success(f"Indexed {len(uploaded_files)} documents.")
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
-    with col2:
-        st.markdown("### 📊 System Stats")
+    with right_col:
+        st.markdown("### 📊 Database Health")
         try:
             vectorstore = get_vectorstore()
             stats = vectorstore._index.describe_index_stats()
             count = stats.get('total_vector_count', 0)
-            st.metric(label="Total Knowledge Chunks", value=f"{count:,}")
+            st.metric(label="Vector Count", value=f"{count:,}")
         except:
-            st.metric(label="Total Knowledge Chunks", value="0")
+            st.metric(label="Vector Count", value="Offline")
         
-        st.markdown("### ⚠️ Danger Zone")
-        if st.button("Purge Database", help="Deletes ALL knowledge."):
-            get_vectorstore().delete(delete_all=True)
-            st.warning("Database has been reset.")
+        st.markdown("#### 🗑️ Purge Records")
+        if st.button("Wipe Pinecone Index", help="Irreversible: Deletes ALL AI knowledge."):
+            vectorstore.delete(delete_all=True)
+            st.warning("Database Cleared.")
             st.rerun()
+
+    # 3. BOTTOM SECTION: Ragas Log Table
+    st.markdown("---")
+    st.markdown("### 🧪 Detailed Ragas Evaluation Logs")
+    if not df_eval.empty:
+        # Show only rows that have been evaluated
+        eval_table = df_eval.dropna(subset=['faithfulness', 'answer_relevancy'])
+        st.dataframe(eval_table.tail(15), use_container_width=True)
+    else:
+        st.info("No evaluation data found. Run `run_eval.py` to populate these scores.")

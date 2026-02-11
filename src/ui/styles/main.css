@@ -1,0 +1,57 @@
+header, footer {visibility: hidden;}
+[data-testid="sidebar-button"], [data-testid="collapsedControl"] { display: none !important; }
+
+[data-testid="stSidebar"] { 
+    min-width: 280px !important; 
+    max-width: 280px !important; 
+    background-color: #F3B653;
+    margin-right: auto;  
+}
+
+.stApp { background-color: #0A0A0A; }
+
+.sidebar-top {
+    text-align: center;
+    width: 100%;
+}
+
+/* Better Message Bubbles */
+[data-testid="stChatMessage"] { border-radius: 15px; padding: 15px; margin-bottom: 15px; max-width: 80%; }
+
+[data-testid="stChatMessageAssistant"] { 
+    background-color: #1a1a1a !important; 
+    border-left: 5px solid #F0A52D !important; 
+    color: #eeeeee !important;
+    margin-right: auto; 
+}
+
+[data-testid="stChatMessageUser"] { 
+    background-color: #3d3d3d !important; 
+    border-right: 5px solid #fef3c7 !important; 
+    color: white !important;
+    margin-left: auto;
+}
+
+/* Increase text size in chat messages */
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li,
+[data-testid="stChatMessage"] span {
+    font-size: 1.1rem !important;
+    line-height: 1.6 !important;
+}
+
+/* Floating Chat Input Box */
+[data-testid="stChatInput"] { padding: 1.5rem; background-color: transparent !important; }
+[data-testid="stChatInput"] > div { 
+    border-radius: 30px !important; 
+    border: 1px solid #F0A52D !important; 
+    background-color: #1a1a1a !important; 
+}
+
+/* Increase text size in chat input */
+[data-testid="stChatInput"] textarea {
+    font-size: 1.1rem !important;
+}
+
+/* Sidebar Profile */
+.user-profile { padding: 12px; background-color: #1a1a1a; border-radius: 12px; color: white; position: fixed; bottom: 20px; width: 240px; }
