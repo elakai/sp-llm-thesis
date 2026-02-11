@@ -1,0 +1,29 @@
+header, footer { visibility: hidden; }
+
+.stApp { 
+    background: linear-gradient(to bottom, #1F1F1F, #F09F2D) !important; 
+    background-attachment: fixed; 
+}
+
+/* Center and scale Logo */
+.logo-container { display: flex; flex-direction: column; align-items: center; margin-top: 5vh; width: 100%; }
+.logo-image { width: 150px; filter: drop-shadow(0 15px 15px rgba(0,0,0,0.4)); transition: transform 0.3s ease; }
+.logo-image:hover { transform: scale(1.05); }
+.logo-title { font-size: 3.0rem; color: #fef3c7; font-weight: 600; text-align: center; margin-bottom: 10px; }
+
+/* Center the Tabs */
+[data-testid="stTabs"] { display: flex; justify-content: center; border: none !important; }
+[data-testid="stTab"] { color: #fef3c7 !important; }
+
+/* Responsive Form */
+[data-testid="stForm"] { 
+    background-color: #f59e0b !important; 
+    border-radius: 20px !important; 
+    padding: 40px !important; 
+    max-width: 500px !important; 
+    width: 90% !important; 
+    margin: 0 auto !important; 
+}
+
+div.stButton > button { width: 100% !important; background-color: #1a1a1a !important; color: white !important; font-weight: bold !important; border-radius: 10px; }
+div.stButton > button:hover { background-color: #fef3c7 !important; color: #1a1a1a !important; border: 1px solid #1a1a1a; }
