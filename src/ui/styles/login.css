@@ -88,3 +88,10 @@ div.stButton > button:hover { background-color: #fef3c7 !important; color: #1a1a
         max-width: 500px !important;
     }
 }
+
+/* Red error messages */
+[data-testid="stAlert"] {
+    background-color: #991b1b !important;
+    color: white !important;
+    border-radius: 15px !important;
+}

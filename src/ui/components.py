@@ -55,7 +55,9 @@ def render_login():
             password = st.text_input("Password", type="password")
             if st.form_submit_button("Login", use_container_width=True):
                 user = login_user(email, password)
-                if user:
+                if user == "UNVERIFIED":
+                    st.error("Please verify your email before logging in. Check your inbox for the confirmation link.")
+                elif user:
                     st.session_state["authenticated"] = True
                     st.session_state["user_id"] = user["email"]
                     st.session_state["role"] = user["role"]

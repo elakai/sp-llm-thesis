@@ -29,6 +29,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Load main styles immediately to prevent flash of unstyled content
+render_main_styles()
+
 # Initialize ALL your session variables exactly as you had them
 if "session_id" not in st.session_state: st.session_state["session_id"] = str(uuid.uuid4())
 if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
@@ -54,7 +57,6 @@ if not st.session_state["chat_history_loaded"]:
             st.session_state["chat_history"] = user_history
         st.session_state["chat_history_loaded"] = True
 
-render_main_styles()
 render_sidebar()
 
 # ─────────────────────────────────────────────────────────────────────────────
