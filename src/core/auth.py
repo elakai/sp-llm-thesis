@@ -17,62 +17,62 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Authentication Functions
+# Authentication Functions (Native Supabase Auth)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def login_user(email, password):
     """
-    Checks if email/password exists in the database.
-    Returns: User dictionary if valid, None if invalid.
+    Authenticates using Supabase Native Auth.
+    Returns: User Object (with Token) if valid, None if invalid.
     """
-
-    clean_email = email.strip() 
-    clean_password = password.strip()
     try:
-        # Query the 'users' table
-        response = supabase.table("users") \
-            .select("*") \
-            .eq("email", email) \
-            .eq("password", password) \
-            .execute()
-
-        # Check if we got a match
-        if response.data and len(response.data) > 0:
-            user = response.data[0]
+        # 🚀 This generates the JWT Token required for RLS
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        if response.user:
             return {
-                "id": user["id"],
-                "email": user["email"],
-                "role": user["role"],
-                "full_name": user.get("full_name", "Student")
+                "id": response.user.id,
+                "email": response.user.email,
+                "role": response.user.user_metadata.get("role", "student"),
+                "full_name": response.user.user_metadata.get("full_name", "Student")
             }
-        else:
-            return None
-            
     except Exception as e:
+        # Handle "Email not confirmed" specifically
+        if "Email not confirmed" in str(e):
+            print("⚠️ Login blocked: Email not verified.")
+            # You could raise a specific error here to show in the UI
+            return "UNVERIFIED"
+        
         print(f"Login Error: {e}")
         return None
 
 def register_user(email, password, full_name="Student"):
     """
-    Registers a new student.
-    Returns: True if successful, False if email already exists.
+    Registers a new student using Supabase Auth.
+    Automatically triggers the 'Confirm Email' process.
     """
     try:
-        # 1. Check if email already exists
-        check = supabase.table("users").select("email").eq("email", email).execute()
-        if check.data:
-            return False, "Email already exists."
-
-        # 2. Insert new user
-        new_user = {
+        # 🚀 This sends the confirmation email automatically
+        response = supabase.auth.sign_up({
             "email": email,
             "password": password,
-            "full_name": full_name,
-            "role": "student"  # Default role
-        }
+            "options": {
+                "data": {
+                    "full_name": full_name,
+                    "role": "student"
+                }
+            }
+        })
         
-        supabase.table("users").insert(new_user).execute()
-        return True, "Registration successful!"
-
+        # Check if registration was successful
+        if response.user:
+            if response.user.identities and len(response.user.identities) > 0:
+                return True, "Registration successful! Please check your email to verify."
+            else:
+                return False, "User already exists."
+                
     except Exception as e:
         return False, str(e)
