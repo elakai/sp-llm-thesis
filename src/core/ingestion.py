@@ -1,5 +1,5 @@
-#ingestion.py
 import os
+import re
 import shutil
 import fitz  # PyMuPDF
 from PIL import Image
@@ -41,11 +41,39 @@ def configure_tesseract():
 configure_tesseract()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Text Sanitization Logic (The "Cleaner")
+# ─────────────────────────────────────────────────────────────────────────────
+def clean_handbook_text(text: str) -> str:
+    """
+    Sanitizes raw PDF text to improve retrieval and LLM readability.
+    Crucial for Thesis Data Quality.
+    """
+    if not text: return ""
+
+    # 1. Fix broken hyphenation (e.g., "exam- ination" -> "examination")
+    text = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', text)
+    
+    # 2. Remove multiple spaces (e.g., "The   student" -> "The student")
+    text = re.sub(r'\s+', ' ', text)
+    
+    # 3. Fix "orphan" line breaks in the middle of sentences
+    # This keeps paragraphs together so the LLM understands the full context
+    text = re.sub(r'(?<!\.)\n(?!\n)', ' ', text)
+    
+    # 4. Remove weird artifacts often found in headers/footers
+    text = text.replace("..", ".").replace(" .", ".")
+    
+    # 5. Standardize bullet points
+    text = text.replace("•", "\n* ").replace("–", "-").replace("—", "-")
+    
+    return text.strip()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PDF Loading Logic (Updated for Page Metadata)
 # ─────────────────────────────────────────────────────────────────────────────
 def load_pdf_pages(path: str, filename: str) -> List[Document]:
     """
-    Extracts text page-by-page and returns a list of Document objects.
+    Extracts text page-by-page, CLEANS it, and returns a list of Document objects.
     Each document contains the text of one page + metadata (page number).
     """
     doc = fitz.open(path)
@@ -55,10 +83,11 @@ def load_pdf_pages(path: str, filename: str) -> List[Document]:
     doc_type = "handbook" if "handbook" in filename.lower() else "general"
 
     for page_num, page in enumerate(doc):
+        # A. Extract Raw Text
         page_text = page.get_text()
         char_count = len(page_text.strip())
 
-        # Fallback to OCR if page looks scanned (< 100 chars)
+        # B. Fallback to OCR if page looks scanned (< 100 chars)
         if char_count < 100:
             try:
                 pix = page.get_pixmap(dpi=300)
@@ -68,10 +97,13 @@ def load_pdf_pages(path: str, filename: str) -> List[Document]:
             except Exception:
                 page_text = "" # Graceful failure
 
-        # Create a Document for THIS specific page
-        if page_text.strip():
+        # 🚀 C. APPLY THE CLEANER (The Critical Update)
+        cleaned_text = clean_handbook_text(page_text)
+
+        # D. Create Document only if valuable text remains
+        if len(cleaned_text) > 50:
             page_docs.append(Document(
-                page_content=page_text,
+                page_content=cleaned_text,
                 metadata={
                     "source": filename,
                     "page": page_num + 1,  # Human-readable page number (starts at 1)
@@ -101,13 +133,14 @@ def train_all_pdfs():
                 # Load pages individually to preserve page numbers
                 file_pages = load_pdf_pages(full_path, filename)
                 all_raw_docs.extend(file_pages)
-                print(f"Loaded {len(file_pages)} pages from {filename}")
+                print(f"✅ Loaded & Cleaned {len(file_pages)} pages from {filename}")
             except Exception as e:
-                print(f"Failed to load {filename}: {e}")
+                print(f"❌ Failed to load {filename}: {e}")
                 continue
 
     if not all_raw_docs:
-        raise ValueError("No valid PDFs with extractable text found.")
+        print("⚠️ No valid text found in PDFs. Check if they are image-only and Tesseract is installed.")
+        return False
 
     print(f"Total pages processed: {len(all_raw_docs)}")
 
@@ -115,14 +148,19 @@ def train_all_pdfs():
     # The splitter will now split large pages but KEEP the 'page' metadata
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
-        chunk_overlap=250
+        chunk_overlap=250,
+        separators=["\n\n", "\n", ".", " ", ""] # Prioritize paragraph breaks
     )
     chunks = text_splitter.split_documents(all_raw_docs)
     print(f"Created {len(chunks)} chunks")
 
     # 2. Save to Pinecone
-    vectorstore = get_vectorstore()
-    vectorstore.add_documents(chunks)
-    print(f"Successfully added {len(chunks)} chunks to Pinecone")
-    
-    return True
+    try:
+        vectorstore = get_vectorstore()
+        # Adding in batches is often safer, but basic add is fine for now
+        vectorstore.add_documents(chunks)
+        print(f"🚀 Successfully indexed {len(chunks)} chunks into Pinecone")
+        return True
+    except Exception as e:
+        print(f"❌ Vector Database Error: {e}")
+        return False
