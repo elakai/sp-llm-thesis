@@ -14,7 +14,6 @@ from src.core.guardrails import verify_answer
 # ─────────────────────────────────────────────────────────────────────────────
 # Global Reranker (Load once)
 # ─────────────────────────────────────────────────────────────────────────────
-# Using L-6 for balance between speed and accuracy
 reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,24 +21,20 @@ reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 # ─────────────────────────────────────────────────────────────────────────────
 
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
-    """
-    Converts Streamlit's session state messages into a string for the LLM prompt.
-    Truncates history to last 4 turns to avoid token overflow.
-    """
+    """Converts Streamlit's session state messages into a string."""
     formatted_history = []
-    # Skip the greeting; keep last 4 exchanges (8 messages) max
     history_to_process = messages[1:] if len(messages) > 1 else []
     
     for msg in history_to_process[-8:]: 
         role = "User" if msg["role"] == "user" else "Assistant"
+        # Escape curly braces for f-string safety
         content = msg["content"].replace("{", "{{").replace("}", "}}")
         formatted_history.append(f"{role}: {content}")
     
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
 def rewrite_query(query: str) -> str:
-    """Uses LLM to rewrite the query. Returns original if LLM fails."""
-    # SKIP rewrite for very short queries to save time
+    """Uses LLM to rewrite the query. Returns original if short or fails."""
     if len(query.split()) < 5:
         return query
         
@@ -63,7 +58,7 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
 
         ranked = []
         for i, doc in enumerate(docs):
-            # Weighted score: 70% BM25 + 30% Semantic Rank
+            # Weighted score: Boost keyword matches (BM25) to handle typos better
             position_score = (len(docs) - i) * 0.05 
             final_score = bm25_scores[i] + position_score
             ranked.append((final_score, doc))
@@ -72,10 +67,10 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
         return [doc for _, doc in ranked[:15]]
     except Exception as e:
         print(f"Hybrid rerank failed: {e}")
-        return docs[:10] # Fallback to raw semantic results
+        return docs[:10]
 
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
-    """Groups by filename and keeps ALL chunks that belong to the latest version."""
+    """Groups by filename and keeps chunks from the latest version."""
     if not docs: return []
 
     grouped: Dict[str, List[Document]] = {}
@@ -96,19 +91,14 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
-    """
-    Generator function that yields chunks of text for streaming.
-    """
+    start_time = time.time()
+    retrieval_start = time.time()
     
     # 🚀 STEP 1: SMART ROUTER
     intent = route_query(query)
     
     if intent == "greeting":
-        greetings = [
-            "Hello! I am AXIsstant. How can I help you with the CSEA Handbook today?",
-            "Hi there! I'm ready to answer your questions about university policies.",
-            "Greetings! Feel free to ask me about uniforms, grading, or curriculum."
-        ]
+        greetings = ["Hello! I am AXIsstant. How can I help you today?", "Hi! I'm ready to answer handbook questions."]
         response = random.choice(greetings)
         for word in response.split():
             yield word + " "
@@ -116,32 +106,27 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
         return
 
     if intent == "off_topic":
-        msg = "I am designed to answer questions about the CSEA Student Handbook... I cannot help with general topics."
+        msg = "I am designed for CSEA Student Handbook questions only."
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
         return
 
-    # 🚀 STEP 2: FAST TRACK DECOMPOSITION
-    # If query is short (< 15 words) and simple, SKIP decomposition.
-    is_complex = len(query.split()) > 15 or " and " in query or "?" in query.split()[-1] and len(query.split()) > 10
-    
+    # 🚀 STEP 2: DECOMPOSITION
+    is_complex = len(query.split()) > 15 or " and " in query
     sub_queries = [query]
     if is_complex:
         try:
             sub_queries = decompose_query(query)
-            if len(sub_queries) > 1:
-                # Log to terminal (hidden from chat UI)
-                print(f"\n🔄 **Complex Query Detected:** Splitting into {len(sub_queries)} searches...")
         except:
             sub_queries = [query]
 
     # 🚀 STEP 3: PARALLEL RETRIEVAL
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 8}) # Reduced K for speed
+    # Increased 'k' to 12 to ensure better recall for reranking
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 12})
     all_docs = []
 
-    # Run searches in parallel threads
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(retriever.invoke, sub_queries))
     
@@ -149,81 +134,60 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
         all_docs.extend(res)
 
     if not all_docs:
-        yield "I couldn't find any information about that in the uploaded documents."
+        yield "I couldn't find any information about that in the documents."
         return
 
     # 🚀 STEP 4: DEDUPLICATION & RERANKING
-    unique_docs = {}
-    for doc in all_docs:
-        key = f"{doc.metadata.get('source')}_{doc.metadata.get('page')}"
-        if key not in unique_docs:
-            unique_docs[key] = doc
+    # Deduplicate by content to prevent identical chunks from eating up context space
+    unique_docs_map = {hash(d.page_content): d for d in all_docs}
+    latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
-    semantic_results = list(unique_docs.values())
-
-    # Filter Latest
-    latest_per_source = prefer_latest_per_source(semantic_results)
-    
-    # Rewrite query for better matching (only if necessary)
     rewritten_query = rewrite_query(query) 
-
-    # Hybrid Rerank
     hybrid_results = hybrid_rerank(rewritten_query, latest_per_source)
 
-    # Cross-Encoder (The Heavy Lifter)
-    # OPTIMIZATION: Only rerank top 10 candidates instead of 20
     if hybrid_results:
         try:
-            top_candidates = hybrid_results[:10] 
-            pairs = [(rewritten_query, doc.page_content) for doc in top_candidates]
+            top_candidates = hybrid_results[:12] 
+            # Use original query for reranking to catch raw keyword similarities
+            pairs = [(query, doc.page_content) for doc in top_candidates]
             scores = reranker.predict(pairs)
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
-            if scores[sorted_indices[0]] < -8.0:
-                yield "I searched the handbook, but couldn't find a relevant answer to your specific question."
+            # 🛡️ RELAXED THRESHOLD: Changed from -8.0 to -15.0 to handle typos
+            if scores[sorted_indices[0]] < -15.0:
+                yield "I found some documents, but they didn't contain a specific answer to your question. I don't want to guess and give you wrong information."
                 return
 
-            top_reranked = [top_candidates[i] for i in sorted_indices[:6]] # Keep top 6
-        except:
-            top_reranked = hybrid_results[:5]
+            top_reranked = [top_candidates[i] for i in sorted_indices[:6]]
+        except Exception as e:
+            print(f"Reranking failed: {e}")
+            top_reranked = hybrid_results[:6]
     else:
         top_reranked = []
 
-    # 4. Build Context
+    # 🚀 STEP 5: BUILD CONTEXT
     context_pieces = []
-    total_chars = 0
-    limit = 3000 # Reduced limit slightly for speed
-    
     for doc in top_reranked:
         source = doc.metadata.get("source", "Unknown")
-        page_raw = doc.metadata.get("page", "?")
-        try:
-            page = int(float(page_raw))
-        except:
-            page = page_raw
-
+        page = doc.metadata.get("page", "?")
         content = doc.page_content.replace("\n", " ") 
-        entry = f"[[Source: {source} | Page: {page}]]\n{content}"
-        
-        if total_chars + len(entry) > limit:
-            break 
-        context_pieces.append(entry)
-        total_chars += len(entry)
+        context_pieces.append(f"[[Source: {source} | Page: {page}]]\n{content}")
 
     context = "\n\n".join(context_pieces)
     history_text = format_chat_history(chat_history_list)
+    
     st.session_state["last_retrieved_context"] = context
+    retrieval_time = time.time() - retrieval_start
 
-
-# 5. Generate Response (Enhanced Spacing Prompt)
+    # 🚀 STEP 6: GENERATE
+    gen_start = time.time()
     prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University. 
-Provide a clear, highly-readable response based ONLY on the context.
+Provide a clear, highly-readable response based ONLY on the context. If the information isn't in the context, say you don't know.
 
 **STRICT MARKDOWN RULES:**
-- Use `###` for headers. You MUST put TWO blank lines before every header.
-- Every bullet point `*` MUST be on its own line.
-- Put a BLANK LINE between every paragraph.
-- Use **Bold** for grades, rules, or key terms.
+1. Use '###' for headers and ALWAYS put a blank line above them.
+2. Every bullet point must start on a new line.
+3. Use double asterisks **like this** for bolding.
 
 **Context:**
 {context}
@@ -238,21 +202,22 @@ Provide a clear, highly-readable response based ONLY on the context.
     llm = get_llm()
 
     try:
-        # A. Generate the FULL answer silently first
         full_answer = llm.invoke(prompt).content
-        
-        # B. Verify it (Guardrails)
         verified_answer = verify_answer(query, context, full_answer)
-        
-        # 🚀 C. THE FORMAT-FIXER (The Nuclear Option)
-        # We manually force double newlines before headers and bullets 
-        # to ensure Streamlit renders them as a clean list.
-        formatted_answer = verified_answer.replace("### ", "\n\n### ").replace("* ", "\n\n* ")
-        # Ensure citations start on a new line
-        formatted_answer = formatted_answer.replace("(Source:", "\n\n(Source:")
 
-        # D. Now Stream the Verified & Formatted Answer
-        # We use .split(" ") instead of .split() to preserve those newlines
+        # Post-process for UI readability
+        formatted_answer = verified_answer.replace("### ", "\n\n### ").replace("* ", "\n* ")
+
+        gen_time = time.time() - gen_start 
+        total_time = time.time() - start_time
+
+        # Update metrics for your logging
+        st.session_state["performance_metrics"] = {
+            "retrieval_latency": retrieval_time,
+            "generation_latency": gen_time,
+            "total_latency": total_time
+        }
+        
         for word in formatted_answer.split(" "):
             yield word + " "
             time.sleep(0.01) 

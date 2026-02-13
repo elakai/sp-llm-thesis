@@ -161,12 +161,21 @@ else:
                 # Display the response
                 st.markdown(response)
                 current_context = st.session_state.get("last_retrieved_context", "")
-                # 🚀 AUTO-LOG to Supabase (FIXED ARGUMENTS)
+                performance_metrics = st.session_state.get("performance_metrics", {})
+                
+                # 🚀 AUTO-LOG to Supabase (Updated with Performance Data)
                 user_email = st.session_state.get("user_id", "Guest")
                 session_id = st.session_state.get("session_id")
                 
-                # This line was causing the error - now fixed!
-                log_conversation(query, response, user_email, session_id, current_context)
+                # Passing metrics allows you to build the performance charts for your thesis
+                log_conversation(
+                    query=query, 
+                    response=response, 
+                    user_email=user_email, 
+                    session_id=session_id, 
+                    context=current_context,
+                    metrics=performance_metrics
+                )
 
             except Exception as e:
                 response = f"⚠️ Backend Error: {str(e)}"
@@ -177,7 +186,7 @@ else:
             st.markdown(f"<span class='timestamp'>{response_timestamp}</span>", unsafe_allow_html=True)
             st.session_state.messages.append({"role": "assistant", "content": response, "timestamp": response_timestamp})
             
-            # 4. Update History List
+            # 4. Update History List (UI persistence)
             if st.session_state.get("active_convo_idx") is not None:
                 idx = st.session_state["active_convo_idx"]
                 if 0 <= idx < len(st.session_state.get("chat_history", [])):
