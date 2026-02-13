@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import uuid
+from datetime import datetime
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. PATH SETUP (CRITICAL: Must be at the top)
@@ -84,17 +85,31 @@ elif st.session_state["view"] == "history":
                     role_icon = "🐙" if msg["role"] == "assistant" else "👤"
                     st.markdown(f"**{role_icon} {msg['role'].title()}:** {msg['content']}")
                 
-                # Button to load this conversation
-                if st.button("📂 Continue this chat", key=f"load_{i}"):
-                    actual_idx = len(st.session_state["chat_history"]) - 1 - i
-                    st.session_state["messages"] = conv.copy()
-                    st.session_state["active_convo_idx"] = actual_idx
-                    
-                    # 🚀 Generate NEW Session ID when reloading old chats so we don't mix logs
-                    st.session_state["session_id"] = str(uuid.uuid4())
-                    
-                    st.session_state["view"] = "chat"
-                    st.rerun()
+                # Buttons row
+                col1, col2 = st.columns(2)
+                actual_idx = len(st.session_state["chat_history"]) - 1 - i
+                
+                with col1:
+                    # Button to load this conversation
+                    if st.button("📂 Continue", key=f"load_{i}"):
+                        st.session_state["messages"] = conv.copy()
+                        st.session_state["active_convo_idx"] = actual_idx
+                        
+                        # 🚀 Generate NEW Session ID when reloading old chats so we don't mix logs
+                        st.session_state["session_id"] = str(uuid.uuid4())
+                        
+                        st.session_state["view"] = "chat"
+                        st.rerun()
+                
+                with col2:
+                    # Button to delete this conversation
+                    if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
+                        st.session_state["chat_history"].pop(actual_idx)
+                        # Reset active conversation if we deleted it
+                        if st.session_state.get("active_convo_idx") == actual_idx:
+                            st.session_state["active_convo_idx"] = None
+                            st.session_state["messages"] = []
+                        st.rerun()
 
 # --- OPTION C: MAIN CHAT VIEW ---
 else:
@@ -109,29 +124,42 @@ else:
         avatar = "assets/kraken_logo.png" if message["role"] == "assistant" else None
         with st.chat_message(message["role"], avatar=avatar):
             st.markdown(message["content"])
+            if "timestamp" in message:
+                st.markdown(f"<span class='timestamp'>{message['timestamp']}</span>", unsafe_allow_html=True)
 
     # Handle User Input
     if query := st.chat_input("Ask AXIsstant about rules, exemptions, or curriculum..."):
         
         # 1. Append User Message
-        st.session_state.messages.append({"role": "user", "content": query})
+        timestamp = datetime.now().strftime("%I:%M %p")
+        st.session_state.messages.append({"role": "user", "content": query, "timestamp": timestamp})
         with st.chat_message("user"):
             st.markdown(query)
+            st.markdown(f"<span class='timestamp'>{timestamp}</span>", unsafe_allow_html=True)
         
         # 2. Generate Response (STREAMING + LOGGING)
         with st.chat_message("assistant", avatar="assets/kraken_logo.png"):
             try:
-                # Get the generator
-                stream = generate_response(
-                    query=query, 
-                    chat_history_list=st.session_state.messages
-                )
+                # Show thinking status while generating
+                with st.status("🧠 Thinking...", expanded=True) as status:
+                    st.write("Processing your question...")
+                    
+                    # Get the generator
+                    stream = generate_response(
+                        query=query, 
+                        chat_history_list=st.session_state.messages
+                    )
+                    
+                    # Collect the stream response
+                    response_chunks = []
+                    for chunk in stream:
+                        response_chunks.append(chunk)
+                    response = "".join(response_chunks)
+                    
+                    status.update(label="✅ Done!", state="complete", expanded=False)
                 
-                # Write Stream (This consumes the generator)
-                response = st.write_stream(stream)
-                
-                # 🚀 FETCH BACKEND METRICS & CONTEXT
-                # These were set inside generate_response during the LLM call
+                # Display the response
+                st.markdown(response)
                 current_context = st.session_state.get("last_retrieved_context", "")
                 performance_metrics = st.session_state.get("performance_metrics", {})
                 
@@ -154,7 +182,9 @@ else:
                 st.error(response)
             
             # 3. Update Session State
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            response_timestamp = datetime.now().strftime("%I:%M %p")
+            st.markdown(f"<span class='timestamp'>{response_timestamp}</span>", unsafe_allow_html=True)
+            st.session_state.messages.append({"role": "assistant", "content": response, "timestamp": response_timestamp})
             
             # 4. Update History List (UI persistence)
             if st.session_state.get("active_convo_idx") is not None:
