@@ -2,6 +2,7 @@ streamlit
 langchain-community
 langchain-core
 langchain-huggingface
+langchain-google-genai
 langchain-groq
 langchain-chroma
 langchain-pinecone
