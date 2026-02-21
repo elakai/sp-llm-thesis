@@ -1,5 +1,13 @@
 header, footer {visibility: hidden;}
-[data-testid="sidebar-button"], [data-testid="collapsedControl"] { display: none !important; }
+[data-testid="sidebar-button"], 
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+button[kind="header"],
+[data-testid="baseButton-header"],
+.stSidebarCollapsedControl { 
+    display: none !important; 
+    visibility: hidden !important;
+}
 
 [data-testid="stSidebar"] { 
     min-width: 280px !important; 
