@@ -17,33 +17,53 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Authentication Functions (Native Supabase Auth)
+# Authentication Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 def login_user(email, password):
     """
-    Authenticates using Supabase Native Auth.
-    Returns: User Object (with Token) if valid, None if invalid.
+    Authenticates via Supabase Auth, then IMMEDIATELY fetches the 'role' 
+    from the 'public.users' table to ensure real-time accuracy.
     """
     try:
-        # 🚀 This generates the JWT Token required for RLS
+        # 1. Verify Credentials (Login)
         response = supabase.auth.sign_in_with_password({
             "email": email,
             "password": password
         })
         
         if response.user:
+            user_id = response.user.id
+            
+            # 2. 🚀 SOURCE OF TRUTH: Query public.users directly
+            # We ignore metadata snapshots and go straight to the live database.
+            try:
+                profile = supabase.table("users") \
+                    .select("role, full_name") \
+                    .eq("id", user_id) \
+                    .single() \
+                    .execute()
+                
+                # If query succeeds, use that data.
+                # If the row is missing (rare edge case), these default to None.
+                db_role = profile.data.get("role")
+                db_name = profile.data.get("full_name")
+                
+            except Exception:
+                # If the query fails entirely (e.g., row deleted), safer to be a student.
+                db_role = "student"
+                db_name = "Student"
+
             return {
-                "id": response.user.id,
+                "id": user_id,
                 "email": response.user.email,
-                "role": response.user.user_metadata.get("role", "student"),
-                "full_name": response.user.user_metadata.get("full_name", "Student")
+                "role": db_role if db_role else "student",     # Live Role
+                "full_name": db_name if db_name else "Student" # Live Name
             }
+            
     except Exception as e:
-        # Handle "Email not confirmed" specifically
         if "Email not confirmed" in str(e):
             print("⚠️ Login blocked: Email not verified.")
-            # You could raise a specific error here to show in the UI
             return "UNVERIFIED"
         
         print(f"Login Error: {e}")
@@ -51,24 +71,25 @@ def login_user(email, password):
 
 def register_user(email, password, full_name="Student"):
     """
-    Registers a new student using Supabase Auth.
-    Automatically triggers the 'Confirm Email' process.
+    Registers a new user. The Postgres Trigger will automatically 
+    copy this user to 'public.users' with the default 'student' role.
     """
     try:
-        # 🚀 This sends the confirmation email automatically
         response = supabase.auth.sign_up({
             "email": email,
             "password": password,
             "options": {
                 "data": {
                     "full_name": full_name,
-                    "role": "student"
+                    # We still send this for the initial Trigger, 
+                    # but login_user relies on the table after that.
+                    "role": "student" 
                 }
             }
         })
         
-        # Check if registration was successful
         if response.user:
+            # Check if identity exists (prevents duplicate error masking)
             if response.user.identities and len(response.user.identities) > 0:
                 return True, "Registration successful! Please check your email to verify."
             else:

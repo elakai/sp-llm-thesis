@@ -1,166 +1,196 @@
 import os
 import re
-import shutil
 import fitz  # PyMuPDF
+import pdfplumber
+import pandas as pd
 from PIL import Image
-import io
 import pytesseract
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import DOCS_FOLDER, get_vectorstore
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Intelligent Tesseract Path Configuration
+# 1. THE VISUAL RECONSTRUCTION ALGORITHM (No AI, Pure Math)
 # ─────────────────────────────────────────────────────────────────────────────
-def configure_tesseract():
+def extract_text_by_visual_layout(pdf_path: str) -> str:
     """
-    Automatically detects Tesseract binary location.
-    Prioritizes system PATH, then falls back to known Windows paths.
+    Extracts text by clustering words that are visually on the same line.
+    Fixes 'floating column' issues in curriculum PDFs without using AI.
     """
-    tesseract_path = shutil.which("tesseract")
+    full_text = ""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                # 1. Extract all words with their coordinates (x, y, width, height)
+                words = page.extract_words(
+                    x_tolerance=3, 
+                    y_tolerance=3, 
+                    keep_blank_chars=False
+                )
+                
+                # 2. Group words into lines based on "top" Y-coordinate
+                # We use a tolerance of 5 pixels to handle slight misalignments
+                lines: Dict[int, List[dict]] = {}
+                Y_TOLERANCE = 5 
+                
+                for word in words:
+                    found_line = False
+                    # Check if this word belongs to an existing line cluster
+                    for y_coord in lines.keys():
+                        if abs(word['top'] - y_coord) < Y_TOLERANCE:
+                            lines[y_coord].append(word)
+                            found_line = True
+                            break
+                    
+                    if not found_line:
+                        lines[word['top']] = [word]
 
-    if not tesseract_path and os.name == 'nt':
-        possible_paths = [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe")
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                tesseract_path = path
-                break
+                # 3. Sort lines from top to bottom
+                sorted_y_coords = sorted(lines.keys())
+                
+                # 4. Construct the text page-by-page
+                full_text += f"\n--- Page {page.page_number} ---\n"
+                for y in sorted_y_coords:
+                    # Sort words in this line from left to right (x0)
+                    line_words = sorted(lines[y], key=lambda w: w['x0'])
+                    
+                    # Reconstruct the string with intelligent spacing
+                    line_str = ""
+                    last_x1 = 0
+                    for w in line_words:
+                        # If gap between words is large (>20px), insert a " | " separator
+                        # This simulates a table column break
+                        if last_x1 > 0 and (w['x0'] - last_x1) > 20:
+                            line_str += " | "
+                        elif last_x1 > 0:
+                            line_str += " "
+                        
+                        line_str += w['text']
+                        last_x1 = w['x1']
+                    
+                    full_text += line_str + "\n"
+                    
+    except Exception as e:
+        print(f"   ⚠️ Visual Layout Extract Error: {e}")
+        return ""
 
-    if tesseract_path:
-        pytesseract.pytesseract.tesseract_cmd = tesseract_path
-    else:
-        print("⚠️ Tesseract not found! OCR will fail if needed.")
-
-# Run configuration on import
-configure_tesseract()
+    return full_text
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Text Sanitization Logic (The "Cleaner")
+# 2. STANDARD LOADERS
 # ─────────────────────────────────────────────────────────────────────────────
-def clean_handbook_text(text: str) -> str:
-    """
-    Sanitizes raw PDF text to improve retrieval and LLM readability.
-    Crucial for Thesis Data Quality.
-    """
+def clean_text(text: str) -> str:
+    """Basic cleanup."""
     if not text: return ""
-
-    # 1. Fix broken hyphenation (e.g., "exam- ination" -> "examination")
-    text = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', text)
-    
-    # 2. Remove multiple spaces (e.g., "The   student" -> "The student")
-    text = re.sub(r'\s+', ' ', text)
-    
-    # 3. Fix "orphan" line breaks in the middle of sentences
-    # This keeps paragraphs together so the LLM understands the full context
-    text = re.sub(r'(?<!\.)\n(?!\n)', ' ', text)
-    
-    # 4. Remove weird artifacts often found in headers/footers
-    text = text.replace("..", ".").replace(" .", ".")
-    
-    # 5. Standardize bullet points
-    text = text.replace("•", "\n* ").replace("–", "-").replace("—", "-")
-    
+    text = re.sub(r'\n\s*\n', '\n\n', text) # Max 2 newlines
     return text.strip()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PDF Loading Logic (Updated for Page Metadata)
-# ─────────────────────────────────────────────────────────────────────────────
-def load_pdf_pages(path: str, filename: str) -> List[Document]:
+def load_pdf(path: str, filename: str) -> List[Document]:
     """
-    Extracts text page-by-page, CLEANS it, and returns a list of Document objects.
-    Each document contains the text of one page + metadata (page number).
+    Uses the Visual Layout extractor. 
+    Falls back to OCR only if the PDF is scanned (image-only).
     """
-    doc = fitz.open(path)
-    page_docs = []
+    print(f"   📖 Reading {filename} (Visual Layout Mode)...")
     
-    timestamp = int(datetime.utcnow().timestamp())
-    doc_type = "handbook" if "handbook" in filename.lower() else "general"
-
-    for page_num, page in enumerate(doc):
-        # A. Extract Raw Text
-        page_text = page.get_text()
-        char_count = len(page_text.strip())
-
-        # B. Fallback to OCR if page looks scanned (< 100 chars)
-        if char_count < 100:
-            try:
-                pix = page.get_pixmap(dpi=300)
+    # Try Visual Extraction first (Fastest & Best for Digital PDFs)
+    text_content = extract_text_by_visual_layout(path)
+    
+    # If empty, it's likely a scan -> Use standard OCR
+    if len(text_content) < 50:
+        print(f"   ⚠️ Scanned PDF detected. Switching to OCR...")
+        try:
+            doc = fitz.open(path)
+            ocr_text = ""
+            for page in doc:
+                # 150 DPI is a good balance of speed/accuracy for OCR
+                pix = page.get_pixmap(dpi=150)
                 img = Image.open(io.BytesIO(pix.tobytes()))
-                # Only runs if Tesseract is configured
-                page_text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6')
-            except Exception:
-                page_text = "" # Graceful failure
+                # Ensure tesseract is in PATH or set it in code
+                ocr_text += pytesseract.image_to_string(img) + "\n"
+            text_content = ocr_text
+        except Exception as e:
+            print(f"   ❌ OCR Failed: {e}")
 
-        # 🚀 C. APPLY THE CLEANER (The Critical Update)
-        cleaned_text = clean_handbook_text(page_text)
+    cleaned = clean_text(text_content)
+    if len(cleaned) > 20:
+        return [Document(
+            page_content=cleaned, 
+            metadata={
+                "source": filename, 
+                "type": "pdf_visual", 
+                "uploaded_at": int(datetime.utcnow().timestamp())
+            }
+        )]
+    return []
 
-        # D. Create Document only if valuable text remains
-        if len(cleaned_text) > 50:
-            page_docs.append(Document(
-                page_content=cleaned_text,
-                metadata={
-                    "source": filename,
-                    "page": page_num + 1,  # Human-readable page number (starts at 1)
-                    "upload_timestamp": timestamp,
-                    "document_type": doc_type
-                }
-            ))
-
-    doc.close()
-    return page_docs
+def load_spreadsheet(path: str, filename: str, is_csv: bool = False) -> List[Document]:
+    docs = []
+    try:
+        df = pd.read_csv(path) if is_csv else pd.read_excel(path)
+        df.fillna("N/A", inplace=True)
+        text_rows = []
+        for _, row in df.iterrows():
+            text_rows.append(", ".join([f"{col}: {val}" for col, val in row.items()]))
+        docs.append(Document(
+            page_content="\n".join(text_rows),
+            metadata={"source": filename, "type": "table"}
+        ))
+    except Exception as e:
+        print(f"   ❌ Spreadsheet Error: {e}")
+    return docs
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Training / Ingestion Logic (Function Name MUST be 'train_all_pdfs')
+# 3. MAIN INGESTION LOOP
 # ─────────────────────────────────────────────────────────────────────────────
-def train_all_pdfs():
-    """Rebuild Pinecone vector store from all PDFs in DOCS_FOLDER."""
+def ingest_all_files():
     if not os.path.exists(DOCS_FOLDER):
-        raise FileNotFoundError(f"Folder not found: {DOCS_FOLDER}. Create it and add PDFs.")
-
-    all_raw_docs = []
-    print(f"Scanning {DOCS_FOLDER}...")
-
-    for filename in os.listdir(DOCS_FOLDER):
-        if filename.lower().endswith(".pdf"):
-            full_path = os.path.join(DOCS_FOLDER, filename)
-            try:
-                # Load pages individually to preserve page numbers
-                file_pages = load_pdf_pages(full_path, filename)
-                all_raw_docs.extend(file_pages)
-                print(f"✅ Loaded & Cleaned {len(file_pages)} pages from {filename}")
-            except Exception as e:
-                print(f"❌ Failed to load {filename}: {e}")
-                continue
-
-    if not all_raw_docs:
-        print("⚠️ No valid text found in PDFs. Check if they are image-only and Tesseract is installed.")
+        os.makedirs(DOCS_FOLDER)
         return False
 
-    print(f"Total pages processed: {len(all_raw_docs)}")
+    all_docs = []
+    print(f"📂 Scanning {DOCS_FOLDER}...")
+    files = [f for f in os.listdir(DOCS_FOLDER)]
 
-    # 1. Split Text (Respecting Page Boundaries)
-    # The splitter will now split large pages but KEEP the 'page' metadata
+    if not files:
+        print("⚠️ No files found.")
+        return False
+
+    for filename in files:
+        file_path = os.path.join(DOCS_FOLDER, filename)
+        ext = filename.lower().split('.')[-1]
+        
+        if ext == 'pdf':
+            all_docs.extend(load_pdf(file_path, filename))
+        elif ext in ['xlsx', 'xls']:
+            all_docs.extend(load_spreadsheet(file_path, filename, False))
+        elif ext == 'csv':
+            all_docs.extend(load_spreadsheet(file_path, filename, True))
+
+    if not all_docs:
+        print("❌ No text extracted.")
+        return False
+
+    # CHUNKING
+    print(f"🧩 Chunking {len(all_docs)} documents...")
+    # Use a larger chunk size to keep full curriculum tables together
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=250,
-        separators=["\n\n", "\n", ".", " ", ""] # Prioritize paragraph breaks
+        chunk_size=2000,
+        chunk_overlap=200
     )
-    chunks = text_splitter.split_documents(all_raw_docs)
-    print(f"Created {len(chunks)} chunks")
+    chunks = text_splitter.split_documents(all_docs)
 
-    # 2. Save to Pinecone
+    # UPLOAD
     try:
         vectorstore = get_vectorstore()
-        # Adding in batches is often safer, but basic add is fine for now
+        print(f"🚀 Uploading {len(chunks)} chunks to Pinecone...")
         vectorstore.add_documents(chunks)
-        print(f"🚀 Successfully indexed {len(chunks)} chunks into Pinecone")
+        print("✅ Ingestion Complete!")
         return True
     except Exception as e:
-        print(f"❌ Vector Database Error: {e}")
+        print(f"❌ Upload Failed: {e}")
         return False
+
+def train_all_pdfs():
+    return ingest_all_files()

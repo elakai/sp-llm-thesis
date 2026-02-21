@@ -1,42 +1,54 @@
 header, footer { visibility: hidden; }
-.stApp { background: linear-gradient(to bottom, #1F1F1F, #F09F2D) !important; background-attachment: fixed; }
+.stApp { 
+    background: linear-gradient(to bottom, #1F1F1F, #F09F2D) !important; 
+    background-attachment: fixed;
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+/* Main block container - prevent scrolling */
+.stApp > .main > .block-container {
+    max-height: 100vh;
+    overflow: hidden;
+    padding-top: 1rem !important;
+    padding-bottom: 1rem !important;
+}
 
 /* Center and scale Logo */
 .logo-container { 
     display: flex; 
     flex-direction: column; 
     align-items: center; 
-    margin-top: 5vh; 
+    margin-top: 2vh; 
     width: 100%; 
     padding: 0 15px;
     box-sizing: border-box;
 }
 .logo-image { 
-    width: 150px; 
-    max-width: 40vw;
-    filter: drop-shadow(0 15px 15px rgba(0,0,0,0.4)); 
+    width: 120px; 
+    filter: drop-shadow(0 10px 10px rgba(0,0,0,0.4)); 
     transition: transform 0.3s ease; 
 }
 .logo-image:hover { transform: scale(1.05); }
 .logo-title { 
-    font-size: clamp(1.5rem, 5vw, 3.0rem); 
+    font-size: clamp(1.3rem, 4vw, 2.5rem); 
     color: #fef3c7; 
     font-weight: 600; 
     text-align: center; 
-    margin-bottom: 10px;
+    margin-bottom: 5px;
     word-wrap: break-word;
 }
 
 /* Center the Tabs */
-[data-testid="stTabs"] { display: flex; justify-content: center; border: none !important; }
+[data-testid="stTabs"] { display: flex; justify-content: center; border: none !important; margin-top: 0 !important; }
 [data-testid="stTab"] { color: #fef3c7 !important; font-size: clamp(0.9rem, 2.5vw, 1rem); }
 
 /* Responsive Form */
 [data-testid="stForm"] { 
     background-color: #f59e0b !important; 
     border-radius: 20px !important; 
-    padding: clamp(20px, 5vw, 40px) !important; 
-    max-width: 500px !important; 
+    padding: clamp(15px, 3vw, 30px) !important; 
+    max-width: 450px !important; 
     width: 90% !important; 
     margin: 0 auto !important;
     box-sizing: border-box;
@@ -60,32 +72,32 @@ div.stButton > button:hover { background-color: #fef3c7 !important; color: #1a1a
 
 /* Mobile styles (max-width: 480px) */
 @media screen and (max-width: 480px) {
-    .logo-container { margin-top: 3vh; }
-    .logo-image { width: 100px; }
+    .logo-container { margin-top: 1vh; }
+    .logo-image { width: 80px; }
     [data-testid="stForm"] { 
         width: 95% !important; 
-        padding: 20px !important;
+        padding: 15px !important;
         border-radius: 15px !important;
     }
 }
 
 /* Tablet styles (481px - 768px) */
 @media screen and (min-width: 481px) and (max-width: 768px) {
-    .logo-container { margin-top: 4vh; }
-    .logo-image { width: 120px; }
+    .logo-container { margin-top: 2vh; }
+    .logo-image { width: 100px; }
     [data-testid="stForm"] { 
         width: 85% !important;
-        padding: 30px !important;
+        padding: 20px !important;
     }
 }
 
 /* Large screens (769px and up) */
 @media screen and (min-width: 769px) {
-    .logo-container { margin-top: 5vh; }
-    .logo-image { width: 150px; }
+    .logo-container { margin-top: 2vh; }
+    .logo-image { width: 120px; }
     [data-testid="stForm"] { 
         width: 90% !important;
-        max-width: 500px !important;
+        max-width: 450px !important;
     }
 }
 
