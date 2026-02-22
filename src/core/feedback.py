@@ -33,7 +33,7 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
             "query": query,
             "response": response,
             "context": safe_context,
-            "timestamp": datetime.utcnow().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
         }
 
         # 3. Add Metrics (if they exist)

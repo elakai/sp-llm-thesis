@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import fitz  # PyMuPDF
 import pdfplumber
@@ -11,6 +12,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import DOCS_FOLDER, get_vectorstore
 
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. THE VISUAL RECONSTRUCTION ALGORITHM (No AI, Pure Math)
 # ─────────────────────────────────────────────────────────────────────────────
