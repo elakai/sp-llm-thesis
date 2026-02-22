@@ -1,34 +1,102 @@
 import time
 import random 
+import numpy as np
 import streamlit as st
 import concurrent.futures
 from typing import List, Dict, Any, Tuple
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
-from src.config.settings import get_llm, get_vectorstore
+from src.config.settings import get_llm, get_vectorstore, get_embeddings
 from src.core.router import route_query   
 from src.core.decomposition import decompose_query
-# Note: I removed verify_answer temporarily to ensure it doesn't break the table formatting
-# from src.core.guardrails import verify_answer 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Global Reranker (Load once)
+# 0. GLOBALS: RERANKER & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 # We use a distinct model for reranking to ensure high accuracy
 reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper Functions
-# ─────────────────────────────────────────────────────────────────────────────
+# Global In-Memory Semantic Cache
+@st.cache_resource
+def get_semantic_cache() -> list:
+    return []
 
+GLOBAL_CACHE = get_semantic_cache()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. NEW: CONVERSATIONAL MEMORY & CACHING FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> str:
+    """
+    Rewrites the user's query into a standalone query using the chat history.
+    Example: "Who teaches it?" -> "Who teaches CENG424?"
+    """
+    history_to_process = chat_history_list[1:] if len(chat_history_list) > 1 else []
+    if not history_to_process:
+        return query
+        
+    history_text = format_chat_history(chat_history_list)
+    
+    prompt = f"""Given the following chat history and the user's latest question, formulate a standalone question that can be understood without the chat history. 
+    Do NOT answer the question. Just reformulate it if needed. If it doesn't need reformulating, return it exactly as is.
+
+    Chat History:
+    {history_text}
+
+    Latest Question: {query}
+    
+    Standalone Question:"""
+    
+    try:
+        llm = get_llm()
+        standalone_query = llm.invoke(prompt).content.strip()
+        print(f"🧠 Memory Rewrite: '{query}' ➔ '{standalone_query}'")
+        return standalone_query
+    except Exception as e:
+        print(f"⚠️ Contextualize Error: {e}")
+        return query
+
+def check_semantic_cache(query: str, threshold: float = 0.95) -> str:
+    """Checks if a highly similar query was answered recently."""
+    if not GLOBAL_CACHE: return None
+    
+    try:
+        emb_model = get_embeddings()
+        query_emb = np.array(emb_model.embed_query(query))
+        
+        for item in GLOBAL_CACHE:
+            cached_emb = item["embedding"]
+            sim = np.dot(query_emb, cached_emb) / (np.linalg.norm(query_emb) * np.linalg.norm(cached_emb))
+            if sim >= threshold:
+                print(f"⚡ Semantic Cache HIT! (Similarity: {sim:.2f})")
+                return item["response"]
+    except Exception as e:
+        print(f"Cache Error: {e}")
+    return None
+
+def add_to_cache(query: str, response: str):
+    """Saves the query and generated response to the local cache."""
+    try:
+        emb_model = get_embeddings()
+        query_emb = np.array(emb_model.embed_query(query))
+        GLOBAL_CACHE.append({
+            "embedding": query_emb, 
+            "response": response
+        })
+        if len(GLOBAL_CACHE) > 50:
+            GLOBAL_CACHE.pop(0)
+    except:
+        pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. HELPER FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
-    """Converts Streamlit's session state messages into a string."""
     formatted_history = []
-    # Skip the first message if it's a system prompt or empty
     history_to_process = messages[1:] if len(messages) > 1 else []
     
-    for msg in history_to_process[-6:]: # Keep last 6 turns for context
+    for msg in history_to_process[-6:]: 
         role = "User" if msg["role"] == "user" else "Assistant"
         content = msg["content"].replace("{", "{{").replace("}", "}}")
         formatted_history.append(f"{role}: {content}")
@@ -36,23 +104,17 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
 def rewrite_query(query: str) -> str:
-    """Uses LLM to rewrite the query. Returns original if short or fails."""
     if len(query.split()) < 4: return query
-        
     try:
         llm = get_llm()
-        # Simple prompt to make the query search-engine friendly
         prompt = f"Extract the core keywords for a vector search from this student question: {query}"
         return llm.invoke(prompt).content.strip() or query
     except Exception:
         return query
 
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
-    """Combines BM25 (keyword match) with Semantic Search results."""
     if not docs: return []
-
     try:
-        # BM25 scores (Keyword exact match)
         tokenized_docs = [doc.page_content.split() for doc in docs]
         bm25 = BM25Okapi(tokenized_docs)
         tokenized_query = query.lower().split()
@@ -60,22 +122,18 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
 
         ranked = []
         for i, doc in enumerate(docs):
-            # Hybrid Score = BM25 Score + (Vector Rank Weight)
-            # We give a slight boost to documents that appeared earlier in the Vector Search
             position_score = (len(docs) - i) * 0.05 
             final_score = bm25_scores[i] + position_score
             ranked.append((final_score, doc))
 
         ranked.sort(reverse=True, key=lambda x: x[0])
-        return [doc for _, doc in ranked[:15]] # Return top 15 candidates
+        return [doc for _, doc in ranked[:15]]
     except Exception as e:
         print(f"Hybrid rerank failed: {e}")
         return docs[:10]
 
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
-    """Deduplicates chunks, preferring the most recent upload."""
     if not docs: return []
-
     grouped: Dict[str, List[Document]] = {}
     for doc in docs:
         source = doc.metadata.get("source", "unknown")
@@ -83,28 +141,40 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 
     filtered_docs = []
     for source, group in grouped.items():
-        # Find the latest timestamp for this specific file
         latest_timestamp = max((d.metadata.get("uploaded_at", 0) for d in group), default=0)
-        # Keep only chunks from that version
         current_version_chunks = [d for d in group if d.metadata.get("uploaded_at", 0) == latest_timestamp]
         filtered_docs.extend(current_version_chunks)
-
     return filtered_docs
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main Retrieval Function
+# 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
-
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     start_time = time.time()
+    
+    # 🚀 STEP 0: CONVERSATIONAL MEMORY (Query Rewrite)
+    standalone_query = contextualize_query(query, chat_history_list)
+    
+    # 🚀 STEP 1: CHECK SEMANTIC CACHE
+    cached_answer = check_semantic_cache(standalone_query)
+    if cached_answer:
+        for word in cached_answer.split(" "):
+            yield word + " "
+            time.sleep(0.01)
+        st.session_state["performance_metrics"] = {
+            "retrieval_latency": 0.0,
+            "generation_latency": time.time() - start_time,
+            "total_latency": time.time() - start_time
+        }
+        return
+
     retrieval_start = time.time()
     
-    # 🚀 STEP 1: SMART ROUTER
-    # Identify if the user is just saying "Hi" or asking a real question
+    # 🚀 STEP 2: SMART ROUTER & METADATA DETECTION
     try:
-        intent = route_query(query)
+        intent, program_filters = route_query(standalone_query)
     except:
-        intent = "query" # Fallback
+        intent, program_filters = "search", None 
 
     if intent == "greeting":
         greetings = ["Hello! I am AXIsstant. How can I help you with the CSEA Handbook?", "Hi! I'm ready to answer your questions."]
@@ -121,18 +191,24 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
             time.sleep(0.02)
         return
 
-    # 🚀 STEP 2: DECOMPOSITION (Break down complex questions)
-    is_complex = len(query.split()) > 15 or " and " in query
-    sub_queries = [query]
+    # 🚀 STEP 3: DECOMPOSITION 
+    is_complex = len(standalone_query.split()) > 15 or " and " in standalone_query
+    sub_queries = [standalone_query]
     if is_complex:
         try:
-            sub_queries = decompose_query(query)
+            sub_queries = decompose_query(standalone_query)
         except:
             pass
 
-    # 🚀 STEP 3: PARALLEL RETRIEVAL
+    # 🚀 STEP 4: PARALLEL RETRIEVAL WITH FILTERS
     vectorstore = get_vectorstore()
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 15}) # Fetch more docs initially
+    
+    search_kwargs = {"k": 15}
+    if program_filters:
+        search_kwargs["filter"] = {"source": {"$in": program_filters}}
+        print(f"🎯 Pinecone Filter Applied: {program_filters}")
+
+    retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
     all_docs = []
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -145,36 +221,32 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
         yield "I checked the handbook, but I couldn't find any information about that."
         return
 
-    # 🚀 STEP 4: DEDUPLICATION & RERANKING
-    # Remove duplicates
+    # 🚀 STEP 5: DEDUPLICATION & RERANKING
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
-    # Rerank Logic
-    rewritten_query = rewrite_query(query) 
+    rewritten_query = rewrite_query(standalone_query) 
     hybrid_results = hybrid_rerank(rewritten_query, latest_per_source)
 
     if hybrid_results:
         try:
             top_candidates = hybrid_results[:10] 
-            # Cross-Encoder Rerank (The "Golden" Reranker)
-            pairs = [(query, doc.page_content) for doc in top_candidates]
+            pairs = [(standalone_query, doc.page_content) for doc in top_candidates]
             scores = reranker.predict(pairs)
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
-            # Filter low relevance (Threshold: -10.0 allows broader matches)
             if scores[sorted_indices[0]] < -10.0:
                 yield "I found some documents, but they didn't seem relevant to your specific question."
                 return
 
-            top_reranked = [top_candidates[i] for i in sorted_indices[:6]] # Keep top 6
+            top_reranked = [top_candidates[i] for i in sorted_indices[:6]] 
         except Exception as e:
             print(f"Reranking failed: {e}")
             top_reranked = hybrid_results[:6]
     else:
         top_reranked = []
 
-    # 🚀 STEP 5: BUILD CONTEXT
+    # 🚀 STEP 6: BUILD CONTEXT
     context_pieces = []
     for doc in top_reranked:
         source = doc.metadata.get("source", "Unknown")
@@ -187,15 +259,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     st.session_state["last_retrieved_context"] = context
     retrieval_time = time.time() - retrieval_start
 
-    # 🚀 STEP 6: GENERATE (THE FORMATTING SNOB)
+    # 🚀 STEP 7: GENERATE RESPONSE
     gen_start = time.time()
-    
-    # --- THIS IS THE NEW PROMPT THAT FIXES YOUR FORMATTING ---
     prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University. 
 Your goal is to provide accurate, strictly formatted answers based ONLY on the context provided.
 
 ### STRICT FORMATTING RULES (YOU MUST FOLLOW THESE):
-
 1. **USE TABLES FOR DATA**: 
    - If the user asks for a **Curriculum**, **Schedule**, **List of Grades**, or **Faculty List**, you MUST output a Markdown Table.
    - Example format:
@@ -222,32 +291,32 @@ Your goal is to provide accurate, strictly formatted answers based ONLY on the c
 **Chat History:**
 {history_text}
 
-**Question:** {query}
+**Question:** {standalone_query}
 
 **Answer:**"""
 
     llm = get_llm()
 
     try:
-        # We stream the response directly from the LLM to the UI
         full_response_buffer = ""
         for chunk in llm.stream(prompt):
             content = chunk.content
             if content:
                 full_response_buffer += content
                 yield content 
-                # Small sleep ensures the UI renders smoother tables
                 time.sleep(0.005) 
 
         gen_time = time.time() - gen_start 
         total_time = time.time() - start_time
 
-        # Update metrics
         st.session_state["performance_metrics"] = {
             "retrieval_latency": retrieval_time,
             "generation_latency": gen_time,
             "total_latency": total_time
         }
+        
+        # Save to semantic cache for future identical questions
+        add_to_cache(standalone_query, full_response_buffer)
             
     except Exception as e:
         yield f"⚠️ **API Error:** {str(e)}"
