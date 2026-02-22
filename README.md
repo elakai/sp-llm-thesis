@@ -60,13 +60,30 @@ streamlit
 langchain-community
 langchain-core
 langchain-huggingface
+langchain-google-genai
 langchain-groq
 langchain-chroma
+langchain-pinecone
 chromadb
-PyMuPDF
-pytesseract
+pinecone-client>=3.0.0
+python-dotenv
 pillow
 sentence-transformers
+easyocr
+pandas
+openpyxl
+pytesseract
+python-docx
+PyMuPDF
+rank_bm25
+supabase
+plotly 
+ragas 
+datasets
+pdfplumber
+nest-asyncio
+numpy
+langsmith
 ```
 
 ### 6. Add Documents
