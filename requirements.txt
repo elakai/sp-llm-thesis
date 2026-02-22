@@ -20,7 +20,9 @@ PyMuPDF
 rank_bm25
 supabase
 plotly 
-pandas
 ragas 
 datasets
 pdfplumber
+nest-asyncio
+numpy
+langsmith
