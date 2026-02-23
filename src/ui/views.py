@@ -1,5 +1,6 @@
 import streamlit as st
 import uuid
+import copy
 from datetime import datetime
 
 from src.core.retrieval import generate_response
@@ -31,7 +32,8 @@ def render_history_view():
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("📂 Continue", key=f"load_{i}"):
-                        st.session_state["messages"] = conv.copy()
+                        # Use deep copy to avoid reference issues
+                        st.session_state["messages"] = copy.deepcopy(conv)
                         st.session_state["active_convo_idx"] = actual_idx
                         st.session_state["session_id"] = str(uuid.uuid4())
                         st.session_state["view"] = "chat"
@@ -39,9 +41,15 @@ def render_history_view():
                 with col2:
                     if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
                         st.session_state["chat_history"].pop(actual_idx)
-                        if st.session_state.get("active_convo_idx") == actual_idx:
-                            st.session_state["active_convo_idx"] = None
-                            st.session_state["messages"] = []
+                        current_idx = st.session_state.get("active_convo_idx")
+                        if current_idx is not None:
+                            if current_idx == actual_idx:
+                                # Deleted the active conversation
+                                st.session_state["active_convo_idx"] = None
+                                st.session_state["messages"] = []
+                            elif current_idx > actual_idx:
+                                # Shift index down since we removed one before it
+                                st.session_state["active_convo_idx"] = current_idx - 1
                         st.rerun()
 
 
@@ -61,29 +69,66 @@ def render_chat_view():
     if not st.session_state.messages:
         st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
 
+    # Initialize feedback tracking if not exists
+    if "message_feedback" not in st.session_state:
+        st.session_state.message_feedback = {}
+
     # Display existing messages
     for idx, message in enumerate(st.session_state.messages):
-        avatar = "assets/kraken_logo.png" if message["role"] == "assistant" else None
-        with st.chat_message(message["role"], avatar=avatar):
+        role = message.get("role", "")
+        is_assistant = (role == "assistant")
+        avatar = "assets/kraken_logo.png" if is_assistant else None
+        
+        with st.chat_message(role, avatar=avatar):
             st.markdown(message["content"])
             if "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
-            # Show feedback buttons for assistant messages
-            if message["role"] == "assistant":
+            
+            # Feedback buttons - ONLY render if role is exactly "assistant"
+            if role == "assistant":
+                current_feedback = st.session_state.message_feedback.get(idx, None)
+                
                 col1, _ = st.columns([1, 4])
                 with col1:
                     sub1, sub2 = st.columns(2)
                     with sub1:
-                        if st.button("👍", key=f"g_{idx}"):
-                            # Get the previous user message as query
+                        if st.button("👍", key=f"g_{idx}", help="Helpful" if current_feedback != "helpful" else "Click to remove"):
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"))
-                            st.toast("Feedback recorded!")
+                            if current_feedback == "helpful":
+                                st.session_state.message_feedback[idx] = None
+                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"))
+                                st.toast("Feedback removed")
+                            else:
+                                st.session_state.message_feedback[idx] = "helpful"
+                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"))
+                                st.toast("Thanks for your feedback!", icon="✅")
+                            st.rerun()
                     with sub2:
-                        if st.button("👎", key=f"b_{idx}"):
+                        if st.button("👎", key=f"b_{idx}", help="Not helpful" if current_feedback != "not_helpful" else "Click to remove"):
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"))
-                            st.toast("We'll improve this answer.", icon="📝")
+                            if current_feedback == "not_helpful":
+                                st.session_state.message_feedback[idx] = None
+                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"))
+                                st.toast("Feedback removed")
+                            else:
+                                st.session_state.message_feedback[idx] = "not_helpful"
+                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"))
+                                st.toast("We'll improve this answer.", icon="📝")
+                            st.rerun()
+                
+                # Visual indicator for selected feedback
+                if current_feedback == "helpful":
+                    st.markdown("""
+                    <div class="feedback-indicator helpful">
+                        <span>✓</span> You found this helpful
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif current_feedback == "not_helpful":
+                    st.markdown("""
+                    <div class="feedback-indicator not-helpful">
+                        <span>✗</span> Marked for improvement
+                    </div>
+                    """, unsafe_allow_html=True)
 
     # Handle new user input
     if query := st.chat_input("Ask AXIsstant about rules, exemptions, or curriculum..."):
@@ -151,14 +196,21 @@ def _process_user_query(query: str):
         asst_ts = datetime.now().strftime("%I:%M %p")
         st.session_state.messages.append({"role": "assistant", "content": response, "timestamp": asst_ts})
         
-        # Update chat history
-        if st.session_state.get("active_convo_idx") is not None:
-            idx = st.session_state["active_convo_idx"]
-            if 0 <= idx < len(st.session_state["chat_history"]):
-                st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
-        elif len(st.session_state.messages) == 2:
-            st.session_state["chat_history"].append(st.session_state["messages"].copy())
-            st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
+        # Update chat history - handle both new and continued conversations
+        if "chat_history" not in st.session_state:
+            st.session_state["chat_history"] = []
+        
+        active_idx = st.session_state.get("active_convo_idx")
+        chat_history = st.session_state["chat_history"]
+        
+        # Validate active_idx is still valid
+        if active_idx is not None and isinstance(active_idx, int) and 0 <= active_idx < len(chat_history):
+            # Continuing an existing conversation - update it in place
+            chat_history[active_idx] = copy.deepcopy(st.session_state["messages"])
+        else:
+            # New conversation - add to history and set active index
+            chat_history.append(copy.deepcopy(st.session_state["messages"]))
+            st.session_state["active_convo_idx"] = len(chat_history) - 1
 
         # Rerun to cleanly display from session state with feedback buttons
         st.rerun()
