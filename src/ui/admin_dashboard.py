@@ -1,10 +1,16 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import os
+import time
+
 from src.config.settings import get_vectorstore
-from src.core.ingestion import ingest_all_files as train_all_pdfs
 from src.core.auth import supabase
+# Import the new backend functions
+from src.core.ingestion import (
+    ingest_all_files as train_all_pdfs, 
+    get_uploaded_files, 
+    delete_document
+)
 
 def fetch_eval_metrics():
     """Fetches Ragas scores and feedback for the analytics bar."""
@@ -17,8 +23,8 @@ def fetch_eval_metrics():
         return pd.DataFrame()
 
 def render_admin_view():
-    st.markdown("## 🛠️ Admin Control Center")
-    st.caption("Management tools for knowledge ingestion and AI performance evaluation.")
+    st.markdown("## 🛠️ Admin Control Center (Backend Test UI)")
+    st.caption("Temporary UI to test knowledge ingestion, deletion, and AI evaluation.")
     st.markdown("---")
 
     # 1. TOP BAR: Ragas Quality Metrics
@@ -48,10 +54,8 @@ def render_admin_view():
             if st.button("🚀 Process & Index Documents", type="primary"):
                 with st.status("Ingesting documents...", expanded=True) as status:
                     
-                    # 🛠️ STEP 1: SAVE FILES TO DISK (The Missing Link)
-                    st.write("📂 Saving uploaded files to 'data/' folder...")
-                    
-                    # Ensure this matches the folder your ingestion.py looks inside!
+                    # STEP 1: SAVE FILES TO DISK
+                    st.write("📂 Saving uploaded files to 'documents/' folder...")
                     TARGET_DIR = "documents" 
                     if not os.path.exists(TARGET_DIR):
                         os.makedirs(TARGET_DIR)
@@ -61,22 +65,62 @@ def render_admin_view():
                         with open(file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
                     
-                    # 🛠️ STEP 2: RUN INGESTION
+                    # STEP 2: RUN INGESTION
                     st.write("🧠 Running embedding and Pinecone indexing...")
                     try:
                         train_all_pdfs()
                         status.update(label="Ingestion Complete!", state="complete", expanded=False)
                         st.success(f"Successfully indexed {len(uploaded_files)} documents.")
-                        st.balloons()
+                        time.sleep(1)
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Ingestion Failed: {e}")
+
+       # ---------------------------------------------------------
+        # NEW BACKEND TEST: FILE MANAGEMENT LIST
+        # ---------------------------------------------------------
+        st.markdown("---")
+        st.markdown("### 🗃️ Manage Uploaded Documents")
+        st.write("Track active documents and their chunk distributions in Pinecone.")
+        
+        manifest = get_uploaded_files() # This now returns a dictionary
+        
+        if not manifest:
+            st.info("No documents found in the database ledger.")
+        else:
+            # Create table headers
+            col1, col2, col3, col4 = st.columns([3, 1, 2, 1])
+            with col1: st.markdown("**Filename**")
+            with col2: st.markdown("**Chunks**")
+            with col3: st.markdown("**Uploaded At**")
+            with col4: st.markdown("**Action**")
+            
+            st.divider()
+            
+            # Populate the table rows dynamically
+            for filename, data in manifest.items():
+                c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
+                with c1: 
+                    st.write(f"📄 `{filename}`")
+                with c2: 
+                    st.write(f"🧩 {data.get('chunks', 0)}")
+                with c3: 
+                    st.caption(f"{data.get('uploaded_at', 'Unknown')}")
+                with c4:
+                    if st.button("Delete", key=f"del_{filename}"):
+                        with st.spinner("Deleting..."):
+                            success, msg = delete_document(filename)
+                            if success:
+                                st.success(msg)
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error(msg)
 
     with right_col:
         st.markdown("### 📊 Database Health")
         try:
             vectorstore = get_vectorstore()
-            # Some versions of Pinecone/LangChain use slightly different stats calls
-            # Use a generic try/except to prevent UI crashes
             try:
                 stats = vectorstore._index.describe_index_stats()
                 count = stats.get('total_vector_count', 0)
@@ -93,6 +137,7 @@ def render_admin_view():
                 vectorstore = get_vectorstore()
                 vectorstore.delete(delete_all=True)
                 st.warning("Database Cleared.")
+                time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"Error clearing DB: {e}")
@@ -104,4 +149,4 @@ def render_admin_view():
         eval_table = df_eval.dropna(subset=['faithfulness', 'answer_relevancy'])
         st.dataframe(eval_table.tail(15), use_container_width=True)
     else:
-        st.info("No evaluation data found. Run `run_eval.py` to populate these scores.")
+        st.info("No evaluation data found in Supabase.")

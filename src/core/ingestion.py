@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import re
 import fitz  # PyMuPDF
 import pdfplumber
@@ -7,7 +8,9 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple # <-- Make sure Tuple is capitalized here
+from pinecone import Pinecone
+from src.config.settings import PINECONE_INDEX_NAME
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import DOCS_FOLDER, get_vectorstore
@@ -96,20 +99,21 @@ def load_pdf(path: str, filename: str) -> List[Document]:
     """
     print(f"   📖 Reading {filename} (Visual Layout Mode)...")
     
-    # Try Visual Extraction first (Fastest & Best for Digital PDFs)
     text_content = extract_text_by_visual_layout(path)
     
-    # If empty, it's likely a scan -> Use standard OCR
-    if len(text_content) < 50:
-        print(f"   ⚠️ Scanned PDF detected. Switching to OCR...")
+    # NEW: Remove our injected page headers before checking length
+    real_text = re.sub(r'--- Page \d+ ---', '', text_content).strip()
+    
+    # If there are fewer than 100 actual characters, it's a scanned image.
+    if len(real_text) < 100:
+        print(f"   ⚠️ Scanned PDF detected. Switching to Tesseract OCR... This will take a while.")
         try:
             doc = fitz.open(path)
             ocr_text = ""
             for page in doc:
-                # 150 DPI is a good balance of speed/accuracy for OCR
                 pix = page.get_pixmap(dpi=150)
                 img = Image.open(io.BytesIO(pix.tobytes()))
-                # Ensure tesseract is in PATH or set it in code
+                ocr_text += f"\n--- Page {page.number + 1} ---\n"
                 ocr_text += pytesseract.image_to_string(img) + "\n"
             text_content = ocr_text
         except Exception as e:
@@ -121,7 +125,7 @@ def load_pdf(path: str, filename: str) -> List[Document]:
             page_content=cleaned, 
             metadata={
                 "source": filename, 
-                "type": "pdf_visual", 
+                "type": "pdf", 
                 "uploaded_at": int(datetime.utcnow().timestamp())
             }
         )]
@@ -176,12 +180,14 @@ def ingest_all_files():
 
     # CHUNKING
     print(f"🧩 Chunking {len(all_docs)} documents...")
-    # Use a larger chunk size to keep full curriculum tables together
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=200
-    )
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
     chunks = text_splitter.split_documents(all_docs)
+
+    # --- NEW: COUNT CHUNKS PER FILE ---
+    chunk_counts = {}
+    for chunk in chunks:
+        src = chunk.metadata.get("source", "unknown")
+        chunk_counts[src] = chunk_counts.get(src, 0) + 1
 
     # UPLOAD
     try:
@@ -189,6 +195,11 @@ def ingest_all_files():
         print(f"🚀 Uploading {len(chunks)} chunks to Pinecone...")
         vectorstore.add_documents(chunks)
         print("✅ Ingestion Complete!")
+        
+        # --- NEW: LOG TO MANIFEST WITH CHUNK COUNTS ---
+        for filename, count in chunk_counts.items():
+            update_manifest(filename, count)
+            
         return True
     except Exception as e:
         print(f"❌ Upload Failed: {e}")
@@ -196,3 +207,54 @@ def ingest_all_files():
 
 def train_all_pdfs():
     return ingest_all_files()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. FILE MANAGEMENT & MANIFEST LEDGER
+# ─────────────────────────────────────────────────────────────────────────────
+MANIFEST_FILE = "pinecone_manifest.json"
+
+def get_uploaded_files() -> dict:
+    """Reads the tracking manifest to see what is currently inside Pinecone."""
+    if not os.path.exists(MANIFEST_FILE):
+        return {} # <-- Returns an empty DICTIONARY now, preventing the crash!
+    try:
+        with open(MANIFEST_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def update_manifest(filename: str, chunk_count: int):
+    """Adds or updates a file in the Pinecone tracking manifest."""
+    manifest = get_uploaded_files()
+    manifest[filename] = {
+        "chunks": chunk_count,
+        "status": "Active",
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(MANIFEST_FILE, "w") as f:
+        json.dump(manifest, f, indent=4)
+
+def remove_from_manifest(filename: str):
+    """Removes a file from the Pinecone tracking manifest."""
+    manifest = get_uploaded_files()
+    if filename in manifest:
+        del manifest[filename]
+        with open(MANIFEST_FILE, "w") as f:
+            json.dump(manifest, f, indent=4)
+
+def delete_document(filename: str) -> Tuple[bool, str]:
+    """Deletes chunks from Pinecone and removes the file from the manifest."""
+    try:
+        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+        index = pc.Index(PINECONE_INDEX_NAME)
+        
+        index.delete(filter={"source": filename})
+        print(f"🗑️ Deleted Pinecone vectors for: {filename}")
+        
+        remove_from_manifest(filename)
+            
+        return True, f"Successfully purged {filename} chunks from the database."
+        
+    except Exception as e:
+        print(f"❌ Deletion failed: {e}")
+        return False, f"Failed to delete {filename} chunks: {str(e)}"

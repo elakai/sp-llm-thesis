@@ -6,6 +6,7 @@ import concurrent.futures
 from typing import List, Dict, Any, Tuple
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
+from src.core.guardrails import verify_answer
 from rank_bm25 import BM25Okapi
 from src.config.settings import get_llm, get_vectorstore, get_embeddings
 from src.core.router import route_query   
@@ -259,31 +260,29 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     st.session_state["last_retrieved_context"] = context
     retrieval_time = time.time() - retrieval_start
 
-    # 🚀 STEP 7: GENERATE RESPONSE
+# 🚀 STEP 7: GENERATE RESPONSE
     gen_start = time.time()
     prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University. 
-Your goal is to provide accurate, strictly formatted answers based ONLY on the context provided.
+Your goal is to provide accurate answers based ONLY on the context provided, while being approachable and conversational.
 
-### STRICT FORMATTING RULES (YOU MUST FOLLOW THESE):
-1. **USE TABLES FOR DATA**: 
-   - If the user asks for a **Curriculum**, **Schedule**, **List of Grades**, or **Faculty List**, you MUST output a Markdown Table.
-   - Example format:
-     | Course Code | Course Title | Units | Prerequisite |
-     |:------------|:-------------|:------|:-------------|
-     | MATH101     | Calculus 1   | 3     | None         |
+### TONE & FORMATTING RULES (YOU MUST FOLLOW THESE):
 
-2. **CLEAN UP LISTS**:
-   - Never start a line with a loose asterisk like `*Name`. 
-   - Use standard Markdown bullets: `- Name`.
+1. **BE APPROACHABLE & HELPFUL**:
+   - Always provide a brief, friendly explanation or introduction before presenting raw data. 
+   - Speak naturally to the student. Be supportive, but professional.
+   - Do NOT just output a table with no context. 
+
+2. **USE TABLES FOR DATA**: 
+   - When presenting a **Curriculum**, **Grading System**, **Schedule**, or **Faculty List**, you MUST format the core data as a Markdown Table.
+   - Example flow: "Here is the grading system used by the university..." followed by the table.
+
+3. **CLEAN UP LISTS**:
+   - Use standard Markdown bullets (`- Name`).
    - If listing people, Bold their names: `- **Dr. John Doe** - Dean`
 
-3. **NO FLUFF**:
-   - Do NOT say "Based on the provided context..." or "The document says...".
-   - Just give the answer directly.
-
-4. **MISSING INFO**:
-   - If the specific semester or year is missing from the context, state clearly: "I have the curriculum for [Available Years], but [Requested Year] is missing from my records."
-   - Do not hallucinate courses.
+4. **STRICTLY FACTUAL**:
+   - If the specific semester, year, or data is missing from the context, state clearly: "I have the handbook, but I cannot find that specific information in my records."
+   - Do not hallucinate courses, grades, or rules.
 
 **Context:**
 {context}
@@ -298,13 +297,17 @@ Your goal is to provide accurate, strictly formatted answers based ONLY on the c
     llm = get_llm()
 
     try:
-        full_response_buffer = ""
-        for chunk in llm.stream(prompt):
-            content = chunk.content
-            if content:
-                full_response_buffer += content
-                yield content 
-                time.sleep(0.005) 
+        # 1. The Actor drafts the response (Silent, no streaming yet)
+        draft_response = llm.invoke(prompt).content
+        
+        # 2. The Critic reviews and fixes any hallucinations
+        print("🕵️ Critic Persona analyzing draft...")
+        final_verified_response = verify_answer(standalone_query, context, draft_response)
+
+        # 3. Stream the fully verified answer to the UI
+        for word in final_verified_response.split(" "):
+            yield word + " "
+            time.sleep(0.01) 
 
         gen_time = time.time() - gen_start 
         total_time = time.time() - start_time
@@ -315,8 +318,8 @@ Your goal is to provide accurate, strictly formatted answers based ONLY on the c
             "total_latency": total_time
         }
         
-        # Save to semantic cache for future identical questions
-        add_to_cache(standalone_query, full_response_buffer)
+        # 4. Save the verified answer to the semantic cache
+        add_to_cache(standalone_query, final_verified_response)
             
     except Exception as e:
         yield f"⚠️ **API Error:** {str(e)}"
