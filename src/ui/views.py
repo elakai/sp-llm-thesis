@@ -103,7 +103,17 @@ def _process_user_query(query: str):
         try:
             # Create placeholder for thinking animation
             thinking_placeholder = st.empty()
-            thinking_placeholder.markdown("🧠 *Thinking...*")
+            thinking_html = """
+            <div class="thinking-container">
+                <span class="thinking-text">Thinking</span>
+                <div class="thinking-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+            """
+            thinking_placeholder.markdown(thinking_html, unsafe_allow_html=True)
             
             # Get the response stream
             stream = generate_response(

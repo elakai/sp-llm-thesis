@@ -49,6 +49,7 @@ button[kind="header"],
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4), 
                 0 2px 6px rgba(0, 0, 0, 0.3) !important;
     transition: box-shadow 0.2s ease;
+    animation: slideUpFade 0.4s ease-out forwards;
 }
 
 /* Avatar size in chat messages */
@@ -207,5 +208,17 @@ button[kind="header"],
     40% {
         transform: scale(1);
         opacity: 1;
+    }
+}
+
+/* Chat Message Entrance Animation */
+@keyframes slideUpFade {
+    0% {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
