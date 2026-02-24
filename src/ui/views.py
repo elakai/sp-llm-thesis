@@ -20,22 +20,28 @@ def render_history_view():
         for i, conv in enumerate(reversed(st.session_state["chat_history"])):
             if not conv: continue
             
+            # --- UPDATED LOGIC: Unpack the new dictionary format ---
+            session_id = conv.get("session_id", str(uuid.uuid4()))
+            messages = conv.get("messages", [])
+            
             actual_idx = len(st.session_state["chat_history"]) - 1 - i
-            first_msg = conv[0]["content"] if conv else "Empty Chat"
+            first_msg = messages[0]["content"] if messages else "Empty Chat"
             title = first_msg[:50] + "..." if len(first_msg) > 50 else first_msg
             
             with st.expander(f"💬 {title}", expanded=False):
-                for msg in conv:
+                # Iterate over the messages list
+                for msg in messages:
                     role_icon = "🐙" if msg["role"] == "assistant" else "👤"
                     st.markdown(f"**{role_icon} {msg['role'].title()}:** {msg['content']}")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("📂 Continue", key=f"load_{i}"):
-                        # Use deep copy to avoid reference issues
-                        st.session_state["messages"] = copy.deepcopy(conv)
+                        # Pass only the messages list to the chat window
+                        st.session_state["messages"] = copy.deepcopy(messages)
                         st.session_state["active_convo_idx"] = actual_idx
-                        st.session_state["session_id"] = str(uuid.uuid4())
+                        # Reuse the historical session ID
+                        st.session_state["session_id"] = session_id
                         st.session_state["view"] = "chat"
                         st.rerun()
                 with col2:
@@ -44,11 +50,9 @@ def render_history_view():
                         current_idx = st.session_state.get("active_convo_idx")
                         if current_idx is not None:
                             if current_idx == actual_idx:
-                                # Deleted the active conversation
                                 st.session_state["active_convo_idx"] = None
                                 st.session_state["messages"] = []
                             elif current_idx > actual_idx:
-                                # Shift index down since we removed one before it
                                 st.session_state["active_convo_idx"] = current_idx - 1
                         st.rerun()
 
