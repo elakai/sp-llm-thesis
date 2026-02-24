@@ -23,6 +23,7 @@ plotly
 ragas 
 datasets
 pdfplumber
-nest-asyncio
+opencv-python-headless
 numpy
-langsmith
+tabulate
+nest-asyncio

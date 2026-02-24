@@ -1,19 +1,7 @@
-import os
-from dotenv import load_dotenv
 from supabase import create_client, Client
-from pathlib import Path
+from src.config.settings import SUPABASE_URL, SUPABASE_KEY
 
-# 1. Load Env Vars
-env_path = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(env_path)
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("⚠️ Supabase keys not found in .env file!")
-
-# 2. Initialize Supabase Client
+# Initialize Supabase Client using the centralized keys from settings.py
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─────────────────────────────────────────────────────────────────────────────
