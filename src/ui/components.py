@@ -59,8 +59,11 @@ def render_login():
                     st.error("Please verify your email before logging in. Check your inbox for the confirmation link.")
                 elif user:
                     st.session_state["authenticated"] = True
-                    st.session_state["user_id"] = user["email"]
+                    st.session_state["user_id"] = user["id"]
+                    st.session_state["email"] = user["email"]
                     st.session_state["role"] = user["role"]
+                    st.session_state["full_name"] = user["full_name"]
+                    st.session_state["show_welcome"] = True
                     
                     if "session_id" not in st.session_state:
                         st.session_state["session_id"] = str(uuid.uuid4())
@@ -76,10 +79,19 @@ def render_login():
             new_email = st.text_input("Email Address", key="new_email")
             new_name = st.text_input("Full Name", key="new_name")
             new_pass = st.text_input("Password", type="password", key="new_pass")
+            confirm_pass = st.text_input("Confirm Password", type="password", key="confirm_pass")
             if st.form_submit_button("Register", use_container_width=True):
-                success, message = register_user(new_email, new_pass, new_name)
-                if success: st.success("Account created! Go to Login.")
-                else: st.error(f"Error: {message}")
+                if len(new_pass) <= 6:
+                    st.error("Password must be more than 6 characters.")
+                elif new_pass != confirm_pass:
+                    st.error("Passwords do not match.")
+                else:
+                    success, message = register_user(new_email, new_pass, new_name)
+                    if success:
+                        st.success(message)
+                        st.info(f"✅ Account created! We sent a confirmation link to {new_email}. Please verify before logging in.")
+                    else:
+                        st.error(f"Error: {message}")
 
 def render_sidebar():
     # Note: We don't load main.css here because 'render_main_styles' 
@@ -144,7 +156,7 @@ def render_sidebar():
             st.session_state.clear()
             st.rerun()
             
-        user_email = st.session_state.get("user_id", "Guest")
+        user_email = st.session_state.get("email", "Guest")
         role = st.session_state.get("role", "Student").upper()
         st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
 

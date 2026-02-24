@@ -55,10 +55,16 @@ def render_history_view():
 # ─────────────────────────────────────────────────────────────────────────────
 def render_chat_view():
     """Renders the main chat interface with message history and input."""
+    
+    # Show welcome toast after login
+    if st.session_state.get("show_welcome"):
+        st.toast(f"Welcome back, {st.session_state.get('full_name', 'User')}!", icon="👋")
+        st.session_state["show_welcome"] = False
+    
     st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
-        st.info("👋 Welcome! Try asking: 'What is the grading system?' or 'How do I request an overload?'")
+        st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
 
     # Display existing messages
     for idx, message in enumerate(st.session_state.messages):
@@ -102,7 +108,17 @@ def _process_user_query(query: str):
         try:
             # Create placeholder for thinking animation
             thinking_placeholder = st.empty()
-            thinking_placeholder.markdown("🧠 *Thinking...*")
+            thinking_html = """
+            <div class="thinking-container">
+                <span class="thinking-text">Thinking</span>
+                <div class="thinking-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+            """
+            thinking_placeholder.markdown(thinking_html, unsafe_allow_html=True)
             
             # Get the response stream
             stream = generate_response(
