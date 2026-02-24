@@ -1,69 +1,85 @@
-from src.config.settings import get_llm
 from langchain_core.prompts import PromptTemplate
+from src.config.settings import get_llm
+from src.config.constants import GREETING_KEYWORDS, OFF_TOPIC_KEYWORDS, TABLE_KEYWORDS
+from src.config.logging_config import logger
 
 def extract_metadata_filters(query: str) -> list:
-    """
-    Detects specific programs mentioned in the query.
-    Returns a list of exact filenames to filter the Pinecone vector database.
-    """
     query_lower = query.lower()
     filters = []
     
-    # Check for Electronics Engineering
+    # 1. Check if the user is asking about thesis/manuscripts
+    thesis_keywords = ["thesis", "title", "manuscript", "capstone", "project", "research"]
+    is_thesis_query = any(kw in query_lower for kw in thesis_keywords)
+    
+    if is_thesis_query:
+        # Route strictly to the Thesis PDFs
+        if "ece" in query_lower or "electronics" in query_lower:
+            filters.append("Past CSEA Thesis Manuscripts - ECE.pdf")
+        if " ce " in f" {query_lower} " or "civil" in query_lower:
+            filters.append("Past CSEA Thesis Manuscripts - CE.pdf")
+            
+        return filters if filters else None
+
+    # 2. Standard Curriculum & Info Routing (Match EXACT filenames)
     if "ece" in query_lower or "electronics" in query_lower:
-        filters.append("BS ECE SY2024-2025 Curriculum.pdf")
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ELECTRONICS ENGINEERING (BS ECE).pdf")
         
-    # Check for Civil Engineering (pad with spaces to avoid matching 'piece' or 'space')
     if " ce " in f" {query_lower} " or "civil" in query_lower:
-        filters.append("BS CE SY2024-2025 Curriculum.pdf")
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN CIVIL ENGINEERING (BS CE).pdf")
         
-    # Check for Architecture
     if "arch" in query_lower or "architecture" in query_lower:
-        filters.append("BS Architecture SY2022-2023 Curriculum.pdf") 
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ARCHITECTURE (BS ARCH).pdf")
+        
+    if "bio" in query_lower or "biology" in query_lower:
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN BIOLOGY (BS BIO).pdf")
+        
+    if "cpe" in query_lower or "computer" in query_lower:
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN COMPUTER ENGINEERING (BS CpE).pdf")
+        
+    if "em " in f" {query_lower} " or "environmental" in query_lower:
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ENVIRONMENTAL MANAGEMENT (BS EM).pdf")
+        
+    if "math" in query_lower:
+        filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN MATHEMATICS (BS MATH).pdf")
         
     return filters if filters else None
 
+def detect_content_type(query: str) -> str:
+    if any(kw in query.lower() for kw in TABLE_KEYWORDS): return "table"
+    return "all"
+
+def extract_category_filters(query: str) -> str:
+    """Detects broad categories to map searches directly to specific subfolders."""
+    query_lower = query.lower()
+    
+    if any(kw in query_lower for kw in ["memo", "memorandum", "circular", "policy"]): 
+        return "memos"
+    if any(kw in query_lower for kw in ["lab", "manual", "inventory", "equipment"]): 
+        return "laboratory"
+    if any(kw in query_lower for kw in ["ojt", "intern", "internship", "partner company"]): 
+        return "ojt"
+    if any(kw in query_lower for kw in ["org chart", "organizational chart", "faculty", "staff"]): 
+        return "organization"
+        
+    return None
+
+def route_query_fast(query: str) -> str:
+    """Instant heuristic routing to save LLM calls."""
+    q = query.lower().strip()
+    if any(q.startswith(g) or q == g for g in GREETING_KEYWORDS): return "greeting"
+    if any(kw in q for kw in OFF_TOPIC_KEYWORDS): return "off_topic"
+    return "search"
+
 def route_query(query: str) -> tuple:
-    """
-    Returns (intent, filters).
-    Intent: 'greeting', 'search', 'off_topic'
-    Filters: List of filenames or None
-    """
-    # 1. Fast Keyword Check
-    greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "thanks", "thank you"]
-    if query.lower().strip() in greetings:
-        return "greeting", None
-
-    # 2. Extract specific program filters
     filters = extract_metadata_filters(query)
-
-    # 3. LLM Classification (The "Brain")
-    llm = get_llm()
-    prompt = PromptTemplate.from_template(
-        """
-        You are a Router for a University Student Handbook Chatbot. 
-        Classify the following user query into exactly one of these categories:
-        
-        1. 'search': The user is asking about university rules, curriculum, grading, uniforms, teachers, or events.
-        2. 'greeting': The user is saying hello, thanks, or goodbye.
-        3. 'off_topic': The user is asking about cooking, video games, general world knowledge, or coding help unrelated to the handbook.
-
-        Query: {query}
-        
-        Classification (return ONLY the word):
-        """
+    content_type = detect_content_type(query)
+    category_filter = extract_category_filters(query)
+    intent = route_query_fast(query)
+    
+    # DEFENSE DEBUG LOGGING
+    logger.info(
+        f"🧠 Router Decision | Intent: {intent} | Category: {category_filter} "
+        f"| Source Filter: {filters} | Content: {content_type}"
     )
     
-    try:
-        chain = prompt | llm
-        category = chain.invoke({"query": query}).content.strip().lower()
-        
-        if "search" in category: return "search", filters
-        if "greeting" in category: return "greeting", filters
-        if "off" in category: return "off_topic", filters
-        
-        return "search", filters 
-        
-    except Exception as e:
-        print(f"Router Error: {e}")
-        return "search", filters
+    return intent, filters, content_type, category_filter

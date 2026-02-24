@@ -55,8 +55,6 @@ def render_history_view():
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
                         st.rerun()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────

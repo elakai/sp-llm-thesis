@@ -1,30 +1,17 @@
 import streamlit as st
-from src.core.auth import supabase
 from datetime import datetime
 from collections import defaultdict
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 🛡️ SMART LOGGING FILTER
-# ─────────────────────────────────────────────────────────────────────────────
-IGNORED_RESPONSES = [
-    "Hello! I am AXIsstant",
-    "Hi there! I'm ready",
-    "Greetings! Feel free",
-    "I am designed to answer questions", 
-    "⚠️"
-]
+from src.core.auth import supabase
+from src.config.constants import IGNORED_RESPONSES
+from src.config.logging_config import logger
 
 def log_conversation(query, response, user_email, session_id, context, metrics=None):
-    """
-    Saves the chat interaction, context, and performance metrics to Supabase.
-    """
+    """Saves the chat interaction, context, and performance metrics to Supabase."""
     # 1. Guardrail: Don't log greetings or errors
     if any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
         return
 
     try:
-        # 2. Construct Payload
-        # We ensure context is never NULL so the evaluation script can find it
         safe_context = context if context and context.strip() != "" else "No context retrieved"
         
         data = {
@@ -36,27 +23,20 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
             "created_at": datetime.utcnow().isoformat(),
         }
 
-        # 3. Add Metrics (if they exist)
         if metrics:
             data["retrieval_latency"] = metrics.get("retrieval_latency", 0.0)
             data["generation_latency"] = metrics.get("generation_latency", 0.0)
             data["total_latency"] = metrics.get("total_latency", 0.0)
 
-        # 4. Insert into Supabase
         supabase.table("chat_logs").insert(data).execute()
         
     except Exception as e:
-        print(f"❌ Backend Logging Error: {e}")
+        logger.error(f"Backend Logging Error: {e}")
 
 def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous"):
-    """
-    Updates the most recent log entry for this user with a rating.
-    """
+    """Updates the most recent log entry for this user with a rating."""
     try:
         data = {"rating": rating}
-        # Updates the latest match. 
-        # Note: In a production app, we would use the specific Log ID, 
-        # but this works for the thesis prototype.
         supabase.table("chat_logs") \
             .update(data) \
             .eq("user_email", user_id) \
@@ -64,13 +44,11 @@ def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonym
             .execute()
         return True
     except Exception as e:
-        print(f"❌ Failed to save feedback: {e}")
+        logger.error(f"Failed to save feedback: {e}")
         return False
 
 def load_chat_history(user_email: str):
-    """
-    Reconstructs past conversations grouped by session for the UI.
-    """
+    """Reconstructs past conversations grouped by session for the UI."""
     try:
         if not user_email: return []
         
@@ -84,14 +62,25 @@ def load_chat_history(user_email: str):
             return []
 
         sessions = defaultdict(list)
+        session_order = [] 
+        
         for row in response.data:
             s_id = row.get("session_id")
             if s_id:
+                if s_id not in session_order:
+                    session_order.append(s_id)
                 sessions[s_id].append({"role": "user", "content": row["query"]})
                 sessions[s_id].append({"role": "assistant", "content": row["response"]})
 
-        return list(sessions.values())
+        history_list = []
+        for s_id in session_order:
+            history_list.append({
+                "session_id": s_id,
+                "messages": sessions[s_id]
+            })
+            
+        return history_list
 
     except Exception as e:
-        print(f"❌ Error loading history: {e}")
+        logger.error(f"Error loading history: {e}")
         return []

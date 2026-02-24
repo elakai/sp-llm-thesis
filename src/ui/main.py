@@ -1,25 +1,10 @@
 import sys
 from pathlib import Path
 import uuid
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. PATH SETUP (CRITICAL: Must be at the top)
-# ─────────────────────────────────────────────────────────────────────────────
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. IMPORTS
-# ─────────────────────────────────────────────────────────────────────────────
 import streamlit as st
-from src.ui.components import render_login, render_sidebar, render_main_styles
-from src.ui.admin_dashboard import render_admin_view
-from src.ui.views import render_history_view, render_chat_view
-from src.core.feedback import load_chat_history
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. CONFIG & SESSION STATE
+# 1. CONFIG (CRITICAL: Must be the very first Streamlit command)
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="AXIsstant",
@@ -28,6 +13,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. PATH SETUP 
+# ─────────────────────────────────────────────────────────────────────────────
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. IMPORTS (Local modules must be imported AFTER set_page_config)
+# ─────────────────────────────────────────────────────────────────────────────
+from src.ui.components import render_login, render_sidebar, render_main_styles
+from src.ui.admin_dashboard import render_admin_view
+from src.ui.views import render_history_view, render_chat_view
+from src.core.feedback import load_chat_history
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. SESSION STATE
+# ─────────────────────────────────────────────────────────────────────────────
 # Load main styles immediately to prevent flash of unstyled content
 render_main_styles()
 
@@ -43,7 +46,7 @@ if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
 if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. AUTHENTICATION GATE
+# 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 if not st.session_state["authenticated"]:
     render_login()
@@ -70,7 +73,7 @@ if not st.session_state["chat_history_loaded"]:
 render_sidebar()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. VIEW CONTROLLER
+# 6. VIEW CONTROLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- OPTION A: ADMIN VIEW ---
