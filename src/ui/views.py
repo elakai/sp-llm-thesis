@@ -4,7 +4,7 @@ import copy
 from datetime import datetime
 
 from src.core.retrieval import generate_response
-from src.core.feedback import save_feedback, log_conversation
+from src.core.feedback import save_feedback, log_conversation, delete_conversation
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
@@ -20,9 +20,14 @@ def render_history_view():
         for i, conv in enumerate(reversed(st.session_state["chat_history"])):
             if not conv: continue
             
-            # --- UPDATED LOGIC: Unpack the new dictionary format ---
-            session_id = conv.get("session_id", str(uuid.uuid4()))
-            messages = conv.get("messages", [])
+            # Handle both old list format and new dictionary format
+            if isinstance(conv, dict):
+                session_id = conv.get("session_id", str(uuid.uuid4()))
+                messages = conv.get("messages", [])
+            else:
+                # Old format: conv is a list of messages
+                session_id = str(uuid.uuid4())
+                messages = conv
             
             actual_idx = len(st.session_state["chat_history"]) - 1 - i
             first_msg = messages[0]["content"] if messages else "Empty Chat"
@@ -46,6 +51,11 @@ def render_history_view():
                         st.rerun()
                 with col2:
                     if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
+                        # Delete from database first
+                        user_email = st.session_state.get("user_id")
+                        delete_conversation(session_id, user_email)
+                        
+                        # Then remove from session state
                         st.session_state["chat_history"].pop(actual_idx)
                         current_idx = st.session_state.get("active_convo_idx")
                         if current_idx is not None:

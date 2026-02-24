@@ -47,6 +47,22 @@ def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonym
         logger.error(f"Failed to save feedback: {e}")
         return False
 
+def delete_conversation(session_id: str, user_email: str):
+    """Deletes a conversation from the database by session_id."""
+    try:
+        if not session_id or not user_email:
+            return False
+        
+        supabase.table("chat_logs") \
+            .delete() \
+            .eq("session_id", session_id) \
+            .eq("user_email", user_email) \
+            .execute()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting conversation: {e}")
+        return False
+
 def load_chat_history(user_email: str):
     """Reconstructs past conversations grouped by session for the UI."""
     try:
