@@ -19,21 +19,28 @@ def render_history_view():
         for i, conv in enumerate(reversed(st.session_state["chat_history"])):
             if not conv: continue
             
+            # --- NEW LOGIC: Unpack the dictionary ---
+            session_id = conv.get("session_id", str(uuid.uuid4()))
+            messages = conv.get("messages", [])
+            
             actual_idx = len(st.session_state["chat_history"]) - 1 - i
-            first_msg = conv[0]["content"] if conv else "Empty Chat"
+            first_msg = messages[0]["content"] if messages else "Empty Chat"
             title = first_msg[:50] + "..." if len(first_msg) > 50 else first_msg
             
             with st.expander(f"💬 {title}", expanded=False):
-                for msg in conv:
+                # Iterate over the unpacked messages list, not the dictionary
+                for msg in messages:
                     role_icon = "🐙" if msg["role"] == "assistant" else "👤"
                     st.markdown(f"**{role_icon} {msg['role'].title()}:** {msg['content']}")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("📂 Continue", key=f"load_{i}"):
-                        st.session_state["messages"] = conv.copy()
+                        # Pass only the messages list to the chat window
+                        st.session_state["messages"] = messages.copy()
                         st.session_state["active_convo_idx"] = actual_idx
-                        st.session_state["session_id"] = str(uuid.uuid4())
+                        # IMPORTANT: Reuse the historical session ID so Supabase logs stay grouped!
+                        st.session_state["session_id"] = session_id 
                         st.session_state["view"] = "chat"
                         st.rerun()
                 with col2:
@@ -43,8 +50,6 @@ def render_history_view():
                             st.session_state["active_convo_idx"] = None
                             st.session_state["messages"] = []
                         st.rerun()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────
