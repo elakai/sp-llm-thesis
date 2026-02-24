@@ -82,36 +82,51 @@ streamlit run src/ui/main.py
 The project is organized to separate core RAG logic from the user interface and configuration settings.
 
 ```text
-csea-sp-llm/
-├── src/
-│   ├── config/
-│   │   └── settings.py           # API keys, LLM/Embedding factory, and DB config
-│   ├── core/                     # Backend Logic (The "Brain")
-│   │   ├── auth.py               # User authentication and session management
-│   │   ├── decomposition.py      # Query decomposition for complex multi-part questions
-│   │   ├── evaluate_rag.py       # Ragas metrics and evaluation logic
-│   │   ├── feedback.py           # Supabase logging and user rating (thumbs up/down)
-│   │   ├── generate_testset.py   # Synthetic test set generation for RAG evaluation
-│   │   ├── guardrails.py         # Topic validation and safety filtering
-│   │   ├── ingestion.py          # PDF/Word/OCR loading, chunking, and Pinecone indexing
-│   │   ├── retrieval.py          # Contextualization, Semantic Cache, and Reranking
-│   │   └── router.py             # Intent detection and Metadata/Category routing
-│   ├── ui/                       # Frontend (Streamlit)
-│   │   ├── admin_dashboard.py    # Document ledger and performance analytics
-│   │   ├── components.py         # Reusable UI widgets (headers, footers)
-│   │   ├── main.py               # Entry point: run `streamlit run src/ui/main.py`
-│   │   ├── views.py              # Chat and History view controllers
-│   │   └── styles/               # Custom CSS for login and main interface
-│   │       ├── login.css
-│   │       └── main.css
-│   └── run_eval.py               # Script to execute the RAG evaluation pipeline
-├── assets/                       # Images and logos
-│   └── kraken_logo.png
-├── pinecone_manifest.json        # Primary ledger for cloud-stored document chunks
-├── csea_evaluation_dataset.csv   # Ground truth data for model testing
-├── final_evaluation_report.csv   # Generated metrics (Faithfulness, Relevancy, etc.)
-├── requirements.txt              # Project dependencies
-└── README.md                     # Documentation
+C:.
+│   .gitignore
+│   csea_evaluation_dataset.csv   # Ground truth dataset for RAG testing
+│   final_evaluation_report.csv   # Metrics output from the evaluation pipeline
+│   get-pip.py
+│   pam's instructions.txt
+│   pinecone_manifest.json        # Primary ledger for cloud-stored document chunks
+│   README.md
+│   requirements.txt              # Project dependencies
+│   test.py                       # General utility testing script
+│
+├───assets                        # Visual branding assets
+│       kraken_logo.png
+│
+└───src
+    │   run_eval.py               # Main script to execute the RAGAS evaluation suite
+    │   __init__.py
+    │
+    ├───config                    # Global Configuration & Environment Settings
+    │       constants.py          # Valid categories, paths, and chunking parameters
+    │       logging_config.py     # Windows-compatible Unicode logging setup
+    │       settings.py           # LLM, Embeddings, and Vector Database factory
+    │
+    ├───core                      # Backend Processing (The "Brain")
+    │       auth.py               # User authentication and session management
+    │       decomposition.py      # Multi-query logic for complex student inquiries
+    │       evaluate_rag.py       # RAGAS metrics implementation (Faithfulness, Relevancy)
+    │       feedback.py           # Conversation logging and user rating storage
+    │       generate_testset.py   # Synthetic data generation for evaluation prep
+    │       guardrails.py         # Topic validation and safety filtering
+    │       ingestion.py          # Multimodal loading and "Delete After Ingest" logic
+    │       retrieval.py          # Semantic Cache, Contextualization, and Reranking
+    │       router.py             # Metadata-based category and program routing
+    │       __init__.py
+    │
+    └───ui                        # Frontend Interface (Streamlit)
+        │   admin_dashboard.py    # Analytics, Document Ledger, and Index Manager
+        │   components.py         # Reusable UI widgets and thinking animations
+        │   main.py               # Entry point: `streamlit run src/ui/main.py`
+        │   views.py              # Chat and History view controllers
+        │   __init__.py
+        │
+        └───styles                # Custom CSS Assets
+                login.css         # Portal styling for the authentication screen
+                main.css          # Core visual theme and chat bubble styling
 
 ```
 
