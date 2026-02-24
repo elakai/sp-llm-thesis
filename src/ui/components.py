@@ -2,6 +2,7 @@ import streamlit as st
 import base64
 import sys
 import uuid
+import copy
 from pathlib import Path
 
 # Path Setup
@@ -119,9 +120,9 @@ def render_sidebar():
                 if st.session_state.get("active_convo_idx") is not None:
                     idx = st.session_state["active_convo_idx"]
                     if 0 <= idx < len(st.session_state["chat_history"]):
-                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                        st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
                 else:
-                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+                    st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
             
             st.session_state["messages"] = []
             st.session_state["active_convo_idx"] = None 
@@ -138,9 +139,9 @@ def render_sidebar():
                 if st.session_state.get("active_convo_idx") is not None:
                     idx = st.session_state["active_convo_idx"]
                     if 0 <= idx < len(st.session_state["chat_history"]):
-                        st.session_state["chat_history"][idx] = st.session_state["messages"].copy()
+                        st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
                 else:
-                    st.session_state["chat_history"].append(st.session_state["messages"].copy())
+                    st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
                     st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
             st.session_state["view"] = "history"
             st.rerun()
