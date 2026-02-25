@@ -7,12 +7,22 @@ from typing import List, Dict
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.core.guardrails import verify_answer
+from src.core.guardrails import verify_answer, validate_query, redact_pii
 from src.config.settings import get_llm, get_vectorstore, get_embeddings, get_retriever
 from src.core.router import route_query   
 from src.core.decomposition import decompose_query
-from src.config.constants import RETRIEVAL_K, RERANKER_TOP_K, DECOMPOSE_TRIGGERS, CONFIDENCE_THRESHOLD
+from src.config.constants import (
+    RETRIEVAL_K, 
+    RERANKER_TOP_K, 
+    DECOMPOSE_TRIGGERS, 
+    CONFIDENCE_THRESHOLD,
+    RETRIEVAL_K_MAP,             # <-- Added this
+    LOW_CONFIDENCE_THRESHOLD,    # <-- Added this
+    HIGH_CONFIDENCE_THRESHOLD,   # <-- Added this
+    STREAM_DELAY                 # <-- Added this
+)
 from src.config.logging_config import logger
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,9 +151,16 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     start_time = time.time()
+    top_score = 0.0
     
-    # 🚀 STEP 0: CONVERSATIONAL MEMORY
-    standalone_query = contextualize_query(query, chat_history_list)
+    # 🚀 STEP 0: VALIDATION & CONVERSATIONAL MEMORY
+    is_valid, clean_query = validate_query(query) # Call from guardrails.py
+    if not is_valid:
+        yield clean_query
+        return
+    
+    safe_query = redact_pii(clean_query) # Call from guardrails.py
+    standalone_query = contextualize_query(safe_query, chat_history_list)
     
     # 🚀 STEP 1: CACHE
     cached_answer = check_semantic_cache(standalone_query)
@@ -151,32 +168,20 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
         for word in cached_answer.split(" "):
             yield word + " "
             time.sleep(0.01)
-        st.session_state["performance_metrics"] = {
-            "retrieval_latency": 0.0,
-            "generation_latency": time.time() - start_time,
-            "total_latency": time.time() - start_time
-        }
         return
 
     retrieval_start = time.time()
     
     # 🚀 STEP 2: SMART ROUTER & METADATA DETECTION
     try:
-        # UNPACKING 4 VALUES: intent, program_filters, content_type, category_filter
         intent, program_filters, content_type, category_filter = route_query(standalone_query)
     except Exception as e:
         logger.warning(f"Router fallback triggered: {e}")
         intent, program_filters, content_type, category_filter = "search", None, "all", None
-        
-    if intent == "greeting":
-        greetings = ["Hello! I am AXIsstant. How can I help you with the CSEA Handbook?", "Hi! I'm ready to answer your questions."]
-        for word in random.choice(greetings).split():
-            yield word + " "
-            time.sleep(0.02)
-        return
 
-    if intent == "off_topic":
-        msg = "I am designed for CSEA Student Handbook questions only."
+    # Handle greetings and off-topic early
+    if intent in ["greeting", "off_topic"]:
+        msg = "Hello! I am AXIsstant..." if intent == "greeting" else "I am designed for CSEA questions only."
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
@@ -191,37 +196,53 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
         except:
             pass
 
-    # 🚀 STEP 4: PARALLEL RETRIEVAL WITH FILTERS
-    search_kwargs = {"k": RETRIEVAL_K}
-    pinecone_filter = {}
+    # 🚀 STEP 4: PARALLEL RETRIEVAL WITH DYNAMIC K
+    # Fetch K based on intent from constants.py, default to 5
+    dynamic_k = RETRIEVAL_K_MAP.get(intent, 5) 
+    search_kwargs = {"k": dynamic_k}
     
-    # Existing program/source filters
+    # Initialize metadata filter dictionary
+    pinecone_filter = {} 
+
+    # Apply Program/Source filters (e.g., specific curriculum files)
     if program_filters:
         pinecone_filter["source"] = {"$in": program_filters}
     
-    # Existing content type (table vs text) filters
+    # Apply Content Type filters (e.g., tables vs text)
     if content_type == "table":
         pinecone_filter["type"] = {"$eq": "table"}
 
-    # --- NEW: Category/Subfolder filter ---
+    # Apply Category/Subfolder filters (e.g., memos, thesis, laboratory)
     if category_filter:
         pinecone_filter["category"] = {"$eq": category_filter}
         logger.info(f"🎯 Category Filter Applied: {category_filter}")
 
+    # Attach filters to search arguments if any exist
     if pinecone_filter:
         search_kwargs["filter"] = pinecone_filter
 
-    retriever = get_retriever(k=RETRIEVAL_K)
+    # Configure the retriever with dynamic settings
+    retriever = get_retriever(k=dynamic_k)
     retriever.search_kwargs = search_kwargs 
+    
     all_docs = []
 
+    # ⚡ Execute Parallel Retrieval using ThreadPoolExecutor
+    # sub_queries contains either the single standalone query or decomposed parts
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(retriever.invoke, sub_queries))
-    for res in results: all_docs.extend(res)
+    
+    # Flatten the list of lists into a single document list
+    for res in results: 
+        all_docs.extend(res)
 
+    # 🛑 Early exit if no information is found
     if not all_docs:
+        logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
         yield "I checked the handbook, but I couldn't find any information about that."
         return
+
+    logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
     # 🚀 STEP 5: DEDUPLICATION & RERANKING
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
@@ -236,9 +257,10 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
             scores = reranker.predict(pairs)
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
-            if scores[sorted_indices[0]] < -10.0:
-                yield "I found some documents, but they didn't seem relevant to your specific question."
-                return
+            top_score = float(scores[sorted_indices[0]])
+            
+            # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
+            # Step 7's Three-Tier logic will handle the confidence check.
 
             top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
         except Exception as e:
@@ -247,14 +269,21 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     else:
         top_reranked = []
 
+    # 🐛 TEMPORARY DEBUG LOGGING: Watch this in your terminal!
+    logger.info(f"📊 DEBUG | Query: '{standalone_query}'")
+    logger.info(f"📊 DEBUG | Docs Retrieved: {len(all_docs)} -> After Rerank: {len(top_reranked)}")
+    logger.info(f"📊 DEBUG | Top Score: {top_score:.2f} (Low Cutoff: {LOW_CONFIDENCE_THRESHOLD}, High Cutoff: {HIGH_CONFIDENCE_THRESHOLD})")
+
     # 🚀 STEP 6: BUILD CONTEXT
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content.replace(chr(10), ' ')}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
     retrieval_time = time.time() - retrieval_start
 
-    # 🚀 STEP 7: GENERATE RESPONSE
+  # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
     gen_start = time.time()
+    
+    # Define the Prompt (Instruction-Heavy for formatting)
     prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University. 
 Your goal is to provide accurate answers based ONLY on the context provided, while being approachable and conversational.
 
@@ -272,9 +301,7 @@ Your goal is to provide accurate answers based ONLY on the context provided, whi
    - Use standard Markdown bullets (`- Name`).
    - If listing people, Bold their names: `- **Dr. John Doe** - Dean`
 
-4. **STRICTLY FACTUAL**:
-   - If the specific semester, year, or data is missing from the context, state clearly: "I have the handbook, but I cannot find that specific information in my records."
-   - Do not hallucinate courses, grades, or rules.
+"4. STRICTLY FACTUAL: Answer using ONLY what is in the context. If the context contains thesis abstracts, list the relevant ones. If the context genuinely has nothing related, say: 'The retrieved documents do not contain this information.'"
 
 **Context:**
 {context}
@@ -286,31 +313,58 @@ Your goal is to provide accurate answers based ONLY on the context provided, whi
 
 **Answer:**"""
 
-    llm = get_llm()
-
     try:
-        draft_response = llm.invoke(prompt).content
-        top_score = scores[sorted_indices[0]] if 'scores' in locals() and len(scores) > 0 else 0
+        # Tier 1: Retrieval is too weak — Exit early to prevent hallucination
+        if top_score < LOW_CONFIDENCE_THRESHOLD:
+            logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
+            yield "I checked the handbook but couldn't find enough specific information to answer that confidently. Please consult the CSEA Department Chair."
+            return
+
+        # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
+        llm = get_llm()
+        draft_response = get_llm_response(llm, prompt).content
         
-        # CONDITIONAL CRITIC
-        if top_score < CONFIDENCE_THRESHOLD:
-            logger.info(f"Reranker score low ({top_score:.2f}). Critic Persona analyzing draft...")
+        if top_score < HIGH_CONFIDENCE_THRESHOLD:
+            # Tier 2: Moderate confidence — Trigger Critic to verify against context
+            logger.info(f"🔍 Moderate Confidence ({top_score:.2f}). Triggering Critic Persona...")
             final_verified_response = verify_answer(standalone_query, context, draft_response)
         else:
-            logger.info(f"High confidence ({top_score:.2f}). Bypassing Critic.")
+            # Tier 3: High confidence — Trust the draft
+            logger.info(f"✨ High Confidence ({top_score:.2f}). Bypassing Critic.")
             final_verified_response = draft_response
 
-        for word in final_verified_response.split(" "):
-            yield word + " "
-            time.sleep(0.01) 
-
+        # 🚀 STEP 8: METRICS, CACHE & STREAMING
+        
+        # We record metrics BEFORE streaming so they are saved even if the user disconnects
         st.session_state["performance_metrics"] = {
             "retrieval_latency": retrieval_time,
             "generation_latency": time.time() - gen_start,
-            "total_latency": time.time() - start_time
+            "total_latency": time.time() - start_time,
+            "confidence_score": float(top_score)
         }
         add_to_cache(standalone_query, final_verified_response)
+
+        if not final_verified_response:
+            logger.error("final_verified_response is None. Falling back to draft.")
+            final_verified_response = draft_response
+        
+        # Final Streaming Loop with Fallback
+        try:
+            for word in final_verified_response.split(" "):
+                yield word + " "
+                time.sleep(STREAM_DELAY) # Optimized delay from constants
+        except GeneratorExit:
+            # User navigated away; cleanup handled by Python GC
+            return
+        except Exception as e:
+            logger.error(f"Streaming interruption: {e}")
+            yield f"\n\n⚠️ *Stream interrupted. Displaying full response:* \n{final_verified_response}"
             
     except Exception as e:
-        logger.error(f"API Error in Generation: {e}")
-        yield f"⚠️ **API Error:** {str(e)}"
+        logger.error(f"❌ Generation Pipeline Failed: {e}")
+        yield f"⚠️ **AXIsstant is having trouble connecting to its brain.** (Error: {str(e)})"
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def get_llm_response(llm, prompt):
+    """Reliable wrapper for LLM calls with exponential backoff."""
+    return llm.invoke(prompt)

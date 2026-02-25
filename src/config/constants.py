@@ -18,8 +18,18 @@ MANIFEST_FILE = DATA_FOLDER / "pinecone_manifest.json"
 # 2. ROUTER & KEYWORDS
 # ─────────────────────────────────────────────────────────────────────────────
 GREETING_KEYWORDS = ["hi", "hello", "hey", "good morning", "good afternoon", "thanks", "thank you", "bye"]
-OFF_TOPIC_KEYWORDS = ["recipe", "cook", "game", "weather", "code", "python", "javascript"]
-TABLE_KEYWORDS = ["curriculum", "grade", "grading", "schedule", "fee", "list", "table", "rubric", "courses"]
+# 🛑 Off-Topic Keywords (Audit: DO NOT include words like "code", "system", "grade")
+OFF_TOPIC_KEYWORDS = [
+    "recipe", "cook", "bake", "movie", "weather", "sports", 
+    "game", "minecraft", "valorant", "programming help", "code a", 
+    "write a script", "joke", "poem", "story"
+]
+TABLE_KEYWORDS = [
+    "curriculum table",
+    "list of subjects", 
+    "show me the table",
+    "subject list"
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. PIPELINE TRIGGERS & GUARDRAILS
@@ -53,3 +63,19 @@ VALID_CATEGORIES = {
     "laboratory": "Lab Manuals",
     "organization": "Organizational Charts"
 }
+
+# 🔍 Dynamic Retrieval Amounts (Increased for better context gathering)
+RETRIEVAL_K_MAP = {
+    "greeting": 0,
+    "off_topic": 0,
+    "search": 10,          # Increased from 5
+    "search_complex": 15,  # Increased from 12
+    "search_table": 10     # Increased from 8
+}
+
+# 🚀 RAG Confidence Thresholds (Calibrated for ms-marco logits)
+LOW_CONFIDENCE_THRESHOLD = -13.0   # Below this = truly irrelevant, trigger early exit
+HIGH_CONFIDENCE_THRESHOLD = -5.0   # Above this = highly relevant, skip critic
+
+# ⚡ UI Performance
+STREAM_DELAY = 0.005  # Seconds per word for the streaming effect
