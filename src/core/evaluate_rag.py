@@ -2,6 +2,8 @@ import os
 import pandas as pd
 from datasets import Dataset
 import nest_asyncio
+from datetime import datetime
+from src.core.feedback import supabase
 
 # Apply Async Fix
 nest_asyncio.apply()
@@ -15,6 +17,7 @@ from ragas.metrics import (
 )
 from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
+from src.config.logging_config import logger
 
 from src.config.settings import get_llm, get_embeddings, get_vectorstore
 
@@ -93,3 +96,43 @@ def run_evaluation():
 
 if __name__ == "__main__":
     run_evaluation()
+
+
+def export_ground_truth_from_logs():
+    """Converts 'Helpful' rated logs into an evaluation dataset."""
+    response = supabase.table("chat_logs").select("*").eq("rating", "helpful").execute()
+    logs = response.data
+    
+    if not logs:
+        return "No helpful logs found to export."
+
+    df = pd.DataFrame(logs)
+    # Format for Ragas: question, contexts, answer, ground_truth
+    df_eval = df[['query', 'context', 'response']].copy()
+    df_eval.columns = ['question', 'contexts', 'ground_truth']
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = f"data/real_ground_truth_{timestamp}.csv"
+    df_eval.to_csv(path, index=False)
+    return f"Exported {len(df_eval)} ground truth pairs to {path}"
+
+def save_evaluation_run(metrics_dict: dict):
+    """Saves metrics to a timestamped CSV and logs to Supabase."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = f"data/eval_report_{timestamp}.csv"
+    
+    # Save local CSV
+    pd.DataFrame([metrics_dict]).to_csv(report_path, index=False)
+    
+    # Log to Supabase for Admin Dashboard tracking
+    try:
+        supabase.table("evaluation_runs").insert({
+            "run_at": datetime.now().isoformat(),
+            "faithfulness": metrics_dict.get("faithfulness"),
+            "answer_correctness": metrics_dict.get("answer_correctness"),
+            "context_precision": metrics_dict.get("context_precision"),
+            "context_recall": metrics_dict.get("context_recall")
+        }).execute()
+        logger.info(f"📊 Evaluation run saved locally and logged to Supabase: {report_path}")
+    except Exception as e:
+        logger.error(f"Failed to log evaluation run to Supabase: {e}")

@@ -1,3 +1,4 @@
+import re
 from langchain_core.prompts import PromptTemplate
 from src.config.settings import get_llm
 from src.config.constants import GREETING_KEYWORDS, OFF_TOPIC_KEYWORDS, TABLE_KEYWORDS
@@ -12,34 +13,34 @@ def extract_metadata_filters(query: str) -> list:
     is_thesis_query = any(kw in query_lower for kw in thesis_keywords)
     
     if is_thesis_query:
-        # Route strictly to the Thesis PDFs
-        if "ece" in query_lower or "electronics" in query_lower:
+        # Route strictly to the Thesis PDFs using regex boundaries
+        if re.search(r'\bece\b', query_lower) or "electronics" in query_lower:
             filters.append("Past CSEA Thesis Manuscripts - ECE.pdf")
-        if " ce " in f" {query_lower} " or "civil" in query_lower:
+        if re.search(r'\bce\b', query_lower) or "civil" in query_lower:
             filters.append("Past CSEA Thesis Manuscripts - CE.pdf")
             
         return filters if filters else None
 
     # 2. Standard Curriculum & Info Routing (Match EXACT filenames)
-    if "ece" in query_lower or "electronics" in query_lower:
+    if re.search(r'\bece\b', query_lower) or "electronics" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ELECTRONICS ENGINEERING (BS ECE).pdf")
         
-    if " ce " in f" {query_lower} " or "civil" in query_lower:
+    if re.search(r'\bce\b', query_lower) or "civil" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN CIVIL ENGINEERING (BS CE).pdf")
         
-    if "arch" in query_lower or "architecture" in query_lower:
+    if re.search(r'\barch\b', query_lower) or "architecture" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ARCHITECTURE (BS ARCH).pdf")
         
-    if "bio" in query_lower or "biology" in query_lower:
+    if re.search(r'\bbio\b', query_lower) or "biology" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN BIOLOGY (BS BIO).pdf")
         
-    if "cpe" in query_lower or "computer" in query_lower:
+    if re.search(r'\bcpe\b', query_lower) or "computer" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN COMPUTER ENGINEERING (BS CpE).pdf")
         
-    if "em " in f" {query_lower} " or "environmental" in query_lower:
+    if re.search(r'\bem\b', query_lower) or "environmental" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN ENVIRONMENTAL MANAGEMENT (BS EM).pdf")
         
-    if "math" in query_lower:
+    if re.search(r'\bmath\b', query_lower) or "mathematics" in query_lower:
         filters.append("CURRICULUM FOR BACHELOR OF SCIENCE IN MATHEMATICS (BS MATH).pdf")
         
     return filters if filters else None

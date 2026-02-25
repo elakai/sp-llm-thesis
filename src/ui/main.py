@@ -27,6 +27,7 @@ from src.ui.components import render_login, render_sidebar, render_main_styles
 from src.ui.admin_dashboard import render_admin_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
+from src.core.ingestion import check_pinecone_health
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
@@ -44,10 +45,16 @@ if "user_id" not in st.session_state: st.session_state["user_id"] = None
 if "role" not in st.session_state: st.session_state["role"] = "student"
 if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
 if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
-
+if "db_online" not in st.session_state:
+    st.session_state["db_online"] = check_pinecone_health()
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
+
+if not st.session_state["db_online"]:
+    st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
+    st.stop()
+
 if not st.session_state["authenticated"]:
     render_login()
     st.stop()
@@ -87,3 +94,5 @@ elif st.session_state["view"] == "history":
 # --- OPTION C: MAIN CHAT VIEW ---
 else:
     render_chat_view()
+
+    

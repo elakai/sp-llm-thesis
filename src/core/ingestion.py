@@ -315,3 +315,37 @@ def delete_document(filename: str) -> Tuple[bool, str]:
         return True, f"Successfully purged {norm_filename} chunks."
     except Exception as e:
         return False, f"Failed to delete {norm_filename}: {str(e)}"
+    
+def verify_sync() -> dict:
+    """Compares the local manifest ledger against actual Pinecone metadata."""
+    manifest = get_uploaded_files()
+    manifest_sources = set(manifest.keys())
+    
+    try:
+        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+        index = pc.Index(PINECONE_INDEX_NAME)
+        
+        # We fetch unique 'source' values from the index
+        # Note: Depending on Pinecone version, you may need to use list_ids or a dummy query
+        results = index.query(vector=[0]*1536, top_k=10000, include_metadata=True)
+        pinecone_sources = {d['metadata']['source'] for d in results['matches']}
+        
+        return {
+            "in_both": list(manifest_sources & pinecone_sources),
+            "manifest_only": list(manifest_sources - pinecone_sources), # Ghost entries
+            "pinecone_only": list(pinecone_sources - manifest_sources)  # Untracked vectors
+        }
+    except Exception as e:
+        logger.error(f"Sync check failed: {e}")
+        return {}
+    
+def check_pinecone_health() -> bool:
+    """Performs a trivial search to verify Pinecone connectivity."""
+    try:
+        vs = get_vectorstore()
+        # Search for a nonsense string with k=1
+        vs.similarity_search("healthcheck_ping", k=1)
+        return True
+    except Exception as e:
+        logger.error(f"🚨 Pinecone Health Check Failed: {e}")
+        return False
