@@ -94,7 +94,7 @@ C:.
 │   test.py                       # General utility testing script
 │
 ├───assets                        # Visual branding assets
-│       kraken_logo.png
+│       logo.png
 │
 └───src
     │   run_eval.py               # Main script to execute the RAGAS evaluation suite
