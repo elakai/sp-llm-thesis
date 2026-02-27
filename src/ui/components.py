@@ -28,7 +28,7 @@ def load_css(file_name):
 # LOGO HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 def get_base64_logo():
-    logo_path = Path("assets/kraken_logo.png") 
+    logo_path = Path("assets/logo.png") 
     if logo_path.exists():
         with open(logo_path, "rb") as f:
             return base64.b64encode(f.read()).decode()
@@ -43,9 +43,9 @@ def render_login():
     
     logo_base64 = get_base64_logo()
     if logo_base64:
-        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FFA347;">AXIsstant</div></div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="logo-container"><div class="logo-title">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><div class="logo-title" style="color: #FFA347;">AXIsstant</div></div>', unsafe_allow_html=True)
 
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
 
@@ -105,11 +105,11 @@ def render_sidebar():
             st.markdown(f"""
                 <div style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
-                    <h1 style='color: #0A0A0A; margin-top: 10px; font-size: 2.5rem;'>AXIsstant</h1>
+                    <h1 style='color: #FFA347; margin-top: 10px; font-size: 2.5rem;'>AXIsstant</h1>
                 </div>
             """, unsafe_allow_html=True)
         else:
-            st.markdown(f"<h1 style='text-align: center; color: #0A0A0A; font-size: 2.5rem;'>AXIsstant</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center; color: #FFA347; font-size: 2.5rem;'>AXIsstant</h1>", unsafe_allow_html=True)
         st.markdown("---")
         
         # New Chat button

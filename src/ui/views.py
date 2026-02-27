@@ -89,7 +89,7 @@ def render_chat_view():
     for idx, message in enumerate(st.session_state.messages):
         role = message.get("role", "")
         is_assistant = (role == "assistant")
-        avatar = "assets/kraken_logo.png" if is_assistant else None
+        avatar = "assets/logo.png" if is_assistant else None
         
         with st.chat_message(role, avatar=avatar):
             st.markdown(message["content"])
@@ -156,7 +156,7 @@ def _process_user_query(query: str):
         st.markdown(query)
         st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{user_ts}</span>", unsafe_allow_html=True)
     
-    with st.chat_message("assistant", avatar="assets/kraken_logo.png"):
+    with st.chat_message("assistant", avatar="assets/logo.png"):
         try:
             # Create placeholder for thinking animation
             thinking_placeholder = st.empty()
