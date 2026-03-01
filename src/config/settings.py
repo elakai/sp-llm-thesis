@@ -39,23 +39,23 @@ GROQ_MODEL          = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 DOCS_FOLDER = Path(__file__).resolve().parents[2] / "documents"
 
 # 4. CACHED FACTORIES
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_embeddings() -> HuggingFaceEmbeddings:
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_generator_llm() -> ChatGroq:
     """LLM for main answer generation. Lives in server RAM permanently."""
     return ChatGroq(model=GROQ_MODEL, temperature=0.1, groq_api_key=GROQ_API_KEY)
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_critic_llm() -> ChatGroq:
     """LLM for answer verification (Critic persona). Zero temperature for deterministic checking."""
     return ChatGroq(model=GROQ_MODEL, temperature=0.0, groq_api_key=GROQ_API_KEY)
 
 # Cached with 5-minute TTL: connection stays alive across queries but refreshes
 # automatically to prevent Pinecone idle timeouts.
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=300, show_spinner=False)
 def get_vectorstore() -> PineconeVectorStore:
     return PineconeVectorStore.from_existing_index(
         index_name=PINECONE_INDEX_NAME,

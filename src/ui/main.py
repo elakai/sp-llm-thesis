@@ -60,22 +60,21 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 if not st.session_state["chat_history_loaded"]:
-    with st.spinner("Loading your past conversations..."):
-        user_history = load_chat_history(st.session_state["user_id"])
-        if user_history:
-            st.session_state["chat_history"] = user_history
-            
-            # If there are current messages, try to find matching conversation
-            current_msgs = st.session_state.get("messages", [])
-            if current_msgs and st.session_state.get("active_convo_idx") is None:
-                # Look for a conversation that matches current messages
-                for i, conv in enumerate(user_history):
-                    if conv and len(conv) > 0 and len(current_msgs) > 0:
-                        # Match by first message content
-                        if conv[0].get("content") == current_msgs[0].get("content"):
-                            st.session_state["active_convo_idx"] = i
-                            break
-        st.session_state["chat_history_loaded"] = True
+    user_history = load_chat_history(st.session_state["user_id"])
+    if user_history:
+        st.session_state["chat_history"] = user_history
+        
+        # If there are current messages, try to find matching conversation
+        current_msgs = st.session_state.get("messages", [])
+        if current_msgs and st.session_state.get("active_convo_idx") is None:
+            # Look for a conversation that matches current messages
+            for i, conv in enumerate(user_history):
+                if conv and len(conv) > 0 and len(current_msgs) > 0:
+                    # Match by first message content
+                    if conv[0].get("content") == current_msgs[0].get("content"):
+                        st.session_state["active_convo_idx"] = i
+                        break
+    st.session_state["chat_history_loaded"] = True
 
 render_sidebar()
 
