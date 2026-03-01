@@ -1,6 +1,4 @@
 import re
-from langchain_core.prompts import PromptTemplate
-from src.config.settings import get_llm
 from src.config.constants import GREETING_KEYWORDS, OFF_TOPIC_KEYWORDS, TABLE_KEYWORDS
 from src.config.logging_config import logger
 

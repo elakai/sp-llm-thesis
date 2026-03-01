@@ -2,12 +2,12 @@ import os
 import json
 import pandas as pd
 from langchain_core.prompts import ChatPromptTemplate
-from src.config.settings import get_llm, DOCS_FOLDER
+from src.config.settings import get_generator_llm, DOCS_FOLDER
 from src.core.ingestion import load_pdf
 
 def generate_synthetic_data():
     print("🚀 Initializing Custom Q&A Generator...")
-    llm = get_llm()
+    llm = get_generator_llm()
 
     print(f"📂 Loading documents from {DOCS_FOLDER}...")
     all_docs = []

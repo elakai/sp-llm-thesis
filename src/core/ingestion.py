@@ -19,8 +19,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import PINECONE_INDEX_NAME, get_vectorstore, TESSERACT_CMD
 from src.config.constants import DOCS_FOLDER, MANIFEST_FILE, CHUNK_SIZE, CHUNK_OVERLAP
 from src.config.logging_config import logger
-from src.core.retrieval import invalidate_cache # <--- Add this import
-from src.config.constants import VALID_CATEGORIES # <--- Add this import
+from src.core.retrieval import invalidate_cache
+from src.config.constants import VALID_CATEGORIES
+from src.core.feedback import supabase
 
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
@@ -29,9 +30,17 @@ def normalize_source_key(filename: str) -> str:
     return filename.strip().replace("\\", "/")
 
 def is_already_ingested(filename: str) -> bool:
-    manifest = get_uploaded_files()
+    """Checks Supabase manifest instead of local JSON."""
     norm_name = normalize_source_key(filename)
-    return norm_name in manifest and manifest[norm_name].get("status") == "Active"
+    try:
+        response = supabase.table("manifest") \
+            .select("status") \
+            .eq("filename", norm_name) \
+            .execute()
+        return bool(response.data) and response.data[0]["status"] == "Active"
+    except Exception as e:
+        logger.error(f"Manifest check failed: {e}")
+        return False
 
 def clean_text(text: str) -> str:
     if not text: return ""
@@ -287,23 +296,41 @@ def ingest_all_files():
 
 # --- LEDGER ---
 def get_uploaded_files() -> dict:
-    if not os.path.exists(MANIFEST_FILE): return {}
+    """Reads manifest from Supabase instead of local JSON."""
     try:
-        with open(MANIFEST_FILE, "r") as f: return json.load(f)
-    except: return {}
+        response = supabase.table("manifest").select("*").execute()
+        return {
+            row["filename"]: {
+                "chunks": row["chunks"],
+                "status": row["status"],
+                "uploaded_at": str(row["uploaded_at"])
+            }
+            for row in response.data
+        }
+    except Exception as e:
+        logger.error(f"Failed to read manifest from Supabase: {e}")
+        return {}
 
 def update_manifest(filename: str, chunk_count: int):
+    """Upserts a file record into Supabase manifest."""
     norm_filename = normalize_source_key(filename)
-    manifest = get_uploaded_files()
-    manifest[norm_filename] = {"chunks": chunk_count, "status": "Active", "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    with open(MANIFEST_FILE, "w") as f: json.dump(manifest, f, indent=4)
+    try:
+        supabase.table("manifest").upsert({
+            "filename": norm_filename,
+            "chunks": chunk_count,
+            "status": "Active",
+            "uploaded_at": datetime.utcnow().isoformat()
+        }).execute()
+    except Exception as e:
+        logger.error(f"Failed to update manifest: {e}")
 
 def remove_from_manifest(filename: str):
+    """Deletes a file record from Supabase manifest."""
     norm_filename = normalize_source_key(filename)
-    manifest = get_uploaded_files()
-    if norm_filename in manifest:
-        del manifest[norm_filename]
-        with open(MANIFEST_FILE, "w") as f: json.dump(manifest, f, indent=4)
+    try:
+        supabase.table("manifest").delete().eq("filename", norm_filename).execute()
+    except Exception as e:
+        logger.error(f"Failed to remove from manifest: {e}")
 
 def delete_document(filename: str) -> Tuple[bool, str]:
     norm_filename = normalize_source_key(filename)
@@ -340,11 +367,13 @@ def verify_sync() -> dict:
         return {}
     
 def check_pinecone_health() -> bool:
-    """Performs a trivial search to verify Pinecone connectivity."""
+    """Checks Pinecone connectivity and index availability via describe_index_stats."""
     try:
-        vs = get_vectorstore()
-        # Search for a nonsense string with k=1
-        vs.similarity_search("healthcheck_ping", k=1)
+        from pinecone import Pinecone
+        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+        index = pc.Index(PINECONE_INDEX_NAME)
+        stats = index.describe_index_stats()
+        logger.info(f"✅ Pinecone healthy: {stats.total_vector_count} vectors indexed")
         return True
     except Exception as e:
         logger.error(f"🚨 Pinecone Health Check Failed: {e}")

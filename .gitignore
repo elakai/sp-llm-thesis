@@ -4,6 +4,8 @@ venv/
 env/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 
 # Local Data & Documents (Do not upload to Git!)
 documents/
@@ -13,6 +15,14 @@ logs/
 *.json
 pinecone_manifest.json
 
+# Temporary files
+get-pip.py
+pam's instructions.txt
+
 # OS Files
 .DS_Store
-Thumbs.db
+Thumbsl.db
+.vscode/
+.idea/
+*.swp
+*.swo
