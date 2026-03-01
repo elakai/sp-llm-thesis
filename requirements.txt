@@ -5,7 +5,6 @@ langchain-huggingface
 langchain-google-genai
 langchain-groq
 langchain-chroma
-pinecone
 langchain-pinecone
 chromadb
 python-dotenv
