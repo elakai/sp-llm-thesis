@@ -1,94 +1,98 @@
-# src/ui/main.py
-
 import sys
 from pathlib import Path
+import uuid
+import streamlit as st
 
-# Add project root to sys.path (keep this — it's working for you)
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CONFIG (CRITICAL: Must be the very first Streamlit command)
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="AXIsstant",
+    page_icon="🦅",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. PATH SETUP 
+# ─────────────────────────────────────────────────────────────────────────────
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# ────────────────────────────────────────────────
-# Normal imports
-import streamlit as st
-from src.ui.components import render_header, render_admin_panel
-from src.core.retrieval import generate_response
-from src.core.feedback import save_feedback
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. IMPORTS (Local modules must be imported AFTER set_page_config)
+# ─────────────────────────────────────────────────────────────────────────────
+from src.ui.components import render_login, render_sidebar, render_main_styles
+from src.ui.admin_dashboard import render_admin_view
+from src.ui.views import render_history_view, render_chat_view
+from src.core.feedback import load_chat_history
+from src.core.ingestion import check_pinecone_health
 
-# MUST BE FIRST Streamlit command
-st.set_page_config(
-    page_title="CSEA Assistant",
-    page_icon="Eagle",
-    layout="centered"
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. SESSION STATE
+# ─────────────────────────────────────────────────────────────────────────────
+# Load main styles immediately to prevent flash of unstyled content
+render_main_styles()
 
-render_header()
-render_admin_panel()
+# Initialize ALL your session variables exactly as you had them
+if "session_id" not in st.session_state: st.session_state["session_id"] = str(uuid.uuid4())
+if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
+if "messages" not in st.session_state: st.session_state["messages"] = []
+if "chat_history_loaded" not in st.session_state: st.session_state["chat_history_loaded"] = False
+if "view" not in st.session_state: st.session_state["view"] = "chat"
+if "user_id" not in st.session_state: st.session_state["user_id"] = None
+if "role" not in st.session_state: st.session_state["role"] = "student"
+if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
+if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
+if "db_online" not in st.session_state:
+    st.session_state["db_online"] = check_pinecone_health()
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. AUTHENTICATION GATE
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Placeholder for future login (you'll replace this later)
-# For now, assume no user_id (anonymous feedback)
-user_id = st.session_state.get("user_id")  # will be None until login is added
+if not st.session_state["db_online"]:
+    st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
+    st.stop()
 
-# Initialize chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "Hello! I am the CSEA Information Assistant.\n\nAsk me anything about CSEA rules, dress code, typhoon guidelines, or exemptions!"
-        }
-    ]
+if not st.session_state["authenticated"]:
+    render_login()
+    st.stop()
 
-# Display existing messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+if not st.session_state["chat_history_loaded"]:
+    with st.spinner("Loading your past conversations..."):
+        user_history = load_chat_history(st.session_state["user_id"])
+        if user_history:
+            st.session_state["chat_history"] = user_history
+            
+            # If there are current messages, try to find matching conversation
+            current_msgs = st.session_state.get("messages", [])
+            if current_msgs and st.session_state.get("active_convo_idx") is None:
+                # Look for a conversation that matches current messages
+                for i, conv in enumerate(user_history):
+                    if conv and len(conv) > 0 and len(current_msgs) > 0:
+                        # Match by first message content
+                        if conv[0].get("content") == current_msgs[0].get("content"):
+                            st.session_state["active_convo_idx"] = i
+                            break
+        st.session_state["chat_history_loaded"] = True
 
-# User input
-if query := st.chat_input("Ask about typhoon uniform rule, pregnancy exemption, dress code, etc."):
-    # Add user message to history and display
-    st.session_state.messages.append({"role": "user", "content": query})
-    with st.chat_message("user"):
-        st.markdown(query)
+render_sidebar()
 
-    # Generate assistant response
-    with st.chat_message("assistant"):
-        with st.spinner("Searching official handbook..."):
-            try:
-                response = generate_response(query)
-            except Exception as e:
-                response = f"Sorry, something went wrong while generating the answer: {str(e)}"
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. VIEW CONTROLLER
+# ─────────────────────────────────────────────────────────────────────────────
 
-        st.markdown(response)
+# --- OPTION A: ADMIN VIEW ---
+if st.session_state["view"] == "admin" and st.session_state.get("role") == "admin":
+    render_admin_view()
 
-        # Feedback buttons
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            good_key = f"good_{len(st.session_state.messages)}"
-            if st.button("Helpful", key=good_key):
-                success = save_feedback(
-                    user_id=user_id,
-                    query=query,
-                    answer=response,
-                    rating="helpful"
-                )
-                if success:
-                    st.success("Thank you for the feedback!")
-                else:
-                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
+# --- OPTION B: HISTORY VIEW ---
+elif st.session_state["view"] == "history":
+    render_history_view()
 
-        with col2:
-            bad_key = f"bad_{len(st.session_state.messages)}"
-            if st.button("Not helpful", key=bad_key):
-                success = save_feedback(
-                    user_id=user_id,
-                    query=query,
-                    answer=response,
-                    rating="not_helpful"
-                )
-                if success:
-                    st.info("Thanks — we'll improve!")
-                else:
-                    st.warning("Feedback saved, but there was an issue — we'll still use it!")
+# --- OPTION C: MAIN CHAT VIEW ---
+else:
+    render_chat_view()
 
-    # Add assistant message to history
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    

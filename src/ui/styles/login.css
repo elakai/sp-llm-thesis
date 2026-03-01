@@ -1,0 +1,190 @@
+/* Force tab label text size for Streamlit tabs */
+.stApp [data-testid="stTab"],
+.stApp .stTabs [data-testid="stTab"],
+[data-testid="stTabs"] [data-testid="stTab"] {
+    font-size: 3rem !important;
+    font-weight: 700 !important;
+    color: #FFA347 !important;
+    text-align: center !important;
+}
+/* Force label text size for Streamlit forms */
+.stApp [data-testid="stForm"] label,
+.stApp .stTextInput label,
+.stApp .stTextInput div[data-testid="stMarkdownContainer"] > p,
+.stApp label {
+    font-size: 1.1rem !important;
+    font-weight: 350 !important;
+    color: #ffffff !important;
+}
+[data-testid="stForm"] label {
+    font-size: clamp(20px, 3vw, 26px) !important;
+    font-weight: 600 !important;
+    color: #FFFFFF !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Force larger text size for login form elements */
+.stApp [data-testid="stForm"] input {
+    font-size: clamp(14px, 1.8vw, 18px) !important;
+    padding: 10px 14px !important;
+}
+[data-testid="stForm"] input {
+    font-size: clamp(16px, 2.5vw, 20px) !important;
+    padding: 10px 14px !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    color: #FF8F1F !important;
+    border-radius: 10px !important;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+.stApp div.stButton > button {
+    font-size: clamp(24px, 5vw, 40px) !important;
+    padding: clamp(18px, 3vw, 28px) clamp(24px, 5vw, 40px) !important;
+}
+header, footer { visibility: hidden; }
+
+.stApp { 
+    background: linear-gradient(to bottom, #FFFBAD 0%, #FFA347 100%) !important;
+    background-attachment: fixed;
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+/* Main block container - prevent scrolling */
+.stApp > .main > .block-container {
+    max-height: 100vh;
+    overflow: hidden;
+    padding-top: 1rem !important;
+    padding-bottom: 1rem !important;
+}
+
+/* Center and scale Logo */
+.logo-container { 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    margin-top: 2vh; 
+    width: 100%; 
+    padding: 0 15px;
+    box-sizing: border-box;
+}
+.logo-image { 
+    width: 120px; 
+    filter: drop-shadow(0 10px 10px rgba(0,0,0,0.4)); 
+    transition: transform 0.3s ease; 
+}
+.logo-image:hover { transform: scale(1.05); }
+.logo-title { 
+    font-size: clamp(1.6rem, 5vw, 3rem); 
+    color: #FFA347; 
+    font-weight: 600; 
+    text-align: center; 
+    margin-bottom: 5px;
+    word-wrap: break-word;
+}
+
+/* Center the Tabs */
+[data-testid="stTabs"] {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: none !important;
+    margin-top: 0 !important;
+    width: 100%;
+}
+[data-testid="stTab"] {
+    color: #FFA347 !important;
+    font-size: 3rem !important;
+    text-align: center;
+    flex: 1 1 0;
+}
+
+/* Responsive Form - Liquid Glass Effect */
+[data-testid="stForm"] {
+    background: rgba(255, 255, 255, 0.10) !important; 
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    border-radius: 28px !important; 
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    padding: clamp(32px, 5vw, 48px) !important; 
+    max-width: 480px !important; 
+    width: 99% !important; 
+    margin: 0 auto !important;
+    box-sizing: border-box;
+    color: #FFFFFF !important;
+}
+
+/* Input fields responsive - Glass Effect */
+[data-testid="stForm"] input {
+    font-size: clamp(16px, 2vw, 22px) !important;
+    padding: 12px 18px !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    color: #FF8F1F !important;
+    border-radius: 10px !important;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+
+/* Form labels */
+[data-testid="stForm"] label {
+    font-size: clamp(20px, 3vw, 26px) !important;
+    font-weight: 600 !important;
+    color: #FFFFFF !important;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+div.stButton > button { 
+    width: 100% !important; 
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    color: #FF8F1F !important; 
+    font-weight: bold !important; 
+    border-radius: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    padding: clamp(14px, 2vw, 20px) clamp(18px, 3vw, 28px) !important;
+    font-size: clamp(18px, 2.5vw, 24px) !important;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+div.stButton > button:hover {
+    background: #FF8F1F !important;
+    color: #fff !important; 
+    border: 1px solid #FF8F1F !important;
+}
+
+/* Mobile styles (max-width: 480px) */
+@media screen and (max-width: 480px) {
+    .logo-container { margin-top: 1vh; }
+    .logo-image { width: 80px; }
+    [data-testid="stForm"] { 
+        width: 95% !important; 
+        padding: 15px !important;
+        border-radius: 15px !important;
+    }
+}
+
+/* Tablet styles (481px - 768px) */
+@media screen and (min-width: 481px) and (max-width: 768px) {
+    .logo-container { margin-top: 2vh; }
+    .logo-image { width: 100px; }
+    [data-testid="stForm"] { 
+        width: 85% !important;
+        padding: 20px !important;
+    }
+}
+
+/* Large screens (769px and up) */
+@media screen and (min-width: 769px) {
+    .logo-container { margin-top: 2vh; }
+    .logo-image { width: 120px; }
+    [data-testid="stForm"] { 
+        width: 92% !important;
+        max-width: 520px !important;
+    }
+}
+
+/* Red error messages */
+[data-testid="stAlert"] {
+    background-color: #991b1b !important;
+    color: white !important;
+    border-radius: 15px !important;
+}

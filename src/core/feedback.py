@@ -1,23 +1,102 @@
-# src/core/feedback.py
-import os
-import json
+import streamlit as st
 from datetime import datetime
-from src.config.settings import FEEDBACK_FILE
+from collections import defaultdict
+from src.core.auth import supabase
+from src.config.constants import IGNORED_RESPONSES
+from src.config.logging_config import logger
 
-def save_feedback(query: str, answer: str, rating: str):
-    entry = {
-        "timestamp": datetime.now().isoformat(),
-        "question": query,
-        "answer": answer,
-        "rating": rating
-    }
+def log_conversation(query, response, user_email, session_id, context, metrics=None):
+    """Saves the chat interaction, context, and performance metrics to Supabase."""
+    # 1. Guardrail: Don't log greetings or errors
+    if any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
+        return
 
-    data = []
-    if os.path.exists(FEEDBACK_FILE):
-        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    try:
+        safe_context = context if context and context.strip() != "" else "No context retrieved"
+        
+        data = {
+            "session_id": session_id,
+            "user_email": user_email,
+            "query": query,
+            "response": response,
+            "context": safe_context,
+            "created_at": datetime.utcnow().isoformat(),
+        }
 
-    data.append(entry)
+        if metrics:
+            data["retrieval_latency"] = metrics.get("retrieval_latency", 0.0)
+            data["generation_latency"] = metrics.get("generation_latency", 0.0)
+            data["total_latency"] = metrics.get("total_latency", 0.0)
 
-    with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        supabase.table("chat_logs").insert(data).execute()
+        
+    except Exception as e:
+        logger.error(f"Backend Logging Error: {e}")
+
+def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous"):
+    """Updates the most recent log entry for this user with a rating."""
+    try:
+        data = {"rating": rating}
+        supabase.table("chat_logs") \
+            .update(data) \
+            .eq("user_email", user_id) \
+            .eq("query", query) \
+            .execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save feedback: {e}")
+        return False
+
+def delete_conversation(session_id: str, user_email: str):
+    """Deletes a conversation from the database by session_id."""
+    try:
+        if not session_id or not user_email:
+            return False
+        
+        supabase.table("chat_logs") \
+            .delete() \
+            .eq("session_id", session_id) \
+            .eq("user_email", user_email) \
+            .execute()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting conversation: {e}")
+        return False
+
+def load_chat_history(user_email: str):
+    """Reconstructs past conversations grouped by session for the UI."""
+    try:
+        if not user_email: return []
+        
+        response = supabase.table("chat_logs") \
+            .select("session_id, query, response, created_at") \
+            .eq("user_email", user_email) \
+            .order("created_at", desc=False) \
+            .execute()
+        
+        if not response.data:
+            return []
+
+        sessions = defaultdict(list)
+        session_order = [] 
+        
+        for row in response.data:
+            s_id = row.get("session_id")
+            if s_id:
+                if s_id not in session_order:
+                    session_order.append(s_id)
+                sessions[s_id].append({"role": "user", "content": row["query"]})
+                sessions[s_id].append({"role": "assistant", "content": row["response"]})
+
+        history_list = []
+        for s_id in session_order:
+            history_list.append({
+                "session_id": s_id,
+                "messages": sessions[s_id]
+            })
+            
+        return history_list
+
+    except Exception as e:
+        logger.error(f"Error loading history: {e}")
+        return []

@@ -1,121 +1,135 @@
+# CSEA Information Assistant (AXIsstant)
 
-# CSEA Information Assistant
-### Thesis Prototype – College of Science, Engineering and Architecture  
+**Thesis Prototype** 
+
+College of Science, Engineering and Architecture
+
 Ateneo de Naga University
 
-A Retrieval-Augmented Generation (RAG) chatbot that answers student inquiries using official CSEA documents (Student Handbook, dress code, etc.).  
-Uses **Llama 3.3 70B** via Groq and **ChromaDB** as vector store.
+A **Retrieval-Augmented Generation (RAG)** chatbot designed to provide accurate, conversational answers to student inquiries using official CSEA documents (Thesis manuscripts, Curriculums, Memos, and Lab Manuals).
+
+## Key Technologies
+
+* **LLM**: Llama 3.3 70B via Groq
+* **Embeddings**: `all-MiniLM-L6-v2` (Sentence Transformers)
+* **Vector Database**: Pinecone (Serverless)
+* **PDF Handling**: PyMuPDF + pdfplumber + Tesseract OCR
+* **Document Loading**: Support for `.pdf`, `.docx`, `.csv`, `.xlsx`, and images (with text)
+* **Frontend**: Streamlit
 
 ---
 
-## Setup Instructions (Tested: November 19, 2025)
+## 📂 Subfolder Category Routing
+
+The system uses a hierarchical folder structure to automatically tag documents with metadata categories. Organize your `documents/` folder as follows:
+
+* `documents/curriculum/` — Academic program matrices
+* `documents/thesis/` — Past CSEA Thesis Manuscripts
+* `documents/memos/` — Official memorandums and circulars
+* `documents/ojt/` — Internship requirements and partner lists
+* `documents/laboratory/` — Lab manuals and equipment inventories
+
+---
+
+## ⚡ Setup Instructions
 
 ### 1. Python Version
-- Use **Python 3.12.7** (do not use Python 3.13)
 
-### 2. Install Tesseract OCR (Manual – Required for scanned PDFs)
-- Download installer: https://github.com/UB-Mannheim/tesseract/wiki
-- Run the `.exe` and install to default location  
-  → `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- This is needed because the handbook and dress code.pdf are scanned/image-only.
+* **Recommended**: Python 3.11 or 3.12 (3.12.7 tested).
 
-### 3. Clone the Repository
-```bash
-git clone https://github.com/elakai/sp-llm-thesis.git
-cd sp-llm-thesis
-```
+### 2. Tesseract OCR Installation
 
-### 4. Create Virtual Environment (Recommended)
-**Windows:**
+1. Download installer: [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki).
+2. Install to: `C:\Program Files\Tesseract-OCR\`.
+3. Add the path to your `.env` file as `TESSERACT_CMD`.
+
+### 3. Virtual Environment & Dependencies
+
 ```bash
 python -m venv venv
-.\venv\Scripts\activate
-```
-
-**Mac/Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 5. Install Dependencies
-```bash
+# Windows
+venv\Scripts\activate
 pip install -r requirements.txt
+
 ```
 
-`requirements.txt` (current working set):
-```txt
-streamlit
-langchain-community
-langchain-core
-langchain-huggingface
-langchain-groq
-langchain-chroma
-chromadb
-pymupdf
-pytesseract
-pillow
-sentence-transformers
-```
+### 4. Storage Optimization: Delete After Ingest
 
-### 6. Add Documents (Not in Git – too large)
-1. Create a folder named `documents` in the project root.
-2. Download these files from Google Drive:  
-   https://drive.google.com/drive/folders/1HVGwo_GAvfIZna3_6jTanJB2A9ixEYbH?usp=sharing
-3. Place inside `documents` folder
+**Note:** To maintain a lean server environment, the system is configured to **automatically delete** physical files from the `documents/` subfolders once they are successfully indexed in Pinecone. The `pinecone_manifest.json` serves as the permanent record of active documents.
 
 ---
 
-## Running the App
+## 🛠 Running the Application
 
 ```bash
-streamlit run app.py
+streamlit run src/ui/main.py
+
 ```
 
-### First-Time Setup (Do this once)
-1. Open the app in browser
-2. Sidebar → Password: `csea2025`
-3. Click **FULL RESET**
-4. Click **TRAIN BOT**  
-   → Takes ~60–90 seconds for both PDFs
-5. Wait for balloons → training complete
+---
+
+### Admin Features
+
+* **Document Ledger**: View and manage "invisible" cloud-stored documents via the manifest.
+* **Chunk Inspector**: Debug the top-K retrieved context chunks.
+* **Auto-Wipe Cache**: The semantic cache is automatically invalidated after every ingestion run to ensure data freshness.
 
 
-## Admin Access
-- **Password:** `csea2025`
-- Allows:
-  - Full reset of knowledge base
-  - Retrain from `documents` folder
-  - View current chunk count
+---
 
+## Project Structure (Modular Architecture)
 
-## Project Structure
+The project is organized to separate core RAG logic from the user interface and configuration settings.
+
+```text
+C:.
+│   .gitignore
+│   csea_evaluation_dataset.csv   # Ground truth dataset for RAG testing
+│   final_evaluation_report.csv   # Metrics output from the evaluation pipeline
+│   get-pip.py
+│   pam's instructions.txt
+│   pinecone_manifest.json        # Primary ledger for cloud-stored document chunks
+│   README.md
+│   requirements.txt              # Project dependencies
+│   test.py                       # General utility testing script
+│
+├───assets                        # Visual branding assets
+│       logo.png
+│
+└───src
+    │   run_eval.py               # Main script to execute the RAGAS evaluation suite
+    │   __init__.py
+    │
+    ├───config                    # Global Configuration & Environment Settings
+    │       constants.py          # Valid categories, paths, and chunking parameters
+    │       logging_config.py     # Windows-compatible Unicode logging setup
+    │       settings.py           # LLM, Embeddings, and Vector Database factory
+    │
+    ├───core                      # Backend Processing (The "Brain")
+    │       auth.py               # User authentication and session management
+    │       decomposition.py      # Multi-query logic for complex student inquiries
+    │       evaluate_rag.py       # RAGAS metrics implementation (Faithfulness, Relevancy)
+    │       feedback.py           # Conversation logging and user rating storage
+    │       generate_testset.py   # Synthetic data generation for evaluation prep
+    │       guardrails.py         # Topic validation and safety filtering
+    │       ingestion.py          # Multimodal loading and "Delete After Ingest" logic
+    │       retrieval.py          # Semantic Cache, Contextualization, and Reranking
+    │       router.py             # Metadata-based category and program routing
+    │       __init__.py
+    │
+    └───ui                        # Frontend Interface (Streamlit)
+        │   admin_dashboard.py    # Analytics, Document Ledger, and Index Manager
+        │   components.py         # Reusable UI widgets and thinking animations
+        │   main.py               # Entry point: `streamlit run src/ui/main.py`
+        │   views.py              # Chat and History view controllers
+        │   __init__.py
+        │
+        └───styles                # Custom CSS Assets
+                login.css         # Portal styling for the authentication screen
+                main.css          # Core visual theme and chat bubble styling
+
 ```
-sp-llm-thesis/
-├── app.py              Main application
-├── requirements.txt
-├── documents/          ← Put PDFs here (not tracked by Git)
-├── chroma_db/          ← Auto-generated (do not commit)
-└── README.md
-```
 
-### .gitignore should contain:
-```
-chroma_db/
-documents/
-venv/
-__pycache__/
-*.pyc
-```
+---
 
-
-## Tested Questions (Should answer correctly)
-- What is the uniform rule during typhoon signal no. 2 in Naga City?
-- Can pregnant students be exempted from wearing uniform?
-- What is the vision of ADNU
-
-## Troubleshooting
-- If training hangs → make sure Tesseract is installed correctly
-- If model error → code already uses `llama-3.3-70b-versatile` (current as of Nov 2025)
-- Never commit `chroma_db` or `documents` folder
 

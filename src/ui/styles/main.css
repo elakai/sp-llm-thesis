@@ -1,0 +1,412 @@
+header, footer {visibility: hidden;}
+[data-testid="sidebar-button"], 
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+button[kind="header"],
+[data-testid="baseButton-header"],
+.stSidebarCollapsedControl { 
+    display: none !important; 
+    visibility: hidden !important;
+}
+
+[data-testid="stSidebar"] { 
+    min-width: 280px !important; 
+    max-width: 280px !important; 
+    background-color: #FF8F1F;
+    margin-right: auto;
+    transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1), 
+                opacity 0.35s ease-out;
+    will-change: transform;
+}
+
+[data-testid="stSidebar"] > div {
+    transition: transform 0.65s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+[data-testid="stSidebar"][aria-expanded="false"] {
+    transform: translateX(-100%);
+    opacity: 0.95;
+}
+
+[data-testid="stSidebar"][aria-expanded="true"] {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.stApp { 
+    background: #000000;
+    background-attachment: fixed;
+}
+
+/* Subtle animated gradient overlay */
+.stApp::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+        radial-gradient(ellipse at 20% 80%, rgba(255, 143, 31, 0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(255, 251, 173, 0.03) 0%, transparent 40%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.sidebar-top {
+    text-align: center;
+    width: 100%;
+}
+
+/* Better Message Bubbles with Glassmorphism */
+[data-testid="stChatMessage"] { 
+    border-radius: 18px; 
+    padding: 15px; 
+    margin-bottom: 15px; 
+    max-width: 80%; 
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 
+                0 2px 8px rgba(0, 0, 0, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: box-shadow 0.3s ease, transform 0.2s ease, border-color 0.3s ease;
+    animation: slideUpFade 0.4s ease-out forwards;
+}
+
+/* Avatar size in chat messages */
+[data-testid="stChatMessage"] [data-testid="stAvatar"],
+[data-testid="stChatMessage"] img {
+    width: 60px !important;
+    height: 60px !important;
+}
+
+[data-testid="stChatMessage"]:hover {
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 
+                0 4px 12px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+[data-testid="stChatMessageAssistant"] { 
+    background: #000000 !important; 
+    border-left: 5px solid #FF8F1F !important; 
+    color: #FFFFFF !important;
+    margin-right: auto;
+    box-shadow: 0 8px 32px rgba(255, 143, 31, 0.15), 
+                0 4px 12px rgba(0, 0, 0, 0.4),
+                inset 0 1px 0 rgba(255, 143, 31, 0.1) !important;
+    padding: 20px !important;
+    border: 1px solid rgba(255, 143, 31, 0.2);
+    border-left: 5px solid #FF8F1F !important;
+}
+
+/* Response text box styling - target all content in assistant messages */
+[data-testid="stChatMessageAssistant"] > div,
+[data-testid="stChatMessageAssistant"] .stMarkdown,
+[data-testid="stChatMessageAssistant"] [data-testid="stMarkdownContainer"],
+[data-testid="stChatMessageAssistant"] .element-container {
+    background-color: transparent !important;
+}
+
+/* Main content wrapper with visible background */
+[data-testid="stChatMessageAssistant"] [data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stChatMessageAssistant"] [data-testid="stVerticalBlock"] {
+    background: rgba(20, 20, 20, 0.9) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    padding: 15px 20px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Target the actual text paragraphs and lists in assistant messages */
+[data-testid="stChatMessageAssistant"] p,
+[data-testid="stChatMessageAssistant"] li,
+[data-testid="stChatMessageAssistant"] ul,
+[data-testid="stChatMessageAssistant"] ol {
+    background-color: transparent !important;
+    padding: 4px 0 !important;
+    margin: 4px 0 !important;
+}
+
+[data-testid="stChatMessageUser"] { 
+    background: #000000 !important; 
+    border-right: 5px solid #FFFBAD !important; 
+    color: #FFFFFF !important;
+    margin-left: auto;
+    box-shadow: 0 8px 32px rgba(255, 251, 173, 0.1), 
+                0 4px 12px rgba(0, 0, 0, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 251, 173, 0.15);
+    border-right: 5px solid #FFFBAD !important;
+}
+
+/* Increase text size in chat messages */
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] li,
+[data-testid="stChatMessage"] span:not(.timestamp) {
+    font-size: 1.1rem !important;
+    line-height: 1.6 !important;
+}
+
+/* Floating Chat Input Box */
+[data-testid="stChatInput"] { padding: 1.5rem; background-color: transparent !important; }
+[data-testid="stChatInput"] > div { 
+    border-radius: 30px !important; 
+    border: 1px solid #FF8F1F !important; 
+    background-color: #000000 !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: border-color 0.3s ease, 
+                box-shadow 0.3s ease,
+                transform 0.2s ease;
+}
+
+[data-testid="stChatInput"] > div:focus-within { 
+    border-color: #FFFBAD !important;
+    box-shadow: 0 0 0 3px rgba(255, 251, 173, 0.25),
+                0 4px 12px rgba(255, 143, 31, 0.15);
+    transform: translateY(-1px);
+}
+
+/* Increase text size in chat input */
+[data-testid="stChatInput"] textarea {
+    font-size: 1.1rem !important;
+    color: #FFFFFF !important;
+}
+
+/* Timestamp Styling */
+.timestamp {
+    font-size: 1.0rem !important;
+    color: #FFFBAD !important;
+    opacity: 0.8;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+    margin-top: 6px;
+    display: block;
+    transition: opacity 0.2s ease;
+    line-height: 1 !important;
+}
+
+[data-testid="stChatMessage"]:hover .timestamp {
+    opacity: 0.8;
+}
+
+/* Sidebar Profile */
+.user-profile { padding: 12px; background-color: #000000; border-radius: 12px; color: #FFFFFF; position: fixed; bottom: 20px; width: 240px; border: 1px solid rgba(255, 143, 31, 0.3); }
+
+/* Thinking Animation */
+.thinking-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+}
+
+.thinking-text {
+    color: #FF8F1F;
+    font-size: 1rem;
+    font-style: italic;
+}
+
+.thinking-dots {
+    display: flex;
+    gap: 4px;
+}
+
+.thinking-dots span {
+    width: 8px;
+    height: 8px;
+    background-color: #FF8F1F;
+    border-radius: 50%;
+    animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.thinking-dots span:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.thinking-dots span:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+.thinking-dots span:nth-child(3) {
+    animation-delay: 0s;
+}
+
+@keyframes bounce {
+    0%, 80%, 100% {
+        transform: scale(0);
+        opacity: 0.5;
+    }
+    40% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* Chat Message Entrance Animation */
+@keyframes slideUpFade {
+    0% {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Scroll-to-Bottom Button */
+.scroll-to-bottom {
+    position: fixed;
+    bottom: 100px;
+    right: 30px;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #FF8F1F 0%, #e67c15 100%);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 15px rgba(255, 143, 31, 0.4),
+                0 2px 6px rgba(0, 0, 0, 0.3);
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+                box-shadow 0.3s ease,
+                opacity 0.3s ease;
+    z-index: 1000;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.scroll-to-bottom.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.scroll-to-bottom:hover {
+    transform: translateY(-3px) scale(1.05);
+    box-shadow: 0 6px 20px rgba(255, 143, 31, 0.5),
+                0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+.scroll-to-bottom:active {
+    transform: translateY(0) scale(0.95);
+}
+
+.scroll-to-bottom::after {
+    content: "";
+    width: 12px;
+    height: 12px;
+    border-right: 3px solid #ffffff;
+    border-bottom: 3px solid #ffffff;
+    transform: rotate(45deg) translateY(-3px);
+}
+
+/* Pulse animation for new messages */
+.scroll-to-bottom.has-new {
+    animation: pulse-glow 2s infinite;
+}
+
+@keyframes pulse-glow {
+    0%, 100% {
+        box-shadow: 0 4px 15px rgba(255, 143, 31, 0.4),
+                    0 2px 6px rgba(0, 0, 0, 0.3);
+    }
+    50% {
+        box-shadow: 0 4px 25px rgba(255, 143, 31, 0.7),
+                    0 2px 10px rgba(255, 143, 31, 0.4);
+    }
+}
+
+/* Feedback Buttons Styling - Only in assistant messages */
+[data-testid="stChatMessageAssistant"] [data-testid="stHorizontalBlock"] button {
+    min-width: 50px !important;
+    padding: 8px 16px !important;
+    border-radius: 20px !important;
+    font-size: 1.2rem !important;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+    border: 2px solid transparent !important;
+    background: rgba(0, 0, 0, 0.05) !important;
+}
+
+[data-testid="stChatMessageAssistant"] [data-testid="stHorizontalBlock"] button:hover {
+    transform: scale(1.15) !important;
+    background: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Hide any buttons that might accidentally appear in user messages */
+[data-testid="stChatMessageUser"] [data-testid="stHorizontalBlock"] button {
+    display: none !important;
+}
+
+/* Thumbs up active state */
+[data-testid="stChatMessageAssistant"] [data-testid="stHorizontalBlock"] button.feedback-active-helpful,
+[data-testid="stChatMessageAssistant"] [data-testid="stHorizontalBlock"] button[aria-pressed="true"]:first-of-type {
+    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+    border-color: #22c55e !important;
+    box-shadow: 0 4px 15px rgba(34, 197, 94, 0.4), 0 2px 6px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Thumbs down active state */
+[data-testid="stChatMessageAssistant"] [data-testid="stHorizontalBlock"] button.feedback-active-not-helpful {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+    border-color: #ef4444 !important;
+    box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4), 0 2px 6px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Pulse animation for newly selected feedback */
+@keyframes feedback-pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+    100% { transform: scale(1); }
+}
+
+.feedback-pulse {
+    animation: feedback-pulse 0.3s ease-out;
+}
+
+/* Feedback Indicator Badge */
+.feedback-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-top: 12px;
+    margin-bottom: 8px;
+    animation: fadeInScale 0.3s ease-out;
+}
+
+.feedback-indicator span {
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+
+.feedback-indicator.helpful {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(22, 163, 74, 0.2) 100%);
+    color: #16a34a;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.feedback-indicator.not-helpful {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(220, 38, 38, 0.2) 100%);
+    color: #dc2626;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+@keyframes fadeInScale {
+    0% {
+        opacity: 0;
+        transform: scale(0.8);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
