@@ -5,9 +5,9 @@ langchain-huggingface
 langchain-google-genai
 langchain-groq
 langchain-chroma
-langchain-pinecone
+pinecone==3.2.2
+langchain-pinecone==0.1.3
 chromadb
-pinecone
 python-dotenv
 pillow
 sentence-transformers
