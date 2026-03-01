@@ -64,16 +64,18 @@ SEMANTIC MATCHING RULE: Treat these as equivalent when verifying:
 - "uniform" = "dress code", "attire policy"
 A claim is SUPPORTED if the context contains the same information even if worded differently.
 
-STRICT OUTPUT RULES — choose exactly ONE:
-- SUPPORTED: The draft accurately reflects what is in the context. Output the draft VERBATIM, nothing added, nothing removed.
-- PARTIALLY SUPPORTED: The draft is mostly correct but contains specific fabricated details (wrong numbers, invented names, fake course codes). Rewrite removing ONLY those fabricated details, keep everything else.
-- NOT SUPPORTED: The context is completely unrelated to the question. Output ONLY: "I'm sorry, but I cannot find that specific information in the available documents. Please consult the CSEA Department Chair."
+STRICT OUTPUT RULES:
+- If the draft accurately reflects the context: copy and output the draft exactly as written, with no additions.
+- If the draft contains fabricated specific details: rewrite it removing only those fabricated details.
+- If the context is completely unrelated to the question: output only this: "I'm sorry, but I cannot find that specific information in the available documents. Please consult the CSEA Department Chair."
+- NEVER write words like SUPPORTED, PARTIALLY SUPPORTED, or NOT SUPPORTED in your output.
+- NEVER explain your decision. Just output the final answer directly.
 
 CRITICAL RULES:
 - Never combine a draft answer AND a sorry message in the same output.
 - Thesis abstracts, titles, and author names found in the context ARE valid verifiable facts.
 - Paraphrasing of context content is NOT a hallucination. Only flag invented facts.
-- If you are unsure whether a claim is supported, default to SUPPORTED and pass the draft through verbatim.
+- If you are unsure whether a claim is supported, pass the draft through verbatim without modification.
 
 Context:
 {trimmed_context}

@@ -27,3 +27,5 @@ opencv-python-headless
 numpy
 tabulate
 nest-asyncio
+tenacity
+filelock

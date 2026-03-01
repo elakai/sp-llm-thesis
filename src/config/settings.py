@@ -10,7 +10,13 @@ from langchain_pinecone import PineconeVectorStore
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(env_path)
 
-TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+# Support both local development and Streamlit Cloud deployment
+if os.getenv("STREAMLIT_RUNTIME_EXISTS"):
+    # Streamlit Cloud
+    TESSERACT_CMD = os.getenv("TESSERACT_CMD", "/usr/bin/tesseract")
+else:
+    # Local Windows development
+    TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 # 2. VALIDATION (Fail fast at startup)
 PINECONE_API_KEY  = os.getenv("PINECONE_API_KEY")
