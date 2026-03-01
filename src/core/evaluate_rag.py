@@ -19,7 +19,7 @@ from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from src.config.logging_config import logger
 
-from src.config.settings import get_llm, get_embeddings, get_vectorstore
+from src.config.settings import get_generator_llm, get_embeddings, get_vectorstore
 
 def run_evaluation():
     print("🚀 Starting Ragas Evaluation Pipeline...")
@@ -35,7 +35,7 @@ def run_evaluation():
     ground_truths = test_df["ground_truth"].tolist()
     
     # 2. Setup your system components (The Brain & The Reader)
-    llm = get_llm()
+    llm = get_generator_llm()
     embeddings = get_embeddings()
     vectorstore = get_vectorstore()
     

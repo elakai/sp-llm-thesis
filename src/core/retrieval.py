@@ -1,5 +1,4 @@
 import time
-import random 
 import numpy as np
 import streamlit as st
 import concurrent.futures
@@ -7,28 +6,31 @@ from typing import List, Dict
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
+import re
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.core.guardrails import verify_answer, validate_query, redact_pii
-from src.config.settings import get_llm, get_vectorstore, get_embeddings, get_retriever
+from src.config.settings import get_generator_llm, get_vectorstore, get_embeddings, get_retriever
 from src.core.router import route_query   
 from src.core.decomposition import decompose_query
 from src.config.constants import (
     RETRIEVAL_K, 
     RERANKER_TOP_K, 
     DECOMPOSE_TRIGGERS, 
-    CONFIDENCE_THRESHOLD,
-    RETRIEVAL_K_MAP,             # <-- Added this
-    LOW_CONFIDENCE_THRESHOLD,    # <-- Added this
-    HIGH_CONFIDENCE_THRESHOLD,   # <-- Added this
-    STREAM_DELAY                 # <-- Added this
+    RETRIEVAL_K_MAP,
+    LOW_CONFIDENCE_THRESHOLD,
+    HIGH_CONFIDENCE_THRESHOLD,
+    STREAM_DELAY
 )
 from src.config.logging_config import logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+@st.cache_resource
+def get_reranker() -> CrossEncoder:
+    """CrossEncoder model lives in server RAM permanently."""
+    return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 @st.cache_resource
 def get_semantic_cache() -> list:
@@ -36,12 +38,24 @@ def get_semantic_cache() -> list:
 
 GLOBAL_CACHE = get_semantic_cache()
 
+# Words that signal the query references prior conversation and needs rewriting
+_CONTEXT_TRIGGERS = re.compile(
+    r'\b(it|its|they|them|their|this|that|these|those|the same|'
+    r'above|previous|earlier|last|mentioned|said|again|also|more)\b',
+    re.IGNORECASE
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONVERSATIONAL MEMORY & CACHING FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> str:
     history_to_process = chat_history_list[1:] if len(chat_history_list) > 1 else []
     if not history_to_process: return query
+    
+    # Skip the LLM call if the query doesn't reference prior conversation
+    if not _CONTEXT_TRIGGERS.search(query):
+        logger.info(f"Context skip: No pronouns/references detected in '{query}'")
+        return query
         
     history_text = format_chat_history(chat_history_list)
     prompt = f"""Given the following chat history and the user's latest question, formulate a standalone question that can be understood without the chat history.
@@ -54,7 +68,7 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
     Standalone Question:"""
     
     try:
-        llm = get_llm()
+        llm = get_generator_llm()
         standalone_query = llm.invoke(prompt).content.strip()
         logger.info(f"Memory Rewrite: '{query}' -> '{standalone_query}'")
         return standalone_query
@@ -103,15 +117,6 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
         formatted_history.append(f"{role}: {content}")
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
-def rewrite_query(query: str) -> str:
-    if len(query.split()) < 4: return query
-    try:
-        llm = get_llm()
-        prompt = f"Extract the core keywords for a vector search from this student question: {query}"
-        return llm.invoke(prompt).content.strip() or query
-    except Exception:
-        return query
-
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
     if not docs: return []
     try:
@@ -149,7 +154,9 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
+def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None):
+    if chat_history_list is None:
+        chat_history_list = []
     start_time = time.time()
     top_score = 0.0
     
@@ -227,14 +234,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     
     all_docs = []
 
-    # ⚡ Execute Parallel Retrieval using ThreadPoolExecutor
-    # sub_queries contains either the single standalone query or decomposed parts
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = list(executor.map(retriever.invoke, sub_queries))
-    
-    # Flatten the list of lists into a single document list
-    for res in results: 
-        all_docs.extend(res)
+    # ⚡ Execute Retrieval — skip thread pool overhead for single queries
+    if len(sub_queries) == 1:
+        all_docs = retriever.invoke(sub_queries[0])
+    else:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(retriever.invoke, sub_queries))
+        for res in results:
+            all_docs.extend(res)
 
     # 🛑 Early exit if no information is found
     if not all_docs:
@@ -248,13 +255,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = []):
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
-    rewritten_query = rewrite_query(standalone_query) 
-    hybrid_results = hybrid_rerank(rewritten_query, latest_per_source)
+    hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
     if hybrid_results:
         try:
             pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-            scores = reranker.predict(pairs)
+            scores = get_reranker().predict(pairs)
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
             top_score = float(scores[sorted_indices[0]])
@@ -323,7 +329,7 @@ Your goal is to provide accurate answers based ONLY on the context provided, whi
             return
 
         # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
-        llm = get_llm()
+        llm = get_generator_llm()
         draft_response = get_llm_response(llm, prompt).content
         
         if top_score < HIGH_CONFIDENCE_THRESHOLD:
