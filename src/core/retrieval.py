@@ -27,12 +27,12 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_reranker() -> CrossEncoder:
     """CrossEncoder model lives in server RAM permanently."""
     return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_semantic_cache() -> list:
     return []
 
