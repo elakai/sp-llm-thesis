@@ -18,6 +18,7 @@ elif sys.platform == "win32":
     TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 else:
     TESSERACT_CMD = "/usr/bin/tesseract"
+print(f"[BOOT] Tesseract resolved to: {TESSERACT_CMD} (platform={sys.platform})")
 
 # 2. VALIDATION (Fail fast at startup)
 PINECONE_API_KEY  = os.getenv("PINECONE_API_KEY")

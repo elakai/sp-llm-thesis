@@ -25,6 +25,7 @@ from src.core.feedback import supabase
 
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+logger.info(f"Tesseract CMD set to: {TESSERACT_CMD}")
 
 def normalize_source_key(filename: str) -> str:
     return filename.strip().replace("\\", "/")
