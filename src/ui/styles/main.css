@@ -12,7 +12,7 @@ button[kind="header"],
 [data-testid="stSidebar"] { 
     min-width: 280px !important; 
     max-width: 280px !important; 
-    background: linear-gradient(to bottom, #FFFBAD 0%, #FFA347 100%) !important;
+    background: #FFB85C !important;
     margin-right: auto;
     transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1), 
                 opacity 0.35s ease-out;
@@ -20,7 +20,7 @@ button[kind="header"],
 }
 
 [data-testid="stSidebar"] > div {
-    background: linear-gradient(to bottom, #FFFBAD 0%, #FFA347 100%) !important;
+    background: #FFB85C !important;
     transition: transform 0.65s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
@@ -64,7 +64,9 @@ button[kind="header"],
     border-radius: 18px; 
     padding: 15px; 
     margin-bottom: 15px; 
-    max-width: 80%; 
+    max-width: 100%; 
+    width: 100%;
+    box-sizing: border-box;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 
@@ -153,7 +155,7 @@ button[kind="header"],
 }
 
 /* Floating Chat Input Box */
-[data-testid="stChatInput"] { padding: 1.5rem; background-color: transparent !important; }
+[data-testid="stChatInput"] { padding: 1.5rem 0; background-color: transparent !important; }
 [data-testid="stBottomBlockContainer"],
 [data-testid="stBottomBlockContainer"] > div,
 [data-testid="stBottom"],

@@ -1,10 +1,20 @@
 import streamlit as st
 import uuid
 import copy
+import base64
 from datetime import datetime
+from pathlib import Path
 
 from src.core.retrieval import generate_response
 from src.core.feedback import save_feedback, log_conversation, delete_conversation
+
+
+def _get_logo_base64() -> str:
+    logo_path = Path("assets/logo.png")
+    if logo_path.exists():
+        with open(logo_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
@@ -33,7 +43,7 @@ def render_history_view():
             first_msg = messages[0]["content"] if messages else "Empty Chat"
             title = first_msg[:50] + "..." if len(first_msg) > 50 else first_msg
             
-            with st.expander(f"💬 {title}", expanded=False):
+            with st.expander(f"{title}", expanded=False):
                 # Iterate over the messages list
                 for msg in messages:
                     role_icon = "🐙" if msg["role"] == "assistant" else "👤"
@@ -75,6 +85,34 @@ def render_chat_view():
     if st.session_state.get("show_welcome"):
         st.toast(f"Welcome back, {st.session_state.get('full_name', 'User')}!", icon="👋")
         st.session_state["show_welcome"] = False
+
+    logo_base64 = _get_logo_base64()
+    if logo_base64:
+        st.markdown(
+            f"""
+            <style>
+            .stApp::before {{
+                content: "" !important;
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background:
+                    radial-gradient(ellipse at 20% 80%, rgba(255, 143, 31, 0.05) 0%, transparent 50%),
+                    radial-gradient(ellipse at 80% 20%, rgba(255, 251, 173, 0.03) 0%, transparent 40%),
+                    url("data:image/png;base64,{logo_base64}");
+                background-repeat: no-repeat, no-repeat, no-repeat;
+                background-position: center, center, center;
+                background-size: auto, auto, min(52vw, 504px);
+                opacity: 0.14;
+                pointer-events: none;
+                z-index: 0;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
     
     st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
 
