@@ -409,7 +409,7 @@ def verify_sync() -> dict:
         
         # We fetch unique 'source' values from the index
         # Note: Depending on Pinecone version, you may need to use list_ids or a dummy query
-        results = index.query(vector=[0]*1536, top_k=10000, include_metadata=True)
+        results = index.query(vector=[0]*384, top_k=10000, include_metadata=True)
         pinecone_sources = {d['metadata']['source'] for d in results['matches']}
         
         return {
