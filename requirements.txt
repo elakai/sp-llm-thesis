@@ -7,7 +7,6 @@ langchain-groq
 langchain-chroma
 langchain-pinecone
 chromadb
-pinecone-client>=3.0.0
 python-dotenv
 pillow
 sentence-transformers
