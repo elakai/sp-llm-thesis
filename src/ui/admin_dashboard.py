@@ -39,9 +39,9 @@ def render_document_management():
 
     uploaded_files = st.file_uploader(
         "Drop files here or click to browse",
-        type=["pdf", "docx", "xlsx", "csv", "txt"],
+        type=["pdf", "docx", "xlsx", "csv", "txt", "png", "jpg", "jpeg", "tiff", "bmp"],
         accept_multiple_files=True,
-        help="Supported: PDF, Word, Excel, CSV, Text",
+        help="Supported: PDF, Word, Excel, CSV, Text, Images (PNG/JPG/TIFF — text extracted via OCR)",
     )
 
     # Warn about large files

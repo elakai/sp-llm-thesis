@@ -1,7 +1,19 @@
 import logging
 import sys
 import io
+from datetime import datetime, timezone, timedelta
 from src.config.constants import LOGS_FOLDER
+
+# Philippine Standard Time (UTC+8)
+PHT = timezone(timedelta(hours=8))
+
+class PHTFormatter(logging.Formatter):
+    """Formatter that always uses Philippine Standard Time (UTC+8)."""
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=PHT)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 def setup_logging():
     # 1. Ensure the log folder exists FIRST
@@ -10,7 +22,7 @@ def setup_logging():
     
     logger = logging.getLogger("AXIsstant")
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    formatter = PHTFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     # 2. FILE HANDLER
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')

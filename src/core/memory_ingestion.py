@@ -13,6 +13,7 @@ from src.core.ingestion import (
     is_already_ingested,
     convert_table_to_markdown,
     clean_text,
+    extract_docx_text,
     upload_in_batches,
     update_manifest,
 )
@@ -67,17 +68,17 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
             logger.error(f"Spreadsheet processing error: {e}")
 
     elif ext in ('doc', 'docx'):
-        # python-docx can read from BytesIO directly
-        import docx
+        # XML-level extraction catches text boxes, shapes, SmartArt
+        # that python-docx's doc.paragraphs misses
         try:
-            buffer = io.BytesIO(file_bytes)
-            doc = docx.Document(buffer)
-            full_text = clean_text("\n".join([p.text for p in doc.paragraphs]))
+            full_text = clean_text(extract_docx_text(file_bytes))
             if full_text:
                 docs.append(Document(
                     page_content=full_text,
                     metadata={"source": norm_filename, "page": 1, "type": "text"}
                 ))
+            else:
+                logger.warning(f"No text extracted from {filename}")
         except Exception as e:
             logger.error(f"DOCX processing error: {e}")
 
@@ -91,6 +92,26 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
                 ))
         except Exception as e:
             logger.error(f"TXT processing error: {e}")
+
+    elif ext in ('png', 'jpg', 'jpeg', 'tiff', 'bmp'):
+        # OCR: extract text from images using Tesseract
+        try:
+            from PIL import Image
+            import pytesseract
+            from src.config.settings import TESSERACT_CMD
+            pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+            image = Image.open(io.BytesIO(file_bytes))
+            extracted_text = clean_text(pytesseract.image_to_string(image))
+            if extracted_text:
+                docs.append(Document(
+                    page_content=extracted_text,
+                    metadata={"source": norm_filename, "page": 1, "type": "text"}
+                ))
+            else:
+                logger.warning(f"OCR extracted no text from {filename}")
+        except Exception as e:
+            logger.error(f"Image OCR processing error: {e}")
 
     # Tag all docs with category and timestamp
     now = int(datetime.utcnow().timestamp())

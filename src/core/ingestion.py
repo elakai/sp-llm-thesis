@@ -25,6 +25,7 @@ from src.core.feedback import supabase
 
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+logger.info(f"Tesseract CMD set to: {TESSERACT_CMD}")
 
 def normalize_source_key(filename: str) -> str:
     return filename.strip().replace("\\", "/")
@@ -94,6 +95,52 @@ def reconstruct_body_text(words: list) -> str:
         text += line_str + "\n"
     return text
 
+def extract_docx_text(file_bytes: bytes) -> str:
+    """
+    Extract ALL text from a DOCX file, including content in text boxes,
+    shapes, and SmartArt that python-docx's doc.paragraphs misses.
+    Parses the DOCX zip at the XML level for comprehensive extraction.
+    """
+    import zipfile
+    from lxml import etree
+
+    W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    A_NS = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+
+    parts = []
+    seen = set()
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        for entry in zf.namelist():
+            if not entry.endswith('.xml'):
+                continue
+            # Main body, headers, footers, and SmartArt/diagram data
+            if not any(entry.startswith(p) for p in [
+                'word/document', 'word/header', 'word/footer', 'word/diagrams/data'
+            ]):
+                continue
+
+            try:
+                tree = etree.fromstring(zf.read(entry))
+            except Exception:
+                continue
+
+            # WordprocessingML paragraphs (body text, tables, text boxes)
+            for p in tree.iter(f'{W_NS}p'):
+                runs = [t.text for t in p.iter(f'{W_NS}t') if t.text]
+                line = ''.join(runs).strip()
+                if line and line not in seen:
+                    seen.add(line)
+                    parts.append(line)
+
+            # DrawingML text (SmartArt labels, shape text, charts)
+            for t in tree.iter(f'{A_NS}t'):
+                if t.text and t.text.strip() and t.text.strip() not in seen:
+                    seen.add(t.text.strip())
+                    parts.append(t.text.strip())
+
+    return '\n'.join(parts)
+
 # --- LOADERS ---
 def load_pdf(path: str, filename: str) -> List[Document]:
     logger.info(f"Reading PDF: {filename}...")
@@ -118,13 +165,16 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                     body_text = clean_text(reconstruct_body_text(non_table_words))
                     
                     if len(body_text) < 100:
-                        logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
-                        fitz_page = fitz_doc[page_num - 1]
-                        pix = fitz_page.get_pixmap(dpi=300)
-                        img = Image.open(io.BytesIO(pix.tobytes()))
-                        clean_img = preprocess_image_for_ocr(img)
-                        ocr_text = pytesseract.image_to_string(clean_img, config="--psm 6 --oem 3")
-                        body_text = clean_text(ocr_text)
+                        try:
+                            logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
+                            fitz_page = fitz_doc[page_num - 1]
+                            pix = fitz_page.get_pixmap(dpi=300)
+                            img = Image.open(io.BytesIO(pix.tobytes()))
+                            clean_img = preprocess_image_for_ocr(img)
+                            ocr_text = pytesseract.image_to_string(clean_img, config="--psm 6 --oem 3")
+                            body_text = clean_text(ocr_text)
+                        except Exception as ocr_err:
+                            logger.warning(f"OCR failed on page {page_num}: {ocr_err}. Keeping pdfplumber text.")
 
                     if len(body_text) > 20:
                         docs.append(Document(
@@ -165,9 +215,14 @@ def load_txt(path: str, filename: str) -> List[Document]:
 def load_docx(path: str, filename: str) -> List[Document]:
     docs = []
     try:
-        doc = docx.Document(path)
-        full_text = [para.text for para in doc.paragraphs]
-        docs.append(Document(page_content=clean_text("\n".join(full_text)), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
+        with open(path, 'rb') as f:
+            file_bytes = f.read()
+        full_text = clean_text(extract_docx_text(file_bytes))
+        if full_text:
+            docs.append(Document(
+                page_content=full_text,
+                metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}
+            ))
     except Exception as e:
         logger.error(f"DOCX Error: {e}")
     return docs
@@ -354,7 +409,7 @@ def verify_sync() -> dict:
         
         # We fetch unique 'source' values from the index
         # Note: Depending on Pinecone version, you may need to use list_ids or a dummy query
-        results = index.query(vector=[0]*1536, top_k=10000, include_metadata=True)
+        results = index.query(vector=[0]*384, top_k=10000, include_metadata=True)
         pinecone_sources = {d['metadata']['source'] for d in results['matches']}
         
         return {
