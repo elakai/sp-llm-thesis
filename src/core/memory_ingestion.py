@@ -72,7 +72,22 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
         try:
             buffer = io.BytesIO(file_bytes)
             doc = docx.Document(buffer)
-            full_text = clean_text("\n".join([p.text for p in doc.paragraphs]))
+
+            # Extract from paragraphs
+            parts = [p.text for p in doc.paragraphs if p.text.strip()]
+
+            # Also extract text from table cells — Word often uses
+            # invisible tables for layout (org charts, faculty lists, etc.)
+            for table in doc.tables:
+                for row in table.rows:
+                    seen = set()
+                    for cell in row.cells:
+                        cell_text = cell.text.strip()
+                        if cell_text and cell_text not in seen:
+                            seen.add(cell_text)
+                            parts.append(cell_text)
+
+            full_text = clean_text("\n".join(parts))
             if full_text:
                 docs.append(Document(
                     page_content=full_text,

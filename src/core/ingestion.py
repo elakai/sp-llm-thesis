@@ -166,8 +166,18 @@ def load_docx(path: str, filename: str) -> List[Document]:
     docs = []
     try:
         doc = docx.Document(path)
-        full_text = [para.text for para in doc.paragraphs]
-        docs.append(Document(page_content=clean_text("\n".join(full_text)), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
+        # Extract from paragraphs
+        parts = [para.text for para in doc.paragraphs if para.text.strip()]
+        # Also extract text from table cells (Word often uses tables for layout)
+        for table in doc.tables:
+            for row in table.rows:
+                seen = set()
+                for cell in row.cells:
+                    cell_text = cell.text.strip()
+                    if cell_text and cell_text not in seen:
+                        seen.add(cell_text)
+                        parts.append(cell_text)
+        docs.append(Document(page_content=clean_text("\n".join(parts)), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
     except Exception as e:
         logger.error(f"DOCX Error: {e}")
     return docs
