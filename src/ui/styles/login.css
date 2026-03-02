@@ -133,22 +133,60 @@ header, footer { visibility: hidden; }
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
 }
 
-div.stButton > button { 
+div.stButton > button,
+[data-testid="stForm"] button,
+[data-testid="stFormSubmitButton"] button { 
     width: 100% !important; 
-    backdrop-filter: blur(16px) !important;
-    -webkit-backdrop-filter: blur(16px) !important;
-    color: #FF8F1F !important; 
+    background: #ffa41c !important; /* cream/orange */
+    color: #ffffff !important; 
     font-weight: bold !important; 
-    border-radius: 14px;
+    border-radius: 12px;
     border: 2px solid rgba(255, 255, 255, 0.3) !important;
-    padding: clamp(14px, 2vw, 20px) clamp(18px, 3vw, 28px) !important;
-    font-size: clamp(18px, 2.5vw, 24px) !important;
+    /* smaller vertical padding but keep full width */
+    padding: clamp(8px, 1.2vw, 12px) clamp(18px, 3vw, 28px) !important;
+    font-size: clamp(14px, 1.8vw, 18px) !important;
     transition: background 0.3s, box-shadow 0.3s;
+    line-height: 1.2 !important;
+    height: auto !important;
 }
-div.stButton > button:hover {
-    background: #FF8F1F !important;
-    color: #fff !important; 
-    border: 1px solid #FF8F1F !important;
+div.stButton > button:hover,
+[data-testid="stForm"] button:hover,
+[data-testid="stFormSubmitButton"] button:hover {
+    background: #fff2d6 !important; /* lighter cream on hover */
+    color: #FF8F1F !important; 
+    border: 1px solid #ffe5b4 !important;
+}
+
+/* Apply same cream styling to small buttons inside text inputs (password visibility toggle) */
+.stApp .stTextInput button,
+.stApp [data-testid="stTextInput"] button,
+.stTextInput button {
+    /* match typical input background so the eye "bends in" */
+    background: #f3f5f7 !important; /* light input-like grey */
+    color: #FF8F1F !important;    /* icon/text orange */
+    border: none !important; /* remove border to blend with input */
+    /* circular and small */
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 50% !important;
+    padding: 0 !important;
+    font-size: 16px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: background 0.15s, box-shadow 0.15s;
+}
+.stApp .stTextInput button svg,
+.stApp [data-testid="stTextInput"] button svg,
+.stTextInput button svg {
+    fill: #FF8F1F !important; /* ensure SVG icons are orange */
+}
+.stApp .stTextInput button:hover,
+.stApp [data-testid="stTextInput"] button:hover,
+.stTextInput button:hover {
+    background: #f3f5f7 !important; /* keep matching input on hover */
+    color: #FF8F1F !important;
+    border: none !important;
 }
 
 /* Mobile styles (max-width: 480px) */

@@ -105,11 +105,8 @@ def render_sidebar():
             st.markdown(f"""
                 <div style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
-                    <h1 style='color: #FFA347; margin-top: 10px; font-size: 2.5rem;'>AXIsstant</h1>
                 </div>
             """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"<h1 style='text-align: center; color: #FFA347; font-size: 2.5rem;'>AXIsstant</h1>", unsafe_allow_html=True)
         st.markdown("---")
         
         # New Chat button
@@ -153,13 +150,13 @@ def render_sidebar():
                 st.rerun()
 
         st.markdown("---")
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-            
         user_email = st.session_state.get("email", "Guest")
         role = st.session_state.get("role", "Student").upper()
         st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
+
+        if st.button("🚪 Logout", use_container_width=True, type="primary"):
+            st.session_state.clear()
+            st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPORT HELPERS (Used in main.py)

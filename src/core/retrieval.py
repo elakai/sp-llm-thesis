@@ -31,7 +31,7 @@ def get_reranker():
     from sentence_transformers import CrossEncoder
     return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_semantic_cache() -> list:
     return []
 
