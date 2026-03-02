@@ -50,11 +50,29 @@ def clean_text(text: str) -> str:
 
 # --- VISION & TABLE PROCESSING ---
 def preprocess_image_for_ocr(pil_image: Image) -> Image:
+    """Gentle preprocessing: grayscale + Otsu binarization.
+    Avoids aggressive adaptive thresholding that destroys word spacing.
+    """
     img = np.array(pil_image.convert("RGB"))
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, blockSize=31, C=10)
-    img = cv2.medianBlur(img, 3)
-    return Image.fromarray(img)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(binary)
+
+def post_process_ocr_text(text: str) -> str:
+    """Fix common OCR artifacts: missing spaces between concatenated words."""
+    if not text:
+        return text
+    # Space before uppercase after lowercase: "ofScience" -> "of Science"
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    # Space between letter and opening paren: "program(" -> "program ("
+    text = re.sub(r'([a-zA-Z0-9])\(', r'\1 (', text)
+    # Space between closing paren and letter: ")The" -> ") The"
+    text = re.sub(r'\)([a-zA-Z])', r') \1', text)
+    # Space after period/comma before uppercase: ".The" -> ". The"
+    text = re.sub(r'([.,;:])([A-Z])', r'\1 \2', text)
+    # Collapse multiple spaces
+    text = re.sub(r' {2,}', ' ', text)
+    return text
 
 def convert_table_to_markdown(table_data: list) -> str:
     if not table_data: return ""
@@ -89,7 +107,7 @@ def reconstruct_body_text(words: list) -> str:
         line_str = ""
         last_x1 = 0
         for w in line_words:
-            if last_x1 > 0 and (w['x0'] - last_x1) > 10: line_str += " "
+            if last_x1 > 0 and (w['x0'] - last_x1) > 5: line_str += " "
             line_str += w['text']
             last_x1 = w['x1']
         text += line_str + "\n"
@@ -160,21 +178,31 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                                 metadata={"source": norm_filename, "page": page_num, "type": "table"}
                             ))
                     
-                    words = page.extract_words(x_tolerance=3, y_tolerance=3)
-                    non_table_words = [w for w in words if not is_inside_any_bbox(w, table_bboxes)]
-                    body_text = clean_text(reconstruct_body_text(non_table_words))
-                    
+                    fitz_page = fitz_doc[page_num - 1]
+
+                    # Layer 1: PyMuPDF text extraction (best for embedded text layers)
+                    body_text = clean_text(fitz_page.get_text("text"))
+
+                    # Layer 2: pdfplumber word reconstruction (fallback)
+                    if len(body_text) < 100:
+                        words = page.extract_words(x_tolerance=3, y_tolerance=3)
+                        non_table_words = [w for w in words if not is_inside_any_bbox(w, table_bboxes)]
+                        plumber_text = clean_text(reconstruct_body_text(non_table_words))
+                        if len(plumber_text) > len(body_text):
+                            body_text = plumber_text
+
+                    # Layer 3: Tesseract OCR (last resort for scanned pages)
                     if len(body_text) < 100:
                         try:
                             logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
-                            fitz_page = fitz_doc[page_num - 1]
                             pix = fitz_page.get_pixmap(dpi=300)
                             img = Image.open(io.BytesIO(pix.tobytes()))
                             clean_img = preprocess_image_for_ocr(img)
-                            ocr_text = pytesseract.image_to_string(clean_img, config="--psm 6 --oem 3")
+                            ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
+                            ocr_text = post_process_ocr_text(ocr_text)
                             body_text = clean_text(ocr_text)
                         except Exception as ocr_err:
-                            logger.warning(f"OCR failed on page {page_num}: {ocr_err}. Keeping pdfplumber text.")
+                            logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
 
                     if len(body_text) > 20:
                         docs.append(Document(
