@@ -4,20 +4,18 @@ import streamlit as st
 import concurrent.futures
 from typing import List, Dict
 from langchain_core.documents import Document
-from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 import re
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.core.guardrails import verify_answer, validate_query, redact_pii
 from src.config.settings import get_generator_llm, get_vectorstore, get_embeddings, get_retriever
-from src.core.router import route_query   
+from src.core.router import route_query, get_dynamic_k
 from src.core.decomposition import decompose_query
 from src.config.constants import (
     RETRIEVAL_K, 
     RERANKER_TOP_K, 
     DECOMPOSE_TRIGGERS, 
-    RETRIEVAL_K_MAP,
     LOW_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
     STREAM_DELAY
@@ -27,9 +25,10 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource
-def get_reranker() -> CrossEncoder:
+@st.cache_resource(show_spinner="Loading ranking model...")
+def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
+    from sentence_transformers import CrossEncoder
     return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 @st.cache_resource
@@ -179,12 +178,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     retrieval_start = time.time()
     
-    # 🚀 STEP 2: SMART ROUTER & METADATA DETECTION
+    # 🚀 STEP 2: INTENT DETECTION
     try:
-        intent, program_filters, content_type, category_filter = route_query(standalone_query)
+        intent, _, _, _ = route_query(standalone_query)
     except Exception as e:
         logger.warning(f"Router fallback triggered: {e}")
-        intent, program_filters, content_type, category_filter = "search", None, "all", None
+        intent = "search"
 
     # Handle greetings and off-topic early
     if intent in ["greeting", "off_topic"]:
@@ -204,33 +203,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             pass
 
     # 🚀 STEP 4: PARALLEL RETRIEVAL WITH DYNAMIC K
-    # Fetch K based on intent from constants.py, default to 5
-    dynamic_k = RETRIEVAL_K_MAP.get(intent, 5) 
-    search_kwargs = {"k": dynamic_k}
-    
-    # Initialize metadata filter dictionary
-    pinecone_filter = {} 
-
-    # Apply Program/Source filters (e.g., specific curriculum files)
-    if program_filters:
-        pinecone_filter["source"] = {"$in": program_filters}
-    
-    # Apply Content Type filters (e.g., tables vs text)
-    if content_type == "table":
-        pinecone_filter["type"] = {"$eq": "table"}
-
-    # Apply Category/Subfolder filters (e.g., memos, thesis, laboratory)
-    if category_filter:
-        pinecone_filter["category"] = {"$eq": category_filter}
-        logger.info(f"🎯 Category Filter Applied: {category_filter}")
-
-    # Attach filters to search arguments if any exist
-    if pinecone_filter:
-        search_kwargs["filter"] = pinecone_filter
-
-    # Configure the retriever with dynamic settings
+    dynamic_k = get_dynamic_k(standalone_query)
     retriever = get_retriever(k=dynamic_k)
-    retriever.search_kwargs = search_kwargs 
     
     all_docs = []
 

@@ -1,7 +1,10 @@
 import sys
+import time
 from pathlib import Path
 import uuid
 import streamlit as st
+
+_app_start_time = time.time()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONFIG (CRITICAL: Must be the very first Streamlit command)
@@ -28,6 +31,7 @@ from src.ui.admin_dashboard import render_admin_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
 from src.core.ingestion import check_pinecone_health
+from src.config.logging_config import logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
@@ -47,6 +51,15 @@ if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
 if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
 if "db_online" not in st.session_state:
     st.session_state["db_online"] = check_pinecone_health()
+
+# Pre-load heavy ML resources on first cold start
+if "app_loaded" not in st.session_state:
+    with st.spinner("Starting AXIsstant… please wait"):
+        from src.config.settings import get_embeddings, get_generator_llm
+        get_embeddings()    # triggers model download/cache on first run
+        get_generator_llm()
+        st.session_state["app_loaded"] = True
+    logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
