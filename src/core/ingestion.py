@@ -164,13 +164,16 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                     body_text = clean_text(reconstruct_body_text(non_table_words))
                     
                     if len(body_text) < 100:
-                        logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
-                        fitz_page = fitz_doc[page_num - 1]
-                        pix = fitz_page.get_pixmap(dpi=300)
-                        img = Image.open(io.BytesIO(pix.tobytes()))
-                        clean_img = preprocess_image_for_ocr(img)
-                        ocr_text = pytesseract.image_to_string(clean_img, config="--psm 6 --oem 3")
-                        body_text = clean_text(ocr_text)
+                        try:
+                            logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
+                            fitz_page = fitz_doc[page_num - 1]
+                            pix = fitz_page.get_pixmap(dpi=300)
+                            img = Image.open(io.BytesIO(pix.tobytes()))
+                            clean_img = preprocess_image_for_ocr(img)
+                            ocr_text = pytesseract.image_to_string(clean_img, config="--psm 6 --oem 3")
+                            body_text = clean_text(ocr_text)
+                        except Exception as ocr_err:
+                            logger.warning(f"OCR failed on page {page_num}: {ocr_err}. Keeping pdfplumber text.")
 
                     if len(body_text) > 20:
                         docs.append(Document(

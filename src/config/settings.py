@@ -7,13 +7,17 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(env_path)
 
-# Support both local development and Streamlit Cloud deployment
-if os.getenv("STREAMLIT_RUNTIME_EXISTS"):
-    # Streamlit Cloud
-    TESSERACT_CMD = os.getenv("TESSERACT_CMD", "/usr/bin/tesseract")
+# Robust Tesseract detection: env var > shutil.which > OS-based default
+import shutil, sys
+_tess_env = os.getenv("TESSERACT_CMD")
+if _tess_env:
+    TESSERACT_CMD = _tess_env
+elif shutil.which("tesseract"):
+    TESSERACT_CMD = shutil.which("tesseract")
+elif sys.platform == "win32":
+    TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 else:
-    # Local Windows development
-    TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    TESSERACT_CMD = "/usr/bin/tesseract"
 
 # 2. VALIDATION (Fail fast at startup)
 PINECONE_API_KEY  = os.getenv("PINECONE_API_KEY")
