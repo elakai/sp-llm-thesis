@@ -84,6 +84,33 @@ if not st.session_state["db_online"]:
     st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
     st.stop()
 
+# Attempt to restore a previous Supabase session (survives page refreshes)
+if not st.session_state["authenticated"]:
+    try:
+        from src.core.auth import supabase as _sb
+        session = _sb.auth.get_session()
+        if session and session.user:
+            user_id = session.user.id
+            try:
+                profile = _sb.table("users") \
+                    .select("role, full_name") \
+                    .eq("id", user_id) \
+                    .single() \
+                    .execute()
+                db_role = profile.data.get("role", "student")
+                db_name = profile.data.get("full_name", "Student")
+            except Exception:
+                db_role, db_name = "student", "Student"
+
+            st.session_state["authenticated"] = True
+            st.session_state["user_id"] = user_id
+            st.session_state["email"] = session.user.email
+            st.session_state["role"] = db_role
+            st.session_state["full_name"] = db_name
+            logger.info(f"Session restored for {session.user.email}")
+    except Exception:
+        pass  # No session to restore — show login page
+
 if not st.session_state["authenticated"]:
     render_login()
     st.stop()

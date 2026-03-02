@@ -74,35 +74,83 @@ def render_document_management():
     if not manifest:
         st.info("No documents indexed yet. Upload files above to get started.")
     else:
+        # Initialize selection state
+        if "selected_docs" not in st.session_state:
+            st.session_state["selected_docs"] = set()
+
+        # Select All / Deselect All controls
+        sel_col1, sel_col2, sel_col3 = st.columns([2, 2, 6])
+        if sel_col1.button("Select All", use_container_width=True):
+            st.session_state["selected_docs"] = set(manifest.keys())
+            st.rerun()
+        if sel_col2.button("Deselect All", use_container_width=True):
+            st.session_state["selected_docs"] = set()
+            st.rerun()
+
+        # Document list with checkboxes
         for filename, info in manifest.items():
-            col1, col2, col3, col4 = st.columns([4, 1, 2, 1])
-            col1.write(f"📄 {filename}")
-            col2.write(f"{info.get('chunks', 0)} chunks")
-            col3.write(info.get("uploaded_at", "Unknown"))
+            col_check, col_name, col_chunks, col_date = st.columns([0.5, 4, 1, 2])
+            is_selected = col_check.checkbox(
+                "sel",
+                value=filename in st.session_state["selected_docs"],
+                key=f"chk_{filename}",
+                label_visibility="collapsed",
+            )
+            if is_selected:
+                st.session_state["selected_docs"].add(filename)
+            else:
+                st.session_state["selected_docs"].discard(filename)
 
-            # Delete with confirmation using session state
-            delete_key = f"confirm_delete_{filename}"
-            if delete_key not in st.session_state:
-                st.session_state[delete_key] = False
+            col_name.write(f"📄 {filename}")
+            col_chunks.write(f"{info.get('chunks', 0)} chunks")
+            col_date.write(info.get("uploaded_at", "Unknown"))
 
-            if not st.session_state[delete_key]:
-                if col4.button("Delete", key=f"del_{filename}"):
-                    st.session_state[delete_key] = True
+        # Delete Selected button
+        selected = st.session_state["selected_docs"] & set(manifest.keys())
+        if selected:
+            st.warning(f"{len(selected)} document(s) selected")
+
+            if "confirm_bulk_delete" not in st.session_state:
+                st.session_state["confirm_bulk_delete"] = False
+
+            if not st.session_state["confirm_bulk_delete"]:
+                if st.button(
+                    f"🗑️ Delete {len(selected)} Selected",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    st.session_state["confirm_bulk_delete"] = True
                     st.rerun()
             else:
-                st.warning(f"Delete **{filename}**?")
-                confirm_col, cancel_col = st.columns(2)
-                if confirm_col.button("Yes, delete", key=f"confirm_{filename}"):
-                    with st.spinner(f"Deleting {filename}…"):
-                        success, msg = delete_document(filename)
-                        if success:
-                            st.success(msg)
+                st.error(
+                    f"⚠️ Permanently delete these {len(selected)} document(s)?\n\n"
+                    + "\n".join(f"- {f}" for f in sorted(selected))
+                )
+                c1, c2 = st.columns(2)
+                if c1.button("Yes, delete all selected", type="primary"):
+                    progress = st.progress(0, text="Deleting…")
+                    deleted, failed = 0, 0
+                    files_to_delete = list(selected)
+                    for i, fname in enumerate(files_to_delete):
+                        progress.progress(
+                            (i + 1) / len(files_to_delete),
+                            text=f"Deleting {fname}…",
+                        )
+                        ok, msg = delete_document(fname)
+                        if ok:
+                            deleted += 1
                         else:
-                            st.error(msg)
-                    st.session_state[delete_key] = False
+                            failed += 1
+                            st.error(f"Failed: {fname} — {msg}")
+                    progress.progress(1.0, text="Done!")
+                    st.success(f"Deleted {deleted} document(s).")
+                    if failed:
+                        st.warning(f"{failed} deletion(s) failed.")
+                    st.session_state["selected_docs"] = set()
+                    st.session_state["confirm_bulk_delete"] = False
                     st.rerun()
-                if cancel_col.button("Cancel", key=f"cancel_{filename}"):
-                    st.session_state[delete_key] = False
+                if c2.button("Cancel"):
+                    st.session_state["confirm_bulk_delete"] = False
                     st.rerun()
 
     st.divider()
