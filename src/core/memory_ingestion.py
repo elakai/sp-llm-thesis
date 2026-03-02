@@ -92,6 +92,26 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
         except Exception as e:
             logger.error(f"TXT processing error: {e}")
 
+    elif ext in ('png', 'jpg', 'jpeg', 'tiff', 'bmp'):
+        # OCR: extract text from images using Tesseract
+        try:
+            from PIL import Image
+            import pytesseract
+            from src.config.settings import TESSERACT_CMD
+            pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+            image = Image.open(io.BytesIO(file_bytes))
+            extracted_text = clean_text(pytesseract.image_to_string(image))
+            if extracted_text:
+                docs.append(Document(
+                    page_content=extracted_text,
+                    metadata={"source": norm_filename, "page": 1, "type": "text"}
+                ))
+            else:
+                logger.warning(f"OCR extracted no text from {filename}")
+        except Exception as e:
+            logger.error(f"Image OCR processing error: {e}")
+
     # Tag all docs with category and timestamp
     now = int(datetime.utcnow().timestamp())
     for d in docs:
