@@ -105,12 +105,15 @@ def render_sidebar():
             st.markdown(f"""
                 <div style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
+                    <div style="margin-top: 8px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;">AXIsstant</div>
                 </div>
             """, unsafe_allow_html=True)
+        else:
+            st.markdown("<div style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>AXIsstant</div>", unsafe_allow_html=True)
         st.markdown("---")
         
         # New Chat button
-        if st.button("➕ New Chat", use_container_width=True):
+        if st.button("New Chat", use_container_width=True):
             if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
                 if "chat_history" not in st.session_state:
                     st.session_state["chat_history"] = []
@@ -128,7 +131,7 @@ def render_sidebar():
             st.rerun()
         
         # History button
-        history_label = "📜 **History**" if st.session_state.get("view") == "history" else "📜 History"
+        history_label = "History" if st.session_state.get("view") == "history" else "History"
         if st.button(history_label, use_container_width=True):
             if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
                 if "chat_history" not in st.session_state:
@@ -154,7 +157,7 @@ def render_sidebar():
         role = st.session_state.get("role", "Student").upper()
         st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
 
-        if st.button("🚪 Logout", use_container_width=True, type="primary"):
+        if st.button("Logout", use_container_width=True, type="primary"):
             st.session_state.clear()
             st.rerun()
 
