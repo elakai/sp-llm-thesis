@@ -34,12 +34,21 @@ from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
 
-@st.cache_data(ttl=60)
 def check_pinecone_health() -> bool:
     """Lightweight health check — avoids importing heavy ingestion module."""
     try:
         import os
-from src.core.ingestion import check_pinecone_health
+        from pinecone import Pinecone
+        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+        index = pc.Index(PINECONE_INDEX_NAME)
+        stats = index.describe_index_stats()
+        logger.info(f"Pinecone healthy: {stats.total_vector_count} vectors indexed")
+        return True
+    except Exception as e:
+        logger.error(f"Pinecone Health Check Failed: {e}")
+        return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
