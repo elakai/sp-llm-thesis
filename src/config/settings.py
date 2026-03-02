@@ -7,17 +7,28 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(env_path)
 
-# Robust Tesseract detection: env var > shutil.which > OS-based default
+# Robust Tesseract detection
 import shutil, sys
-_tess_env = os.getenv("TESSERACT_CMD")
-if _tess_env:
-    TESSERACT_CMD = _tess_env
-elif shutil.which("tesseract"):
-    TESSERACT_CMD = shutil.which("tesseract")
-elif sys.platform == "win32":
-    TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-else:
-    TESSERACT_CMD = "/usr/bin/tesseract"
+
+def _resolve_tesseract():
+    """Find tesseract binary: shutil.which > env var (validated) > OS default."""
+    # 1. Best: let the OS find it
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    # 2. Env var, but only if it makes sense for this OS
+    env_val = os.getenv("TESSERACT_CMD", "")
+    if env_val:
+        is_linux = sys.platform != "win32"
+        looks_windows = env_val.startswith("C:") or "\\" in env_val
+        if not (is_linux and looks_windows):
+            return env_val
+    # 3. OS-based default
+    if sys.platform == "win32":
+        return r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    return "/usr/bin/tesseract"
+
+TESSERACT_CMD = _resolve_tesseract()
 print(f"[BOOT] Tesseract resolved to: {TESSERACT_CMD} (platform={sys.platform})")
 
 # 2. VALIDATION (Fail fast at startup)
