@@ -94,6 +94,52 @@ def reconstruct_body_text(words: list) -> str:
         text += line_str + "\n"
     return text
 
+def extract_docx_text(file_bytes: bytes) -> str:
+    """
+    Extract ALL text from a DOCX file, including content in text boxes,
+    shapes, and SmartArt that python-docx's doc.paragraphs misses.
+    Parses the DOCX zip at the XML level for comprehensive extraction.
+    """
+    import zipfile
+    from lxml import etree
+
+    W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+    A_NS = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+
+    parts = []
+    seen = set()
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+        for entry in zf.namelist():
+            if not entry.endswith('.xml'):
+                continue
+            # Main body, headers, footers, and SmartArt/diagram data
+            if not any(entry.startswith(p) for p in [
+                'word/document', 'word/header', 'word/footer', 'word/diagrams/data'
+            ]):
+                continue
+
+            try:
+                tree = etree.fromstring(zf.read(entry))
+            except Exception:
+                continue
+
+            # WordprocessingML paragraphs (body text, tables, text boxes)
+            for p in tree.iter(f'{W_NS}p'):
+                runs = [t.text for t in p.iter(f'{W_NS}t') if t.text]
+                line = ''.join(runs).strip()
+                if line and line not in seen:
+                    seen.add(line)
+                    parts.append(line)
+
+            # DrawingML text (SmartArt labels, shape text, charts)
+            for t in tree.iter(f'{A_NS}t'):
+                if t.text and t.text.strip() and t.text.strip() not in seen:
+                    seen.add(t.text.strip())
+                    parts.append(t.text.strip())
+
+    return '\n'.join(parts)
+
 # --- LOADERS ---
 def load_pdf(path: str, filename: str) -> List[Document]:
     logger.info(f"Reading PDF: {filename}...")
@@ -165,19 +211,14 @@ def load_txt(path: str, filename: str) -> List[Document]:
 def load_docx(path: str, filename: str) -> List[Document]:
     docs = []
     try:
-        doc = docx.Document(path)
-        # Extract from paragraphs
-        parts = [para.text for para in doc.paragraphs if para.text.strip()]
-        # Also extract text from table cells (Word often uses tables for layout)
-        for table in doc.tables:
-            for row in table.rows:
-                seen = set()
-                for cell in row.cells:
-                    cell_text = cell.text.strip()
-                    if cell_text and cell_text not in seen:
-                        seen.add(cell_text)
-                        parts.append(cell_text)
-        docs.append(Document(page_content=clean_text("\n".join(parts)), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
+        with open(path, 'rb') as f:
+            file_bytes = f.read()
+        full_text = clean_text(extract_docx_text(file_bytes))
+        if full_text:
+            docs.append(Document(
+                page_content=full_text,
+                metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}
+            ))
     except Exception as e:
         logger.error(f"DOCX Error: {e}")
     return docs

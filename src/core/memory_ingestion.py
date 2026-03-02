@@ -13,6 +13,7 @@ from src.core.ingestion import (
     is_already_ingested,
     convert_table_to_markdown,
     clean_text,
+    extract_docx_text,
     upload_in_batches,
     update_manifest,
 )
@@ -67,32 +68,17 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
             logger.error(f"Spreadsheet processing error: {e}")
 
     elif ext in ('doc', 'docx'):
-        # python-docx can read from BytesIO directly
-        import docx
+        # XML-level extraction catches text boxes, shapes, SmartArt
+        # that python-docx's doc.paragraphs misses
         try:
-            buffer = io.BytesIO(file_bytes)
-            doc = docx.Document(buffer)
-
-            # Extract from paragraphs
-            parts = [p.text for p in doc.paragraphs if p.text.strip()]
-
-            # Also extract text from table cells — Word often uses
-            # invisible tables for layout (org charts, faculty lists, etc.)
-            for table in doc.tables:
-                for row in table.rows:
-                    seen = set()
-                    for cell in row.cells:
-                        cell_text = cell.text.strip()
-                        if cell_text and cell_text not in seen:
-                            seen.add(cell_text)
-                            parts.append(cell_text)
-
-            full_text = clean_text("\n".join(parts))
+            full_text = clean_text(extract_docx_text(file_bytes))
             if full_text:
                 docs.append(Document(
                     page_content=full_text,
                     metadata={"source": norm_filename, "page": 1, "type": "text"}
                 ))
+            else:
+                logger.warning(f"No text extracted from {filename}")
         except Exception as e:
             logger.error(f"DOCX processing error: {e}")
 

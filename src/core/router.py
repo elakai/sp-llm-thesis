@@ -28,8 +28,16 @@ def get_dynamic_k(query: str) -> int:
     if any(kw in q for kw in ["thesis", "research", "manuscript", "capstone"]):
         return 15
 
+    # Organizational / people queries need broader retrieval
+    if any(kw in q for kw in [
+        "dean", "chairperson", "chair", "faculty", "professor",
+        "department", "who is", "who are", "staff", "organizational",
+        "org structure", "instructor", "engr", "lab technician",
+    ]):
+        return 15
+
     # Default for simple factual questions
-    return 10
+    return 12
 
 
 def route_query(query: str) -> tuple:
