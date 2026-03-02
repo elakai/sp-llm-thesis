@@ -20,6 +20,19 @@ def fetch_eval_metrics():
         return pd.DataFrame()
 
 
+def fetch_evaluation_runs():
+    """Fetches RAGAS evaluation run history from the evaluation_runs table."""
+    try:
+        response = supabase.table("evaluation_runs") \
+            .select("*") \
+            .order("run_at", desc=True) \
+            .limit(50) \
+            .execute()
+        return pd.DataFrame(response.data) if response.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
 def render_document_management():
     """Upload & Index section — files processed in memory, never stored permanently."""
     st.header("Document Management")
@@ -176,18 +189,31 @@ def render_admin_view():
 
     # ── TOP BAR: Quality Metrics ────────────────────────────────
     df_eval = fetch_eval_metrics()
-    if not df_eval.empty:
-        m1, m2, m3, m4 = st.columns(4)
+    df_runs = fetch_evaluation_runs()
 
+    m1, m2, m3, m4 = st.columns(4)
+
+    # Show latest evaluation run metrics if available
+    if not df_runs.empty:
+        latest = df_runs.iloc[0]
+        m1.metric("Faithfulness", f"{latest.get('faithfulness', 0):.2f}", help="Score 0–1: Did the LLM hallucinate?")
+        m2.metric("Answer Correctness", f"{latest.get('answer_correctness', 0):.2f}", help="Score 0–1: Did it answer correctly?")
+    elif not df_eval.empty:
         avg_faith = df_eval["faithfulness"].mean() if "faithfulness" in df_eval else 0.0
         avg_rel = df_eval["answer_relevancy"].mean() if "answer_relevancy" in df_eval else 0.0
-        pos_feedback = (df_eval["rating"] == "helpful").sum()
+        m1.metric("Faithfulness", f"{avg_faith:.2f}", help="Score 0–1: Accuracy")
+        m2.metric("Relevancy", f"{avg_rel:.2f}", help="Score 0–1: Helpfulness")
+    else:
+        m1.metric("Faithfulness", "N/A")
+        m2.metric("Relevancy", "N/A")
 
-        m1.metric("Faithfulness", f"{avg_faith:.2f}", help="Score 0-1: Accuracy")
-        m2.metric("Relevancy", f"{avg_rel:.2f}", help="Score 0-1: Helpfulness")
+    if not df_eval.empty:
+        pos_feedback = (df_eval["rating"] == "helpful").sum()
         m3.metric("User Likes", pos_feedback)
-        m4.metric("Status", "Online")
-        st.markdown("---")
+    else:
+        m3.metric("User Likes", 0)
+    m4.metric("Status", "Online")
+    st.markdown("---")
 
     # ── TABS ────────────────────────────────────────────────────
     tab_docs, tab_health, tab_eval = st.tabs(
@@ -222,9 +248,56 @@ def render_admin_view():
                 st.error(f"Error clearing DB: {e}")
 
     with tab_eval:
-        st.subheader("Detailed Ragas Evaluation Logs")
+        st.subheader("RAGAS Evaluation History")
+
+        if not df_runs.empty:
+            # Show the latest run summary
+            latest = df_runs.iloc[0]
+            st.markdown("#### Latest Run")
+            cols = st.columns(5)
+            metric_map = [
+                ("Faithfulness", "faithfulness"),
+                ("Context Precision", "context_precision"),
+                ("Context Recall", "context_recall"),
+                ("Answer Correctness", "answer_correctness"),
+                ("Answer Relevancy", "answer_relevancy"),
+            ]
+            for col, (label, key) in zip(cols, metric_map):
+                val = latest.get(key)
+                col.metric(label, f"{val:.2f}" if pd.notna(val) else "—")
+
+            info_cols = st.columns(3)
+            info_cols[0].caption(f"**Mode:** {latest.get('mode', 'N/A')}")
+            info_cols[1].caption(f"**Sample Size:** {latest.get('sample_size', 'N/A')}")
+            info_cols[2].caption(f"**Run At:** {latest.get('run_at', 'N/A')}")
+
+            st.divider()
+
+            # Full history table
+            st.markdown("#### All Evaluation Runs")
+            display_cols = [c for c in [
+                "run_at", "mode", "sample_size",
+                "faithfulness", "context_precision", "context_recall",
+                "answer_correctness", "answer_relevancy",
+            ] if c in df_runs.columns]
+            st.dataframe(
+                df_runs[display_cols],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "No evaluation runs found. Run the evaluator to see results here:\n\n"
+                "`python -m src.core.evaluate_rag --mode dataset`"
+            )
+
+        st.divider()
+        st.markdown("#### User Feedback Logs")
         if not df_eval.empty:
             eval_table = df_eval.dropna(subset=["faithfulness", "answer_relevancy"])
-            st.dataframe(eval_table.tail(15), use_container_width=True)
+            if not eval_table.empty:
+                st.dataframe(eval_table.tail(15), use_container_width=True)
+            else:
+                st.info("No per-query RAGAS scores in chat logs yet.")
         else:
-            st.info("No evaluation data found in Supabase.")
+            st.info("No chat log data found.")
