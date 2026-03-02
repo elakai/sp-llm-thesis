@@ -1,135 +1,151 @@
-# CSEA Information Assistant (AXIsstant)
+# AXIsstant — CSEA Academic AI Assistant
 
-**Thesis Prototype** 
+**Thesis Project** — College of Science, Engineering and Architecture, Ateneo de Naga University
 
-College of Science, Engineering and Architecture
-
-Ateneo de Naga University
-
-A **Retrieval-Augmented Generation (RAG)** chatbot designed to provide accurate, conversational answers to student inquiries using official CSEA documents (Thesis manuscripts, Curriculums, Memos, and Lab Manuals).
-
-## Key Technologies
-
-* **LLM**: Llama 3.3 70B via Groq
-* **Embeddings**: `all-MiniLM-L6-v2` (Sentence Transformers)
-* **Vector Database**: Pinecone (Serverless)
-* **PDF Handling**: PyMuPDF + pdfplumber + Tesseract OCR
-* **Document Loading**: Support for `.pdf`, `.docx`, `.csv`, `.xlsx`, and images (with text)
-* **Frontend**: Streamlit
+A **Retrieval-Augmented Generation (RAG)** chatbot that answers student inquiries using official CSEA documents — curriculum guides, thesis manuscripts, memorandums, lab manuals, and OJT requirements.
 
 ---
 
-## 📂 Subfolder Category Routing
+## Architecture
 
-The system uses a hierarchical folder structure to automatically tag documents with metadata categories. Organize your `documents/` folder as follows:
-
-* `documents/curriculum/` — Academic program matrices
-* `documents/thesis/` — Past CSEA Thesis Manuscripts
-* `documents/memos/` — Official memorandums and circulars
-* `documents/ojt/` — Internship requirements and partner lists
-* `documents/laboratory/` — Lab manuals and equipment inventories
+```
+User Query
+  → Input Validation & PII Redaction
+  → Conversational Memory (pronoun-aware contextualization)
+  → Semantic Cache Check
+  → Intent Detection (greeting / off-topic / search)
+  → Query Decomposition (for complex multi-part questions)
+  → Pinecone Vector Search (dynamic K = 10 or 15)
+  → Deduplication & Version Filtering
+  → Hybrid Reranking (BM25 + CrossEncoder ms-marco-MiniLM-L-6-v2)
+  → Three-Tier Confidence Gate
+      ├─ Low  (< -13.0): abort, no hallucination risk
+      ├─ Mid  (-13 to -5): generate → Critic verifies against context
+      └─ High (> -5.0):  generate → trust draft, skip Critic
+  → Streaming Response
+```
 
 ---
 
-## ⚡ Setup Instructions
+## Tech Stack
 
-### 1. Python Version
+| Layer | Technology |
+|-------|-----------|
+| LLM | Llama 3.3 70B via Groq API |
+| Embeddings | `all-MiniLM-L6-v2` (HuggingFace) |
+| Reranker | `ms-marco-MiniLM-L-6-v2` (CrossEncoder) |
+| Vector DB | Pinecone (Serverless) |
+| Auth & Storage | Supabase (authentication, chat logs, document manifest) |
+| PDF Processing | PyMuPDF + pdfplumber + Tesseract OCR |
+| Frontend | Streamlit |
+| Evaluation | RAGAS (Faithfulness, Answer Relevancy) |
 
-* **Recommended**: Python 3.11 or 3.12 (3.12.7 tested).
+---
 
-### 2. Tesseract OCR Installation
+## Project Structure
 
-1. Download installer: [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki).
-2. Install to: `C:\Program Files\Tesseract-OCR\`.
-3. Add the path to your `.env` file as `TESSERACT_CMD`.
+```
+src/
+├── config/
+│   ├── constants.py          # Tuning parameters, keywords, thresholds
+│   ├── logging_config.py     # Unicode-safe logging
+│   └── settings.py           # Lazy-loaded LLM, embeddings, vectorstore factories
+│
+├── core/
+│   ├── auth.py               # Supabase user authentication
+│   ├── decomposition.py      # Multi-query decomposition for complex questions
+│   ├── evaluate_rag.py       # RAGAS evaluation pipeline
+│   ├── feedback.py           # Chat logging and user ratings
+│   ├── generate_testset.py   # Synthetic test data generation
+│   ├── guardrails.py         # Input validation, PII redaction, Critic persona
+│   ├── ingestion.py          # Batch document ingestion from filesystem
+│   ├── memory_ingestion.py   # In-browser upload → process in memory → Pinecone
+│   ├── retrieval.py          # Main RAG pipeline (cache, retrieve, rerank, generate)
+│   └── router.py             # Intent detection and dynamic retrieval depth
+│
+└── ui/
+    ├── admin_dashboard.py    # Document management, health metrics, eval logs
+    ├── components.py         # Login screen, sidebar, reusable widgets
+    ├── main.py               # App entry point
+    ├── views.py              # Chat and history views
+    └── styles/               # CSS for login and main themes
+```
 
-### 3. Virtual Environment & Dependencies
+---
+
+## Setup
+
+### Prerequisites
+
+- Python 3.11 or 3.12
+- [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) (required for scanned PDFs)
+
+### Installation
 
 ```bash
 python -m venv venv
-# Windows
-venv\Scripts\activate
+venv\Scripts\activate        # Windows
 pip install -r requirements.txt
-
 ```
 
-### 4. Storage Optimization: Delete After Ingest
+### Environment Variables
 
-**Note:** To maintain a lean server environment, the system is configured to **automatically delete** physical files from the `documents/` subfolders once they are successfully indexed in Pinecone. The `pinecone_manifest.json` serves as the permanent record of active documents.
+Create a `.env` file in the project root:
 
----
+```env
+PINECONE_API_KEY=your_key
+PINECONE_INDEX_NAME=csea-assistant
+GROQ_API_KEY=your_key
+SUPABASE_URL=your_url
+SUPABASE_KEY=your_key
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
 
-## 🛠 Running the Application
+On Streamlit Cloud, set these in **Settings → Secrets** instead.
+
+### Run
 
 ```bash
 streamlit run src/ui/main.py
-
 ```
 
 ---
 
-### Admin Features
+## Document Management
 
-* **Document Ledger**: View and manage "invisible" cloud-stored documents via the manifest.
-* **Chunk Inspector**: Debug the top-K retrieved context chunks.
-* **Auto-Wipe Cache**: The semantic cache is automatically invalidated after every ingestion run to ensure data freshness.
-
-
----
-
-## Project Structure (Modular Architecture)
-
-The project is organized to separate core RAG logic from the user interface and configuration settings.
-
-```text
-C:.
-│   .gitignore
-│   csea_evaluation_dataset.csv   # Ground truth dataset for RAG testing
-│   final_evaluation_report.csv   # Metrics output from the evaluation pipeline
-│   get-pip.py
-│   pam's instructions.txt
-│   pinecone_manifest.json        # Primary ledger for cloud-stored document chunks
-│   README.md
-│   requirements.txt              # Project dependencies
-│   test.py                       # General utility testing script
-│
-├───assets                        # Visual branding assets
-│       logo.png
-│
-└───src
-    │   run_eval.py               # Main script to execute the RAGAS evaluation suite
-    │   __init__.py
-    │
-    ├───config                    # Global Configuration & Environment Settings
-    │       constants.py          # Valid categories, paths, and chunking parameters
-    │       logging_config.py     # Windows-compatible Unicode logging setup
-    │       settings.py           # LLM, Embeddings, and Vector Database factory
-    │
-    ├───core                      # Backend Processing (The "Brain")
-    │       auth.py               # User authentication and session management
-    │       decomposition.py      # Multi-query logic for complex student inquiries
-    │       evaluate_rag.py       # RAGAS metrics implementation (Faithfulness, Relevancy)
-    │       feedback.py           # Conversation logging and user rating storage
-    │       generate_testset.py   # Synthetic data generation for evaluation prep
-    │       guardrails.py         # Topic validation and safety filtering
-    │       ingestion.py          # Multimodal loading and "Delete After Ingest" logic
-    │       retrieval.py          # Semantic Cache, Contextualization, and Reranking
-    │       router.py             # Metadata-based category and program routing
-    │       __init__.py
-    │
-    └───ui                        # Frontend Interface (Streamlit)
-        │   admin_dashboard.py    # Analytics, Document Ledger, and Index Manager
-        │   components.py         # Reusable UI widgets and thinking animations
-        │   main.py               # Entry point: `streamlit run src/ui/main.py`
-        │   views.py              # Chat and History view controllers
-        │   __init__.py
-        │
-        └───styles                # Custom CSS Assets
-                login.css         # Portal styling for the authentication screen
-                main.css          # Core visual theme and chat bubble styling
+Documents are organized in subfolders that map to metadata categories:
 
 ```
+documents/
+├── curriculum/    # Academic program guides
+├── thesis/        # Past CSEA thesis manuscripts
+├── memos/         # Official memorandums and circulars
+├── ojt/           # Internship requirements
+└── laboratory/    # Lab manuals and equipment inventories
+```
+
+**Admin dashboard** allows uploading documents directly through the browser. Files are processed entirely in memory — never stored permanently — and only the vector embeddings are saved to Pinecone. The Supabase manifest table tracks what has been indexed.
 
 ---
+
+## Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| No metadata filters in retrieval | Keyword-based filters caused false positives (e.g., "faculty" → organization → 0 results). Hybrid reranking handles relevance accurately with ~945 vectors. |
+| Split generator / critic LLMs | Generator uses temp=0.1 for natural responses; Critic uses temp=0.0 for deterministic fact-checking. |
+| Lazy ML imports | `sentence-transformers` (~400 MB) and `langchain-huggingface` (~90 MB) load only when first called, cutting cold-start time. |
+| Semantic cache | Embedding-based similarity cache (threshold 0.95) avoids redundant LLM calls for repeated questions. |
+| Three-tier confidence | CrossEncoder logit scores gate generation: abort on junk retrieval, verify moderate matches, trust strong matches. Prevents hallucination without over-relying on the Critic. |
+
+---
+
+## Evaluation
+
+```bash
+python src/run_eval.py
+```
+
+Uses RAGAS metrics (Faithfulness, Answer Relevancy) against `csea_evaluation_dataset.csv`. Results are written to `final_evaluation_report.csv` and logged to Supabase.
 
 
