@@ -48,6 +48,7 @@ def check_pinecone_health() -> bool:
         logger.error(f"Pinecone Health Check Failed: {e}")
         return False
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
