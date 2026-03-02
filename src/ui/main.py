@@ -34,6 +34,7 @@ from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
 
+@st.cache_data(ttl=60)
 def check_pinecone_health() -> bool:
     """Lightweight health check — avoids importing heavy ingestion module."""
     try:
