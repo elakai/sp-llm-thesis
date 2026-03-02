@@ -38,22 +38,7 @@ def check_pinecone_health() -> bool:
     """Lightweight health check — avoids importing heavy ingestion module."""
     try:
         import os
-        from pinecone import Pinecone
-        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
-        index = pc.Index(PINECONE_INDEX_NAME)
-        stats = index.describe_index_stats()
-        # Support both attribute-style and dict-style stats responses
-        total_vectors = getattr(stats, "total_vector_count", None)
-        if total_vectors is None and isinstance(stats, dict):
-            total_vectors = stats.get("total_vector_count")
-        logger.info(
-            f"Pinecone healthy: {total_vectors if total_vectors is not None else 'unknown'} vectors indexed"
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Pinecone Health Check Failed: {e}")
-        return False
-
+from src.core.ingestion import check_pinecone_health
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
