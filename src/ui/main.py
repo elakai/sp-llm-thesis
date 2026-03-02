@@ -30,6 +30,7 @@ from src.ui.components import render_login, render_sidebar, render_main_styles
 from src.ui.admin_dashboard import render_admin_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
+from src.core.auth import supabase as _sb
 from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
@@ -87,7 +88,6 @@ if not st.session_state["db_online"]:
 # Attempt to restore a previous Supabase session (survives page refreshes)
 if not st.session_state["authenticated"]:
     try:
-        from src.core.auth import supabase as _sb
         session = _sb.auth.get_session()
         if session and session.user:
             user_id = session.user.id
