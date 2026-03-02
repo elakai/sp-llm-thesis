@@ -2,9 +2,6 @@ import os
 import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain_pinecone import PineconeVectorStore
 
 # 1. LOAD ENV (Single source of truth for the entire app)
 env_path = Path(__file__).resolve().parents[2] / ".env"
@@ -38,25 +35,34 @@ GROQ_MODEL          = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 # Absolute pathing prevents "folder not found" errors during deployment
 DOCS_FOLDER = Path(__file__).resolve().parents[2] / "documents"
 
-# 4. CACHED FACTORIES
-@st.cache_resource(show_spinner=False)
-def get_embeddings() -> HuggingFaceEmbeddings:
+# ── HuggingFace / Transformers disk cache (persists in /tmp within a session) ──
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", "/tmp/sentence_transformers")
+os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/transformers_cache")
+os.environ.setdefault("HF_HOME", "/tmp/hf_home")
+
+# 4. CACHED FACTORIES  (imports are lazy — heavy libraries load only when first called)
+@st.cache_resource(show_spinner="Loading embedding model...")
+def get_embeddings():
+    from langchain_huggingface import HuggingFaceEmbeddings
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-@st.cache_resource(show_spinner=False)
-def get_generator_llm() -> ChatGroq:
+@st.cache_resource
+def get_generator_llm():
     """LLM for main answer generation. Lives in server RAM permanently."""
+    from langchain_groq import ChatGroq
     return ChatGroq(model=GROQ_MODEL, temperature=0.1, groq_api_key=GROQ_API_KEY)
 
-@st.cache_resource(show_spinner=False)
-def get_critic_llm() -> ChatGroq:
+@st.cache_resource
+def get_critic_llm():
     """LLM for answer verification (Critic persona). Zero temperature for deterministic checking."""
+    from langchain_groq import ChatGroq
     return ChatGroq(model=GROQ_MODEL, temperature=0.0, groq_api_key=GROQ_API_KEY)
 
 # Cached with 5-minute TTL: connection stays alive across queries but refreshes
 # automatically to prevent Pinecone idle timeouts.
-@st.cache_resource(ttl=300, show_spinner=False)
-def get_vectorstore() -> PineconeVectorStore:
+@st.cache_resource(ttl=300)
+def get_vectorstore():
+    from langchain_pinecone import PineconeVectorStore
     return PineconeVectorStore.from_existing_index(
         index_name=PINECONE_INDEX_NAME,
         embedding=get_embeddings()
