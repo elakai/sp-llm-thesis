@@ -74,9 +74,63 @@ def post_process_ocr_text(text: str) -> str:
     text = re.sub(r' {2,}', ' ', text)
     return text
 
+# Regex for curriculum section headers like "FIRST YEAR - First Semester", "Year 2, Semester 1"
+_SECTION_HDR_RE = re.compile(
+    r'(?:(?:FIRST|SECOND|THIRD|FOURTH|FIFTH)\s*YEAR|Year\s*\d+)'
+    r'\s*[-\u2013\u2014,.:;\s]+\s*'
+    r'(?:(?:1st|2nd|First|Second)\s*Semester|Semester\s*\d+|Summer|Intersession)',
+    re.IGNORECASE,
+)
+
+def extract_program_info(filename: str) -> dict:
+    """Parse program name and code from curriculum filename.
+    e.g. 'CURRICULUM FOR BACHELOR OF SCIENCE IN ARCHITECTURE (BS ARCH).pdf'
+    → {'program_full': 'BACHELOR OF SCIENCE IN ARCHITECTURE', 'program_code': 'BS ARCH'}
+    """
+    match = re.search(r'CURRICULUM\s+FOR\s+(.+?)\s*\(([^)]+)\)', filename, re.IGNORECASE)
+    if match:
+        return {"program_full": match.group(1).strip(), "program_code": match.group(2).strip()}
+    return {}
+
+def find_section_headers_for_tables(all_words: list, table_bboxes: list) -> dict:
+    """Map each table index to the nearest year/semester header above it."""
+    if not all_words or not table_bboxes:
+        return {}
+    # Group words into lines by y-coordinate
+    lines: Dict[int, List[dict]] = {}
+    for w in all_words:
+        y = round(w['top'])
+        merged = False
+        for ey in list(lines.keys()):
+            if abs(y - ey) < 5:
+                lines[ey].append(w)
+                merged = True
+                break
+        if not merged:
+            lines[y] = [w]
+    # Build sorted (y, text) list
+    line_list = []
+    for y in sorted(lines.keys()):
+        words_in_line = sorted(lines[y], key=lambda w: w['x0'])
+        text = ' '.join(w['text'] for w in words_in_line)
+        line_list.append((y, text))
+    # For each table, find the closest matching header above it
+    result = {}
+    for idx, bbox in enumerate(table_bboxes):
+        table_top = bbox[1]
+        best = None
+        for y, text in line_list:
+            if y >= table_top - 2:
+                break
+            if _SECTION_HDR_RE.search(text):
+                best = text.strip()
+        if best:
+            result[idx] = best
+    return result
+
 def convert_table_to_markdown(table_data: list) -> str:
     if not table_data: return ""
-    cleaned = [[str(cell).strip() if cell else "" for cell in row] for row in table_data]
+    cleaned = [[str(cell).replace('\n', ' ').strip() if cell else "" for cell in row] for row in table_data]
     header = cleaned[0]
     md = "| " + " | ".join(header) + " |\n"
     md += "| " + " | ".join(["---"] * len(header)) + " |\n"
@@ -163,6 +217,7 @@ def extract_docx_text(file_bytes: bytes) -> str:
 def load_pdf(path: str, filename: str) -> List[Document]:
     logger.info(f"Reading PDF: {filename}...")
     norm_filename = normalize_source_key(filename)
+    program_info = extract_program_info(filename)
     docs = []
     try:
         with fitz.open(path) as fitz_doc:
@@ -170,45 +225,80 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                 for page_num, page in enumerate(pdf.pages, start=1):
                     tables = page.find_tables()
                     table_bboxes = [t.bbox for t in tables]
-                    for table in tables:
+
+                    # ── TABLE EXTRACTION ──────────────────────────
+                    all_words = page.extract_words(x_tolerance=3, y_tolerance=3)
+                    section_hdrs = (
+                        find_section_headers_for_tables(all_words, table_bboxes)
+                        if table_bboxes else {}
+                    )
+
+                    for t_idx, table in enumerate(tables):
                         data = table.extract()
-                        if data:
-                            docs.append(Document(
-                                page_content=convert_table_to_markdown(data),
-                                metadata={"source": norm_filename, "page": page_num, "type": "table"}
-                            ))
-                    
+                        if not data:
+                            continue
+                        md = convert_table_to_markdown(data)
+                        # Build context prefix (program + semester)
+                        prefix_parts = []
+                        if program_info:
+                            prefix_parts.append(
+                                f"Program: {program_info['program_full']} "
+                                f"({program_info['program_code']})"
+                            )
+                        if t_idx in section_hdrs:
+                            prefix_parts.append(section_hdrs[t_idx])
+                        if prefix_parts:
+                            md = '\n'.join(prefix_parts) + '\n\n' + md
+
+                        meta = {"source": norm_filename, "page": page_num, "type": "table"}
+                        if program_info:
+                            meta["program_code"] = program_info.get("program_code", "")
+                        docs.append(Document(page_content=md, metadata=meta))
+
+                    # ── BODY TEXT EXTRACTION ──────────────────────
                     fitz_page = fitz_doc[page_num - 1]
 
-                    # Layer 1: PyMuPDF text extraction (best for embedded text layers)
-                    body_text = clean_text(fitz_page.get_text("text"))
+                    if table_bboxes:
+                        # Page has tables → use pdfplumber with table-region filtering
+                        # so body text does NOT duplicate table content.
+                        non_table_words = [
+                            w for w in all_words
+                            if not is_inside_any_bbox(w, table_bboxes)
+                        ]
+                        body_text = clean_text(reconstruct_body_text(non_table_words))
+                    else:
+                        # No tables detected → prefer PyMuPDF for flowing text
+                        body_text = clean_text(fitz_page.get_text("text"))
+                        if len(body_text) < 100:
+                            plumber_text = clean_text(reconstruct_body_text(all_words))
+                            if len(plumber_text) > len(body_text):
+                                body_text = plumber_text
 
-                    # Layer 2: pdfplumber word reconstruction (fallback)
-                    if len(body_text) < 100:
-                        words = page.extract_words(x_tolerance=3, y_tolerance=3)
-                        non_table_words = [w for w in words if not is_inside_any_bbox(w, table_bboxes)]
-                        plumber_text = clean_text(reconstruct_body_text(non_table_words))
-                        if len(plumber_text) > len(body_text):
-                            body_text = plumber_text
-
-                    # Layer 3: Tesseract OCR (last resort for scanned pages)
-                    if len(body_text) < 100:
+                    # Last-resort OCR (scanned pages with no detected tables)
+                    if len(body_text) < 100 and not table_bboxes:
                         try:
                             logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
                             pix = fitz_page.get_pixmap(dpi=300)
                             img = Image.open(io.BytesIO(pix.tobytes()))
                             clean_img = preprocess_image_for_ocr(img)
-                            ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
+                            ocr_text = pytesseract.image_to_string(
+                                clean_img, config="--psm 3 --oem 3"
+                            )
                             ocr_text = post_process_ocr_text(ocr_text)
                             body_text = clean_text(ocr_text)
                         except Exception as ocr_err:
                             logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
 
                     if len(body_text) > 20:
-                        docs.append(Document(
-                            page_content=body_text,
-                            metadata={"source": norm_filename, "page": page_num, "type": "text"}
-                        ))
+                        if program_info:
+                            body_text = (
+                                f"Program: {program_info['program_full']} "
+                                f"({program_info['program_code']})\n\n{body_text}"
+                            )
+                        meta = {"source": norm_filename, "page": page_num, "type": "text"}
+                        if program_info:
+                            meta["program_code"] = program_info.get("program_code", "")
+                        docs.append(Document(page_content=body_text, metadata=meta))
     except Exception as e:
         logger.error(f"PDF Processing Error: {e}")
     return docs
