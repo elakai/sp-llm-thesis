@@ -114,7 +114,7 @@ def render_chat_view():
             unsafe_allow_html=True,
         )
     
-    st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
         st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
