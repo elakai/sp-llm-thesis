@@ -66,9 +66,24 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # STANDALONE COMPONENTS (no Streamlit dependency)
 # ─────────────────────────────────────────────────────────────────────────────
+class _GroqSafe(ChatGroq):
+    """ChatGroq wrapper that forces n=1 everywhere (Groq API rejects n>1)."""
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        kwargs["n"] = 1
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        kwargs["n"] = 1
+        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    def bind(self, **kwargs):
+        kwargs.pop("n", None)  # Strip n from RAGAS bind() calls
+        return super().bind(**kwargs)
+
+
 def _init_components():
     """Initialize LLM, embeddings, vectorstore, and reranker without Streamlit."""
-    llm = ChatGroq(
+    llm = _GroqSafe(
         model_name="llama-3.3-70b-versatile",
         temperature=0.1,
         api_key=os.getenv("GROQ_API_KEY"),
