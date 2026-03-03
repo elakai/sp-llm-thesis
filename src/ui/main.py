@@ -65,8 +65,20 @@ if "user_id" not in st.session_state: st.session_state["user_id"] = None
 if "role" not in st.session_state: st.session_state["role"] = "student"
 if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
 if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
+if "sidebar_open" not in st.session_state: st.session_state["sidebar_open"] = True
 if "db_online" not in st.session_state:
     st.session_state["db_online"] = check_pinecone_health()
+
+sidebar_width = "280px" if st.session_state["sidebar_open"] else "92px"
+content_gutter = "3.5rem"
+st.markdown(
+    f"""
+    <style>
+    :root {{ --axi-sidebar-width: {sidebar_width}; --axi-content-gutter: {content_gutter}; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # Pre-load heavy ML resources on first cold start
 if "app_loaded" not in st.session_state:

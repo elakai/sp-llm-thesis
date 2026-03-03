@@ -2,40 +2,105 @@ header, footer {visibility: hidden;}
 [data-testid="sidebar-button"], 
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"],
 button[kind="header"],
 [data-testid="baseButton-header"],
 .stSidebarCollapsedControl { 
-    display: none !important; 
+    display: none !important;
     visibility: hidden !important;
+    opacity: 0 !important;
 }
 
 [data-testid="stSidebar"] { 
-    min-width: 280px !important; 
-    max-width: 280px !important; 
-    background: #FFB85C !important;
+    min-width: var(--axi-sidebar-width, 280px) !important; 
+    max-width: var(--axi-sidebar-width, 280px) !important; 
+    width: var(--axi-sidebar-width, 280px) !important;
+    background: #FFB35C !important;
     margin-right: auto;
-    transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1), 
-                opacity 0.35s ease-out;
+    transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                min-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                max-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.42s ease-in-out;
     will-change: transform;
+    overflow: hidden;
+    transform: translateX(0) !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
 }
 
 [data-testid="stSidebar"] > div {
-    background: #FFB85C !important;
-    transition: transform 0.65s cubic-bezier(0.23, 1, 0.32, 1);
+    background: #FFB35C !important;
+    padding-top: 0.35rem !important;
+    transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                min-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                max-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.42s ease-in-out;
 }
 
-[data-testid="stSidebar"][aria-expanded="false"] {
-    transform: translateX(-100%);
-    opacity: 0.95;
+/* Keep toggle pinned to top section of sidebar */
+[data-testid="stSidebar"] .st-key-sidebar_toggle {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 5 !important;
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+    background: transparent !important;
+    width: 100% !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
 }
 
-[data-testid="stSidebar"][aria-expanded="true"] {
-    transform: translateX(0);
-    opacity: 1;
+/* Transparent sidebar toggle button */
+[data-testid="stSidebar"] .st-key-sidebar_toggle button {
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    box-shadow: none !important;
+    color: #1f1f1f !important;
+    font-size: 1.33rem !important;
+    line-height: 1 !important;
+    padding: 0.25rem 0.4rem !important;
+    margin: 0 auto !important;
+}
+
+/* Lift logo + title cluster near top edge */
+[data-testid="stSidebar"] .sidebar-brand-open,
+[data-testid="stSidebar"] .sidebar-brand-collapsed,
+[data-testid="stSidebar"] .sidebar-brand-fallback {
+    margin-top: 0 !important;
+    transform: none !important;
+}
+
+[data-testid="stSidebar"] .st-key-sidebar_toggle button:hover {
+    background: rgba(255, 255, 255, 0.2) !important;
+    border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Main content and bottom input adapt to sidebar state */
+[data-testid="stMainBlockContainer"] {
+    width: calc(100vw - var(--axi-sidebar-width, 280px) - var(--axi-content-gutter, 3.5rem)) !important;
+    max-width: calc(100vw - var(--axi-sidebar-width, 280px) - var(--axi-content-gutter, 3.5rem)) !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-top: 0.5rem !important;
+    transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                max-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                margin 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.72s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+[data-testid="stBottomBlockContainer"] {
+    width: calc(100vw - var(--axi-sidebar-width, 280px) - var(--axi-content-gutter, 3.5rem)) !important;
+    max-width: calc(100vw - var(--axi-sidebar-width, 280px) - var(--axi-content-gutter, 3.5rem)) !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                max-width 0.72s cubic-bezier(0.4, 0, 0.2, 1),
+                margin 0.72s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
 .stApp { 
-    background: linear-gradient(to bottom, #FFFBAD 0%, #FFA347 100%) !important;
+    background: linear-gradient(to bottom, #FFE485 0%, #FF950A 100%) !important;
     background-attachment: fixed;
 }
 
@@ -150,7 +215,7 @@ button[kind="header"],
 [data-testid="stChatMessage"] p,
 [data-testid="stChatMessage"] li,
 [data-testid="stChatMessage"] span:not(.timestamp) {
-    font-size: 1.1rem !important;
+    font-size: 1.27rem !important;
     line-height: 1.6 !important;
 }
 
@@ -187,7 +252,7 @@ button[kind="header"],
 
 /* Increase text size in chat input */
 [data-testid="stChatInput"] textarea {
-    font-size: 1.1rem !important;
+    font-size: 1.21rem !important;
     color: #FFFFFF !important;
     background-color: #000000 !important;
     caret-color: #FFA51F !important;
@@ -230,14 +295,14 @@ button[kind="header"],
 }
 
 /* Sidebar Profile */
-.user-profile { padding: 12px; background-color: #000000; border-radius: 12px; color: #FFFFFF; width: 248px; border: 1px solid rgba(255, 143, 31, 0.3); box-sizing: border-box; position: fixed; left: 16px; bottom: 88px; z-index: 999; }
+.user-profile { padding: 12px; background-color: #000000; border-radius: 12px; color: #FFFFFF; width: calc(var(--axi-sidebar-width, 280px) - 32px); border: 1px solid rgba(255, 143, 31, 0.3); box-sizing: border-box; position: fixed; left: 16px; bottom: 88px; z-index: 999; transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1); }
 
 /* Keep logout button below user profile with spacing at bottom-left */
 [data-testid="stSidebar"] .stButton button[kind="primary"] {
     position: fixed !important;
     left: 16px !important;
     bottom: 20px !important;
-    width: 248px !important;
+    width: calc(var(--axi-sidebar-width, 280px) - 32px) !important;
     z-index: 1000 !important;
     background: #ffa41c !important;
     color: #ffffff !important;
@@ -246,7 +311,7 @@ button[kind="header"],
     border: 2px solid rgba(255, 255, 255, 0.3) !important;
     padding: 10px 18px !important;
     font-size: 1rem !important;
-    transition: background 0.3s, box-shadow 0.3s !important;
+    transition: width 0.72s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s, box-shadow 0.3s !important;
 }
 [data-testid="stSidebar"] .stButton button[kind="primary"]:hover {
     background: #fff2d6 !important;
@@ -474,4 +539,29 @@ button[kind="header"],
         opacity: 1;
         transform: scale(1);
     }
+}
+
+/* 10% larger text for history view and sidebar history controls */
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] button,
+[data-testid="stSidebar"] .stButton button,
+[data-testid="stSidebar"] .user-profile {
+    font-size: 1.21rem !important;
+}
+
+[data-testid="stExpander"] small,
+[data-testid="stSidebar"] .user-profile small {
+    font-size: 1.09rem !important;
+}
+
+/* Student info text slightly smaller */
+[data-testid="stSidebar"] .user-profile {
+    font-size: 1.09rem !important;
+}
+
+[data-testid="stSidebar"] .user-profile small {
+    font-size: 0.98rem !important;
 }

@@ -4,7 +4,7 @@
 [data-testid="stTabs"] [data-testid="stTab"] {
     font-size: 3rem !important;
     font-weight: 700 !important;
-    color: #E07F00 !important;
+    color: #FFFFFF !important;
     text-align: center !important;
 }
 /* Force label text size for Streamlit forms */
@@ -44,7 +44,7 @@
 header, footer { visibility: hidden; }
 
 .stApp { 
-    background: linear-gradient(to bottom, #FFFD85 0%, #E07F00 100%) !important;
+    background: linear-gradient(to bottom, #FFE485 0%, #FF950A 100%) !important;
     background-attachment: fixed;
     min-height: 100vh;
     overflow: hidden;
@@ -76,7 +76,7 @@ header, footer { visibility: hidden; }
 .logo-image:hover { transform: scale(1.05); }
 .logo-title { 
     font-size: clamp(1.6rem, 5vw, 3rem); 
-    color: #FFB647; 
+    color: #FFAF47; 
     font-weight: 600; 
     text-align: center; 
     margin-bottom: 5px;
@@ -93,7 +93,7 @@ header, footer { visibility: hidden; }
     width: 100%;
 }
 [data-testid="stTab"] {
-    color: #FFA347 !important;
+    color: #FFF2C2 !important;
     font-size: 3rem !important;
     text-align: center;
     flex: 1 1 0;
@@ -102,7 +102,7 @@ header, footer { visibility: hidden; }
 /* Active tab indicator color */
 .stTabs [data-baseweb="tab-highlight"],
 [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-    background-color: #E6994C !important;
+    background-color: #FFF2C2 !important;
 }
 
 /* Responsive Form - Liquid Glass Effect */

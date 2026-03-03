@@ -43,9 +43,9 @@ def render_login():
     
     logo_base64 = get_base64_logo()
     if logo_base64:
-        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FFA347;">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FF950A;">AXIsstant</div></div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="logo-container"><div class="logo-title" style="color: #FFA347;">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><div class="logo-title" style="color: #FF950A;">AXIsstant</div></div>', unsafe_allow_html=True)
 
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
 
@@ -100,20 +100,35 @@ def render_sidebar():
     load_css("main.css")
 
     with st.sidebar:
+        sidebar_open = st.session_state.get("sidebar_open", True)
+
+        toggle_label = "☰" if sidebar_open else "☰"
+        if st.button(toggle_label, key="sidebar_toggle", use_container_width=False):
+            st.session_state["sidebar_open"] = not sidebar_open
+            st.rerun()
+
         logo_base64 = get_base64_logo()
-        if logo_base64:
+        if logo_base64 and sidebar_open:
             st.markdown(f"""
-                <div style="text-align: center; padding-bottom: 10px;">
+                <div class="sidebar-brand-open" style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
-                    <div style="margin-top: 8px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;">AXIsstant</div>
+                    <div style="margin-top: 5px; font-size: 3rem; font-weight: 800; color: #FF950A; letter-spacing: 0.8px;">AXIsstant</div>
+                </div>
+            """, unsafe_allow_html=True)
+        elif logo_base64 and not sidebar_open:
+            st.markdown(f"""
+                <div class="sidebar-brand-collapsed" style="text-align: center; padding-bottom: 8px;">
+                    <img src="data:image/png;base64,{logo_base64}" width="44" style="filter: drop-shadow(0 0 5px #F3B153);">
                 </div>
             """, unsafe_allow_html=True)
         else:
-            st.markdown("<div style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>AXIsstant</div>", unsafe_allow_html=True)
+            fallback_text = "AXIsstant" if sidebar_open else "AXI"
+            st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
         st.markdown("---")
         
         # New Chat button
-        if st.button("New Chat", use_container_width=True):
+        new_chat_label = "New Chat" if sidebar_open else "✏️"
+        if st.button(new_chat_label, use_container_width=True):
             if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
                 if "chat_history" not in st.session_state:
                     st.session_state["chat_history"] = []
@@ -131,7 +146,7 @@ def render_sidebar():
             st.rerun()
         
         # History button
-        history_label = "History" if st.session_state.get("view") == "history" else "History"
+        history_label = "History" if sidebar_open else "🕘"
         if st.button(history_label, use_container_width=True):
             if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
                 if "chat_history" not in st.session_state:
@@ -147,17 +162,19 @@ def render_sidebar():
             st.rerun()
             
         if st.session_state.get("role") == "admin":
-            admin_label = "🛠️ **Admin Dashboard**" if st.session_state.get("view") == "admin" else "🛠️ Admin Dashboard"
+            admin_label = "🛠️ **Admin Dashboard**" if sidebar_open and st.session_state.get("view") == "admin" else ("🛠️ Admin Dashboard" if sidebar_open else "🛠️")
             if st.button(admin_label, use_container_width=True):
                 st.session_state["view"] = "admin"
                 st.rerun()
 
         st.markdown("---")
-        user_email = st.session_state.get("email", "Guest")
-        role = st.session_state.get("role", "Student").upper()
-        st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
+        if sidebar_open:
+            user_email = st.session_state.get("email", "Guest")
+            role = st.session_state.get("role", "Student").upper()
+            st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
 
-        if st.button("Logout", use_container_width=True, type="primary"):
+        logout_label = "Logout" if sidebar_open else "🚪"
+        if st.button(logout_label, use_container_width=True, type="primary"):
             st.session_state.clear()
             st.rerun()
 
