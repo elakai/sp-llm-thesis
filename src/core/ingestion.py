@@ -515,6 +515,22 @@ def delete_document(filename: str) -> Tuple[bool, str]:
         return True, f"Successfully purged {norm_filename} chunks."
     except Exception as e:
         return False, f"Failed to delete {norm_filename}: {str(e)}"
+
+def purge_all_vectors() -> Tuple[bool, str]:
+    """Nuclear option: wipe ALL vectors from Pinecone and clear the manifest."""
+    try:
+        pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+        index = pc.Index(PINECONE_INDEX_NAME)
+        index.delete(delete_all=True)
+        # Clear entire manifest table
+        try:
+            supabase.table("manifest").delete().neq("filename", "").execute()
+        except Exception:
+            pass  # Manifest may already be empty
+        logger.info("🗑️ Purged ALL vectors from Pinecone and cleared manifest.")
+        return True, "All vectors deleted from Pinecone. Index is now empty."
+    except Exception as e:
+        return False, f"Purge failed: {str(e)}"
     
 def verify_sync() -> dict:
     """Compares the local manifest ledger against actual Pinecone metadata."""

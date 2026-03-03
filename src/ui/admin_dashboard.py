@@ -5,7 +5,7 @@ import time
 from src.config.settings import get_vectorstore
 from src.core.auth import supabase
 from src.core.memory_ingestion import ingest_uploaded_files
-from src.core.ingestion import get_uploaded_files, delete_document, verify_sync
+from src.core.ingestion import get_uploaded_files, delete_document, verify_sync, purge_all_vectors
 from src.config.constants import VALID_CATEGORIES
 
 
@@ -176,10 +176,48 @@ def render_document_management():
             sync_result = verify_sync()
             if sync_result:
                 st.write("**In Both (healthy):**", len(sync_result.get("in_both", [])))
-                st.write("**Manifest Only (ghost entries):**", sync_result.get("manifest_only", []))
-                st.write("**Pinecone Only (untracked):**", sync_result.get("pinecone_only", []))
+                ghost = sync_result.get("manifest_only", [])
+                orphans = sync_result.get("pinecone_only", [])
+                if ghost:
+                    st.write("**Manifest Only (ghost entries):**", ghost)
+                if orphans:
+                    st.warning(f"**Pinecone Only (orphaned vectors):** {len(orphans)} source(s)")
+                    for src in orphans:
+                        st.write(f"  - `{src}`")
+                if not ghost and not orphans:
+                    st.success("Everything is in sync!")
             else:
                 st.error("Sync check failed. Check logs.")
+
+    # ── PURGE ALL ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("⚠️ Danger Zone")
+
+    if "confirm_purge_all" not in st.session_state:
+        st.session_state["confirm_purge_all"] = False
+
+    if not st.session_state["confirm_purge_all"]:
+        if st.button("🗑️ Purge ALL Vectors from Pinecone", type="secondary"):
+            st.session_state["confirm_purge_all"] = True
+            st.rerun()
+    else:
+        st.error(
+            "⚠️ This will DELETE EVERY vector from the Pinecone index "
+            "and clear the manifest. You will need to re-upload all documents."
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Yes, purge everything", type="primary"):
+            with st.spinner("Purging…"):
+                ok, msg = purge_all_vectors()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+            st.session_state["confirm_purge_all"] = False
+            st.rerun()
+        if c2.button("Cancel purge"):
+            st.session_state["confirm_purge_all"] = False
+            st.rerun()
 
 
 def render_admin_view():
