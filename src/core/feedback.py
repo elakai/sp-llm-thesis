@@ -33,15 +33,23 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
     except Exception as e:
         logger.error(f"Backend Logging Error: {e}")
 
-def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous"):
-    """Updates the most recent log entry for this user with a rating."""
+def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous", session_id: str = None):
+    """Updates the most recent log entry for this user/query pair with a rating.
+
+    Pass ``session_id`` when available so the update targets a single session
+    rather than every row where the same query text appears.
+    """
     try:
         data = {"rating": rating}
-        supabase.table("chat_logs") \
-            .update(data) \
-            .eq("user_email", user_id) \
-            .eq("query", query) \
-            .execute()
+        query_builder = (
+            supabase.table("chat_logs")
+            .update(data)
+            .eq("user_email", user_id)
+            .eq("query", query)
+        )
+        if session_id:
+            query_builder = query_builder.eq("session_id", session_id)
+        query_builder.execute()
         return True
     except Exception as e:
         logger.error(f"Failed to save feedback: {e}")

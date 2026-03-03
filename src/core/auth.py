@@ -1,5 +1,6 @@
 from supabase import create_client, Client
 from src.config.settings import SUPABASE_URL, SUPABASE_KEY
+from src.config.logging_config import logger
 
 # Initialize Supabase Client using the centralized keys from settings.py
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -37,8 +38,11 @@ def login_user(email, password):
                 db_role = profile.data.get("role")
                 db_name = profile.data.get("full_name")
                 
-            except Exception:
-                # If the query fails entirely (e.g., row deleted), safer to be a student.
+            except Exception as e:
+                # If the query fails entirely (e.g., row deleted or DB unreachable),
+                # default to student to fail safe.  Log as error because an admin
+                # hitting this path would silently receive a downgraded role.
+                logger.error(f"Role lookup failed for user {user_id}: {e}. Defaulting to 'student'.")
                 db_role = "student"
                 db_name = "Student"
 
@@ -51,10 +55,10 @@ def login_user(email, password):
             
     except Exception as e:
         if "Email not confirmed" in str(e):
-            print("⚠️ Login blocked: Email not verified.")
+            logger.warning(f"Login blocked for {email}: email not verified.")
             return "UNVERIFIED"
-        
-        print(f"Login Error: {e}")
+
+        logger.error(f"Login error for {email}: {e}")
         return None
 
 def register_user(email, password, full_name="Student"):

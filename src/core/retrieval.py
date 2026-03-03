@@ -13,13 +13,15 @@ from src.config.settings import get_generator_llm, get_vectorstore, get_embeddin
 from src.core.router import route_query, get_dynamic_k
 from src.core.decomposition import decompose_query
 from src.config.constants import (
-    RETRIEVAL_K, 
-    RERANKER_TOP_K, 
-    DECOMPOSE_TRIGGERS, 
+    RETRIEVAL_K,
+    RERANKER_TOP_K,
+    DECOMPOSE_TRIGGERS,
     LOW_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_MARGIN,
-    STREAM_DELAY
+    STREAM_DELAY,
+    POSITIONAL_SCORE_WEIGHT,
+    SEMANTIC_CACHE_THRESHOLD,
 )
 from src.config.logging_config import logger
 
@@ -77,7 +79,7 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
         logger.warning(f"Contextualize Error: {e}")
         return query
 
-def check_semantic_cache(query: str, threshold: float = 0.95) -> str:
+def check_semantic_cache(query: str, threshold: float = SEMANTIC_CACHE_THRESHOLD) -> str:
     if not GLOBAL_CACHE: return None
     try:
         emb_model = get_embeddings()
@@ -98,8 +100,8 @@ def add_to_cache(query: str, response: str):
         query_emb = np.array(emb_model.embed_query(query))
         GLOBAL_CACHE.append({"embedding": query_emb, "response": response})
         if len(GLOBAL_CACHE) > 50: GLOBAL_CACHE.pop(0)
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Cache write failed: {e}")
 
 def invalidate_cache():
     """Wipes the semantic cache object entirely."""
@@ -119,6 +121,21 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
+    """
+    Re-ranks documents using BM25 combined with a positional bias score.
+
+    The positional score (POSITIONAL_SCORE_WEIGHT * remaining position) encodes
+    a mild preference for Pinecone’s original ANN rank, on the assumption that
+    semantic similarity already provides a reasonable prior ordering.  The
+    CrossEncoder in Step 5 provides the definitive final ranking.
+
+    Args:
+        query: The user’s standalone query string.
+        docs:  Candidate documents from Pinecone retrieval.
+
+    Returns:
+        Top RETRIEVAL_K documents sorted by combined BM25 + positional score.
+    """
     if not docs: return []
     try:
         tokenized_docs = [doc.page_content.split() for doc in docs]
@@ -128,7 +145,7 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
 
         ranked = []
         for i, doc in enumerate(docs):
-            position_score = (len(docs) - i) * 0.05 
+            position_score = (len(docs) - i) * POSITIONAL_SCORE_WEIGHT
             final_score = bm25_scores[i] + position_score
             ranked.append((final_score, doc))
 
@@ -139,6 +156,15 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
         return docs[:RETRIEVAL_K]
 
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
+    """
+    Filters documents so only chunks from the most recently ingested version
+    of each source file are kept.
+
+    Comparison is done via the ``uploaded_at`` Unix timestamp injected during
+    ingestion.  If two ingestions of the same file share the same timestamp
+    (edge case), all chunks are retained.  Documents lacking ``uploaded_at``
+    default to 0 and are superseded by any version that has the field set.
+    """
     if not docs: return []
     grouped: Dict[str, List[Document]] = {}
     for doc in docs:
@@ -156,10 +182,36 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None):
+    """
+    Main RAG generator pipeline.  A Streamlit generator function (uses ``yield``).
+
+    Pipeline stages:
+        0. Query validation and PII redaction (guardrails)
+        1. Semantic cache check
+        2. Intent routing (greeting / off_topic / search)
+        3. Query decomposition for multi-topic questions
+        4. Parallel Pinecone retrieval with dynamic K
+        5. BM25 hybrid rerank + CrossEncoder rerank
+        6. Context assembly
+        7. Three-tier confidence gating:
+               Tier 1 (score < LOW_CONFIDENCE_THRESHOLD)  → refuse to answer
+               Tier 2 (moderate confidence)               → Critic LLM verifies draft
+               Tier 3 (score ≥ HIGH_CONFIDENCE_THRESHOLD) → stream draft directly
+        8. Metrics recording, cache population, and word-by-word streaming
+
+    Args:
+        query:             Raw user query string from the Streamlit text input.
+        chat_history_list: List of {"role": str, "content": str} dicts representing
+                           the full conversation so far (including the system prompt
+                           at index 0 if present).
+
+    Yields:
+        str: Individual words (space-appended) for streaming display.
+    """
     if chat_history_list is None:
         chat_history_list = []
     start_time = time.time()
-    top_score = 0.0
+    top_score = float("-inf")
     
     # 🚀 STEP 0: VALIDATION & CONVERSATIONAL MEMORY
     is_valid, clean_query = validate_query(query) # Call from guardrails.py
@@ -256,14 +308,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     else:
         top_reranked = []
 
-    # 🐛 TEMPORARY DEBUG LOGGING: Watch this in your terminal!
-    logger.info(f"📊 DEBUG | Query: '{standalone_query}'")
-    logger.info(f"📊 DEBUG | Docs Retrieved: {len(all_docs)} -> After Rerank: {len(top_reranked)}")
+    logger.info(f"📊 Query: '{standalone_query}'")
+    logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
     logger.info(
-        f"📊 DEBUG | Top Score: {top_score:.2f}, Second Score: {second_score:.2f}, "
+        f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f} | "
         f"Margin: {(top_score - second_score):.2f} "
-        f"(Low Cutoff: {LOW_CONFIDENCE_THRESHOLD}, High Cutoff: {HIGH_CONFIDENCE_THRESHOLD}, "
-        f"High Margin: {HIGH_CONFIDENCE_MARGIN})"
+        f"(Cutoffs — low: {LOW_CONFIDENCE_THRESHOLD}, high: {HIGH_CONFIDENCE_THRESHOLD}, "
+        f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
 
     # 🚀 STEP 6: BUILD CONTEXT
@@ -272,7 +323,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     st.session_state["last_retrieved_context"] = context
     retrieval_time = time.time() - retrieval_start
 
-  # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
+    # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
@@ -370,7 +421,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
-        yield f"⚠️ **AXIsstant is having trouble connecting to its brain.** (Error: {str(e)})"
+        yield "I'm currently experiencing a technical issue. Please try again in a moment."
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def get_llm_response(llm, prompt):

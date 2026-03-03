@@ -45,9 +45,14 @@ CHUNK_OVERLAP = 150
 RETRIEVAL_K = 15
 RERANKER_TOP_K = 8
 CRITIC_CONTEXT_LIMIT = 4000
-CONFIDENCE_THRESHOLD = 2.0
+# POSITIONAL_SCORE_WEIGHT: blended into BM25 scores during hybrid rerank.
+# The value encodes a mild preference for Pinecone's original ranking order.
+POSITIONAL_SCORE_WEIGHT = 0.05
 
-# Add this to your existing constants.py
+# SEMANTIC_CACHE_THRESHOLD: cosine similarity required for a cache hit.
+# 0.95 is too strict; two phrasings of the same question score ~0.82–0.88.
+SEMANTIC_CACHE_THRESHOLD = 0.88
+
 VALID_CATEGORIES = {
     "curriculum": "Curriculum",
     "thesis": "Thesis Manuscripts",
@@ -56,10 +61,16 @@ VALID_CATEGORIES = {
     "laboratory": "Lab Manuals"
 }
 
-#  RAG Confidence Thresholds (Calibrated for ms-marco logits)
-# Newer score distributions are often centered around ~[-2, +5].
-# Keep critic ON for borderline matches and only bypass when clearly strong.
-LOW_CONFIDENCE_THRESHOLD = -13.0   # Below this = truly irrelevant, abort generation
+# RAG Confidence Thresholds (Calibrated for ms-marco-MiniLM-L-6-v2 raw logits)
+# Score ranges for this model:
+#   clearly relevant  : +3 to +10
+#   moderately relevant: -1 to +3
+#   marginally relevant: -5 to -1
+#   unrelated          : -8 to -5
+#   completely wrong   : below -10
+# LOW_CONFIDENCE_THRESHOLD: abort generation below this — set to -3.0 so the
+# gate actually fires on marginally-relevant or worse retrievals.
+LOW_CONFIDENCE_THRESHOLD = -3.0    # Below this = not relevant enough, abort generation
 HIGH_CONFIDENCE_THRESHOLD = 2.5    # At/above this can skip critic (with margin check)
 HIGH_CONFIDENCE_MARGIN = 0.75      # Top1 must beat Top2 by at least this gap to skip critic
 

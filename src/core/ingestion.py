@@ -369,6 +369,17 @@ def upload_in_batches(vectorstore, chunks, batch_size=50):
             raise 
 
 def ingest_all_files():
+    """
+    Scans all files under DOCS_FOLDER recursively, loads them into LangChain
+    Document objects, chunks text docs, uploads everything to Pinecone, updates
+    the Supabase manifest ledger, invalidates the semantic cache, and deletes
+    the source files from disk to conserve storage.
+
+    Returns:
+        True  — all files successfully uploaded (or nothing new to ingest).
+        False — the Pinecone upload step raised an exception; local files are
+                preserved so the admin can retry.
+    """
     if not os.path.exists(DOCS_FOLDER):
         os.makedirs(DOCS_FOLDER)
         return False
@@ -390,6 +401,9 @@ def ingest_all_files():
 
         # FIXED: This loop is now outside the 'else' so 'general' files are actually processed
         for filename in files:
+            # NOTE: Duplicate detection uses bare filename as the source key.
+            # Files in different folders with the same name are treated as the same
+            # document.  A future improvement is to key by relative path + content hash.
             if is_already_ingested(filename):
                 logger.info(f"Skipping {filename} — active in Pinecone.")
                 continue
@@ -445,14 +459,13 @@ def ingest_all_files():
         # 3. Automatic Cache Wipe (Ensures immediate AI updates)
         invalidate_cache()
             
-        # 4. FIXED DELETE LOGIC: Matches normalized keys to save space
+        # 4. Delete source files whose keys appear in chunk_counts to free disk space.
+        # chunk_counts is keyed by bare filename (the value passed as 'filename' to
+        # each load_* function).  We match against the same bare filename here so
+        # the lookup is correct.
         for root, dirs, files in os.walk(DOCS_FOLDER):
             for filename in files:
-                # Build the same relative path key used in the manifest
-                rel_file_path = os.path.relpath(os.path.join(root, filename), DOCS_FOLDER)
-                norm_name = normalize_source_key(rel_file_path)
-                
-                if norm_name in chunk_counts:
+                if normalize_source_key(filename) in chunk_counts:
                     file_path = os.path.join(root, filename)
                     try:
                         os.remove(file_path)
@@ -533,7 +546,16 @@ def purge_all_vectors() -> Tuple[bool, str]:
         return False, f"Purge failed: {str(e)}"
     
 def verify_sync() -> dict:
-    """Compares the local manifest ledger against actual Pinecone metadata."""
+    """
+    Compares the Supabase manifest against source keys visible in Pinecone.
+
+    KNOWN LIMITATION: Pinecone does not expose a full enumeration API on the
+    serverless/free tier.  This function approximates the index contents by
+    issuing an ANN query against a zero vector, which returns the 10,000 nearest
+    neighbors to the origin — NOT a complete scan.  Treat results as indicative,
+    not authoritative.  Do not make irreversible decisions (e.g., manifest
+    cleanup) based solely on this output.
+    """
     manifest = get_uploaded_files()
     manifest_sources = set(manifest.keys())
     

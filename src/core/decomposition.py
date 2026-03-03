@@ -1,6 +1,7 @@
 from typing import List
 from langchain_core.prompts import PromptTemplate
 from src.config.settings import get_generator_llm
+from src.config.logging_config import logger
 
 # Pre-built at import time — avoids reconstructing the template on every call
 _DECOMPOSE_PROMPT = PromptTemplate.from_template(
@@ -39,5 +40,5 @@ def decompose_query(query: str) -> List[str]:
         return sub_queries
         
     except Exception as e:
-        print(f"Decomposition Error: {e}")
+        logger.warning(f"Decomposition error, falling back to original query: {e}")
         return [query]
