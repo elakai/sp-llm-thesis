@@ -205,16 +205,20 @@ def render_document_management():
             "⚠️ This will DELETE EVERY vector from the Pinecone index "
             "and clear the manifest. You will need to re-upload all documents."
         )
+        confirm_text = st.text_input('Type **DELETE ALL** to confirm:', key="purge_confirm_text")
         c1, c2 = st.columns(2)
-        if c1.button("Yes, purge everything", type="primary"):
-            with st.spinner("Purging…"):
-                ok, msg = purge_all_vectors()
-            if ok:
-                st.success(msg)
+        if c1.button("Permanently Delete All Vectors", type="primary"):
+            if confirm_text == "DELETE ALL":
+                with st.spinner("Purging…"):
+                    ok, msg = purge_all_vectors()
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+                st.session_state["confirm_purge_all"] = False
+                st.rerun()
             else:
-                st.error(msg)
-            st.session_state["confirm_purge_all"] = False
-            st.rerun()
+                st.warning('Please type "DELETE ALL" exactly to confirm.')
         if c2.button("Cancel purge"):
             st.session_state["confirm_purge_all"] = False
             st.rerun()
