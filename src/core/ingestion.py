@@ -418,22 +418,49 @@ def ingest_all_files():
             elif ext in ['doc', 'docx']: file_docs = load_docx(file_path, filename)
             elif ext in ['jpg', 'jpeg', 'png']: file_docs = load_image(file_path, filename)
 
-            # Inject the category and timestamp
+            # Inject category and timestamp into metadata only at this stage.
+            # The [CATEGORY | filename] context header is added to page_content
+            # AFTER splitting (see Phase 2) so every split chunk carries it —
+            # not just the first one.
             for d in file_docs:
                 d.metadata["category"] = category
                 d.metadata["uploaded_at"] = int(datetime.utcnow().timestamp())
-                
+
             all_docs.extend(file_docs)
 
     if not all_docs: return True
 
     # Phase 2: Atomic Chunking
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs = [d for d in all_docs if d.metadata.get("type") == "text"]
+    text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     split_text_docs = text_splitter.split_documents(text_docs)
     final_chunks = table_docs + split_text_docs
+
+    # ── Context Header Injection ───────────────────────────────────────────
+    # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is
+    # invisible to it.  Without a context header, a chunk containing a
+    # faculty list table (raw names, ranks, emails) won't semantically match
+    # queries like "who are the ECE CpE faculty" because those words don't
+    # appear in the table rows themselves.
+    #
+    # Injecting "[MEMOS] Faculty List ECE CpE" at the top of EVERY final chunk
+    # (after splitting, so all chunks carry it — not just the first) lets the
+    # embedding model link query terms to the correct document.
+    #
+    # Curriculum chunks are exempt: load_pdf already prepends
+    # "Program: BACHELOR OF SCIENCE IN ..." for those files.
+    for chunk in final_chunks:
+        if not chunk.page_content.startswith("Program:"):
+            src = chunk.metadata.get("source", "")
+            category_label = chunk.metadata.get("category", "general")
+            # Strip extension; replace underscores/hyphens with spaces so the
+            # embedding tokeniser treats them as readable words.
+            src_label = src.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+            chunk.page_content = (
+                f"[{category_label.upper()}] {src_label}\n\n{chunk.page_content}"
+            )
 
     chunk_counts = {}
     source_counters = defaultdict(int)
