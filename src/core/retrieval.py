@@ -267,7 +267,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     )
 
     # 🚀 STEP 6: BUILD CONTEXT
-    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content.replace(chr(10), ' ')}" for doc in top_reranked]
+    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
     retrieval_time = time.time() - retrieval_start
