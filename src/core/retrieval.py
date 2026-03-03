@@ -290,6 +290,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
    schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table.
    Include specific course codes, titles, units, and prerequisites — not vague summaries like
    "Multiple levels of design courses."
+   **SHOW EVERY ROW** — never truncate, summarize, or skip rows. If there are 15 grade levels, show all 15.
 
 4. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 

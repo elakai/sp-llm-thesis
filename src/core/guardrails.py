@@ -63,6 +63,7 @@ A claim is SUPPORTED if the context contains the same information even if worded
 
 STRICT OUTPUT RULES:
 - If the draft accurately reflects the context: copy and output the draft exactly as written, with no additions.
+- NEVER truncate, shorten, or summarize tables. If the draft has a 15-row table, your output must also have all 15 rows.
 - If the draft contains fabricated specific details: rewrite it removing only those fabricated details.
 - If the context is completely unrelated to the question: output only this: "I'm sorry, but I cannot find that specific information in the available documents. Please consult the CSEA Department Chair."
 - NEVER write words like SUPPORTED, PARTIALLY SUPPORTED, or NOT SUPPORTED in your output.
