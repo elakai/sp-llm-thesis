@@ -27,7 +27,11 @@ OFF_TOPIC_KEYWORDS = [
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. PIPELINE TRIGGERS & GUARDRAILS
 # ─────────────────────────────────────────────────────────────────────────────
-DECOMPOSE_TRIGGERS = [" difference between ", " compare ", " vs ", " and the ", " also "]
+# Triggers that signal a query spans multiple distinct topics and should be
+# decomposed into sub-queries before retrieval.  Deliberately narrow: common
+# words like 'and' or 'also' must NOT appear here or decomposition will fire
+# on almost every student question, wasting a Groq API call each time.
+DECOMPOSE_TRIGGERS = [" difference between ", " compare ", " vs "]
 
 IGNORED_RESPONSES = [
     "Hello! I am AXIsstant",

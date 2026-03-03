@@ -129,6 +129,11 @@ def find_section_headers_for_tables(all_words: list, table_bboxes: list) -> dict
     return result
 
 def convert_table_to_markdown(table_data: list) -> str:
+    """
+    Converts a 2-D list (first row = headers) into a GitHub-Flavored Markdown
+    table string.  Cell newlines are collapsed to spaces to keep each row on
+    a single line, which is required for valid Markdown table syntax.
+    """
     if not table_data: return ""
     cleaned = [[str(cell).replace('\n', ' ').strip() if cell else "" for cell in row] for row in table_data]
     header = cleaned[0]
@@ -215,6 +220,21 @@ def extract_docx_text(file_bytes: bytes) -> str:
 
 # --- LOADERS ---
 def load_pdf(path: str, filename: str) -> List[Document]:
+    """
+    Extracts content from a PDF using a three-library strategy:
+      - pdfplumber  : structured table detection and extraction (yields Markdown table chunks)
+      - PyMuPDF     : flowing body text on non-table pages
+      - Tesseract   : OCR fallback for scanned pages with < 100 chars of detected text
+
+    Tables and body text are kept mutually exclusive per page via
+    ``is_inside_any_bbox`` filtering so content is never duplicated.
+    Curriculum PDFs receive a ``Program: <name> (<code>)`` prefix from
+    ``extract_program_info`` so embedding captures the program context.
+
+    Returns a list of Documents; each has metadata keys:
+        source, page, type ('table' | 'text'), category (set later),
+        uploaded_at (set later), program_code (curriculum only).
+    """
     logger.info(f"Reading PDF: {filename}...")
     norm_filename = normalize_source_key(filename)
     program_info = extract_program_info(filename)
@@ -304,6 +324,12 @@ def load_pdf(path: str, filename: str) -> List[Document]:
     return docs
 
 def load_spreadsheet(path: str, filename: str, is_csv: bool = False) -> List[Document]:
+    """
+    Reads an Excel (.xlsx/.xls) or CSV file into a single Markdown table Document.
+    Missing cells are filled with 'N/A'.  Uses ``tabulate`` via
+    ``df.to_markdown()`` when available; falls back to ``convert_table_to_markdown``.
+    Returns a list with one Document of type 'table'.
+    """
     docs = []
     norm_filename = normalize_source_key(filename)
     try:
@@ -322,15 +348,27 @@ def load_spreadsheet(path: str, filename: str, is_csv: bool = False) -> List[Doc
     return docs
 
 def load_txt(path: str, filename: str) -> List[Document]:
+    """
+    Reads a plain-text file and returns a single text Document.
+    Decodes with UTF-8 and ``errors='ignore'`` so Latin-1 or Windows-1252
+    encoded files don't silently fail with UnicodeDecodeError.
+    """
     docs = []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
             docs.append(Document(page_content=clean_text(f.read()), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
     except Exception as e:
         logger.error(f"TXT Error: {e}")
     return docs
 
 def load_docx(path: str, filename: str) -> List[Document]:
+    """
+    Extracts text from a Word document using XML-level ZIP parsing.
+    Captures body paragraphs, table cells, text boxes, headers, footers,
+    and SmartArt labels that ``python-docx``'s ``doc.paragraphs`` misses.
+    Returns a single text Document (table structure in DOCX is not
+    reconstructed as Markdown; paragraphs are emitted as plain text).
+    """
     docs = []
     try:
         with open(path, 'rb') as f:
@@ -346,6 +384,12 @@ def load_docx(path: str, filename: str) -> List[Document]:
     return docs
 
 def load_image(path: str, filename: str) -> List[Document]:
+    """
+    Extracts text from an image file (PNG/JPG/TIFF) via Tesseract OCR.
+    Image is pre-processed with Otsu binarization before OCR to improve
+    accuracy on low-contrast scans.  PSM 6 assumes a single uniform block
+    of text.  Returns a text Document only if > 10 chars were extracted.
+    """
     docs = []
     try:
         img = Image.open(path)
@@ -359,6 +403,12 @@ def load_image(path: str, filename: str) -> List[Document]:
 
 # --- INGESTION PIPELINE ---
 def upload_in_batches(vectorstore, chunks, batch_size=50):
+    """
+    Uploads Document chunks to Pinecone in batches of ``batch_size`` to stay
+    within API payload limits.  Raises on the first failed batch so that the
+    caller (``ingest_all_files`` / ``ingest_uploaded_files``) can abort and
+    preserve the source files for retry rather than silently partial-indexing.
+    """
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i:i+batch_size]
         try:
@@ -546,6 +596,18 @@ def remove_from_manifest(filename: str):
         logger.error(f"Failed to remove from manifest: {e}")
 
 def delete_document(filename: str) -> Tuple[bool, str]:
+    """
+    Deletes all Pinecone vectors whose ``source`` metadata matches ``filename``
+    and removes the corresponding entry from the Supabase manifest.
+
+    Args:
+        filename: The bare filename or normalized relative path as stored in
+                  the manifest (e.g. ``"Faculty_List.pdf"`` or
+                  ``"curriculum/BS_CpE.pdf"``).
+
+    Returns:
+        (True, success_message) or (False, error_message).
+    """
     norm_filename = normalize_source_key(filename)
     try:
         pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))

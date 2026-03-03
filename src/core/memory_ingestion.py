@@ -168,6 +168,22 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
     split_text_docs = text_splitter.split_documents(text_docs)
     final_chunks = table_docs + split_text_docs
 
+    # ── Context Header Injection ───────────────────────────────────────────
+    # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is
+    # invisible to it.  Without a document-origin header, a raw faculty
+    # table chunk won't semantically match "who are the ECE CpE faculty".
+    # Applied AFTER splitting so every split chunk carries the header,
+    # not just the first.  Curriculum chunks are exempt (load_pdf already
+    # prepends "Program: BACHELOR OF SCIENCE IN ...").
+    for chunk in final_chunks:
+        if not chunk.page_content.startswith("Program:"):
+            src = chunk.metadata.get("source", "")
+            category_label = chunk.metadata.get("category", "general")
+            src_label = src.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+            chunk.page_content = (
+                f"[{category_label.upper()}] {src_label}\n\n{chunk.page_content}"
+            )
+
     # Add chunk indices per source
     source_counters = defaultdict(int)
     chunk_counts = {}

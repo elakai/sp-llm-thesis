@@ -146,11 +146,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"))
+                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
                                 st.toast("Thanks for your feedback!", icon="✅")
                             st.rerun()
                     with sub2:
@@ -158,11 +158,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "not_helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"))
+                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
                                 st.toast("We'll improve this answer.", icon="📝")
                             st.rerun()
                 
@@ -255,11 +255,19 @@ def _process_user_query(query: str):
         
         # Validate active_idx is still valid
         if active_idx is not None and isinstance(active_idx, int) and 0 <= active_idx < len(chat_history):
-            # Continuing an existing conversation - update it in place
-            chat_history[active_idx] = copy.deepcopy(st.session_state["messages"])
+            # Continuing an existing conversation - preserve its session_id and update messages
+            existing = chat_history[active_idx]
+            s_id = existing.get("session_id") if isinstance(existing, dict) else st.session_state.get("session_id")
+            chat_history[active_idx] = {
+                "session_id": s_id,
+                "messages": copy.deepcopy(st.session_state["messages"])
+            }
         else:
-            # New conversation - add to history and set active index
-            chat_history.append(copy.deepcopy(st.session_state["messages"]))
+            # New conversation - store as dict with session_id so feedback scope works
+            chat_history.append({
+                "session_id": st.session_state.get("session_id"),
+                "messages": copy.deepcopy(st.session_state["messages"])
+            })
             st.session_state["active_convo_idx"] = len(chat_history) - 1
 
         # Rerun to cleanly display from session state with feedback buttons

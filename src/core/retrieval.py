@@ -80,6 +80,19 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
         return query
 
 def check_semantic_cache(query: str, threshold: float = SEMANTIC_CACHE_THRESHOLD) -> str:
+    """
+    Checks the in-process semantic cache for a response to a near-identical
+    prior query.  Uses cosine similarity between all-MiniLM-L6-v2 embeddings.
+
+    Args:
+        query:     The (already contextualized) standalone query string.
+        threshold: Minimum cosine similarity for a cache hit.  Defaults to
+                   ``SEMANTIC_CACHE_THRESHOLD`` (0.88).  Set higher for stricter
+                   matching; lower values risk returning off-topic cached answers.
+
+    Returns:
+        The cached response string on a hit, or ``None`` on a miss.
+    """
     if not GLOBAL_CACHE: return None
     try:
         emb_model = get_embeddings()
@@ -95,6 +108,12 @@ def check_semantic_cache(query: str, threshold: float = SEMANTIC_CACHE_THRESHOLD
     return None
 
 def add_to_cache(query: str, response: str):
+    """
+    Embeds ``query`` and stores the (embedding, response) pair in ``GLOBAL_CACHE``.
+    Uses a fixed-size FIFO eviction policy (max 50 entries) to stay within
+    Streamlit Cloud RAM limits.
+    Failures are logged as warnings and do not interrupt the response stream.
+    """
     try:
         emb_model = get_embeddings()
         query_emb = np.array(emb_model.embed_query(query))
@@ -112,6 +131,18 @@ def invalidate_cache():
 # 2. HELPER FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
+    """
+    Formats the last 6 non-system messages into a plain-text "User: ... \nAssistant: ..."
+    block for injection into the LLM prompt.  Curly braces in message content
+    are escaped to ``{{`` / ``}}`` to prevent Python f-string substitution errors.
+
+    Args:
+        messages: Full conversation list including the system prompt at index 0.
+
+    Returns:
+        A newline-joined string of the last 6 turns, or "No previous context."
+        if the conversation contains only the system prompt.
+    """
     formatted_history = []
     history_to_process = messages[1:] if len(messages) > 1 else []
     for msg in history_to_process[-6:]: 

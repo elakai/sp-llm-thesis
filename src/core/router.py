@@ -19,7 +19,7 @@ def get_dynamic_k(query: str) -> int:
     # Comparison or multi-topic queries need more context
     complex_signals = [
         " difference ", " compare ", " vs ", " versus ",
-        " and ", " also ", " list all ", " what are all ",
+        " list all ", " what are all ",
     ]
     if any(signal in q for signal in complex_signals):
         return 15
