@@ -18,6 +18,7 @@ from src.config.constants import (
     DECOMPOSE_TRIGGERS, 
     LOW_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
+    HIGH_CONFIDENCE_MARGIN,
     STREAM_DELAY
 )
 from src.config.logging_config import logger
@@ -40,7 +41,8 @@ GLOBAL_CACHE = get_semantic_cache()
 # Words that signal the query references prior conversation and needs rewriting
 _CONTEXT_TRIGGERS = re.compile(
     r'\b(it|its|they|them|their|this|that|these|those|the same|'
-    r'above|previous|earlier|last|mentioned|said|again|also|more)\b',
+    r'above|previous|earlier|last|mentioned|said|again|also|more|'
+    r'how about|what about|and the|the other|besides|aside from)\b',
     re.IGNORECASE
 )
 
@@ -231,6 +233,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
+    top_score = float("-inf")
+    second_score = float("-inf")
+
     if hybrid_results:
         try:
             pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
@@ -238,6 +243,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
             
             top_score = float(scores[sorted_indices[0]])
+            if len(sorted_indices) > 1:
+                second_score = float(scores[sorted_indices[1]])
             
             # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
             # Step 7's Three-Tier logic will handle the confidence check.
@@ -252,7 +259,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🐛 TEMPORARY DEBUG LOGGING: Watch this in your terminal!
     logger.info(f"📊 DEBUG | Query: '{standalone_query}'")
     logger.info(f"📊 DEBUG | Docs Retrieved: {len(all_docs)} -> After Rerank: {len(top_reranked)}")
-    logger.info(f"📊 DEBUG | Top Score: {top_score:.2f} (Low Cutoff: {LOW_CONFIDENCE_THRESHOLD}, High Cutoff: {HIGH_CONFIDENCE_THRESHOLD})")
+    logger.info(
+        f"📊 DEBUG | Top Score: {top_score:.2f}, Second Score: {second_score:.2f}, "
+        f"Margin: {(top_score - second_score):.2f} "
+        f"(Low Cutoff: {LOW_CONFIDENCE_THRESHOLD}, High Cutoff: {HIGH_CONFIDENCE_THRESHOLD}, "
+        f"High Margin: {HIGH_CONFIDENCE_MARGIN})"
+    )
 
     # 🚀 STEP 6: BUILD CONTEXT
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content.replace(chr(10), ' ')}" for doc in top_reranked]
@@ -264,26 +276,28 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
-    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University. 
-Your goal is to provide accurate answers based ONLY on the context provided, while being approachable and conversational.
+    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University.
+Answer the student's question using ONLY the context below. Be friendly but direct.
 
-### TONE & FORMATTING RULES (YOU MUST FOLLOW THESE):
-0. **LANGUAGE**: Always respond in English regardless of what language the user used to ask the question. If the user asks in Filipino, still answer in English.
+### RULES (FOLLOW STRICTLY):
 
-1. **BE APPROACHABLE & HELPFUL**:
-   - Always provide a brief, friendly explanation or introduction before presenting raw data. 
-   - Speak naturally to the student. Be supportive, but professional.
-   - Do NOT just output a table with no context. 
+1. **NO FILLER**: Do NOT start with "To provide you with..." or "I'll need to refer to...". 
+   Go straight to the answer. Do NOT end with "If you need more information, please let me know."
 
-2. **USE TABLES FOR DATA**: 
-   - When presenting a **Curriculum**, **Grading System**, **Schedule**, or **Faculty List**, you MUST format the core data as a Markdown Table.
-   - Example flow: "Here is the grading system used by the university..." followed by the table.
+2. **LANGUAGE**: Always respond in English.
 
-3. **CLEAN UP LISTS**:
-   - Use standard Markdown bullets (`- Name`).
-   - If listing people, Bold their names: `- **Dr. John Doe** - Dean`
+3. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales,
+   schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table.
+   Include specific course codes, titles, units, and prerequisites — not vague summaries like
+   "Multiple levels of design courses."
 
-4. **STRICTLY FACTUAL**: Answer using ONLY what is in the context. Never give general academic advice (like "study hard" or "attend classes") as a substitute for missing information. If the context contains thesis abstracts, list the relevant ones. If the context genuinely has nothing related, say: 'The retrieved documents do not contain this information.'
+4. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
+
+5. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice.
+   If the context genuinely lacks the answer, say:
+   'The retrieved documents do not contain this information.'
+
+6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
 
 **Context:**
 {context}
@@ -306,14 +320,25 @@ Your goal is to provide accurate answers based ONLY on the context provided, whi
         llm = get_generator_llm()
         draft_response = get_llm_response(llm, prompt).content
         
-        if top_score < HIGH_CONFIDENCE_THRESHOLD:
-            # Tier 2: Moderate confidence — Trigger Critic to verify against context
-            logger.info(f"🔍 Moderate Confidence ({top_score:.2f}). Triggering Critic Persona...")
-            final_verified_response = verify_answer(standalone_query, context, draft_response)
-        else:
+        score_margin = top_score - second_score if second_score != float("-inf") else top_score
+        high_confidence = (
+            top_score >= HIGH_CONFIDENCE_THRESHOLD
+            and score_margin >= HIGH_CONFIDENCE_MARGIN
+        )
+
+        if high_confidence:
             # Tier 3: High confidence — Trust the draft
-            logger.info(f"✨ High Confidence ({top_score:.2f}). Bypassing Critic.")
+            logger.info(
+                f"✨ High Confidence ({top_score:.2f}, margin {score_margin:.2f}). Bypassing Critic."
+            )
             final_verified_response = draft_response
+        else:
+            # Tier 2: Moderate confidence — Trigger Critic to verify against context
+            logger.info(
+                f"🔍 Moderate Confidence ({top_score:.2f}, margin {score_margin:.2f}). "
+                "Triggering Critic Persona..."
+            )
+            final_verified_response = verify_answer(standalone_query, context, draft_response)
 
         # 🚀 STEP 8: METRICS, CACHE & STREAMING
         

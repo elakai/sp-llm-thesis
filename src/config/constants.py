@@ -57,8 +57,11 @@ VALID_CATEGORIES = {
 }
 
 #  RAG Confidence Thresholds (Calibrated for ms-marco logits)
-LOW_CONFIDENCE_THRESHOLD = -13.0   # Below this = truly irrelevant, trigger early exit
-HIGH_CONFIDENCE_THRESHOLD = -5.0   # Above this = highly relevant, skip critic
+# Newer score distributions are often centered around ~[-2, +5].
+# Keep critic ON for borderline matches and only bypass when clearly strong.
+LOW_CONFIDENCE_THRESHOLD = -2.0    # Below this = weak retrieval, abort generation
+HIGH_CONFIDENCE_THRESHOLD = 3.5    # At/above this can skip critic (with margin check)
+HIGH_CONFIDENCE_MARGIN = 0.75      # Top1 must beat Top2 by at least this gap to skip critic
 
 # ⚡ UI Performance
 STREAM_DELAY = 0.005  # Seconds per word for the streaming effect
