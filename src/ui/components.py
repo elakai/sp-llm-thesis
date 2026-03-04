@@ -69,7 +69,7 @@ def render_login():
                     if "session_id" not in st.session_state:
                         st.session_state["session_id"] = str(uuid.uuid4())
                     
-                    st.session_state["view"] = "chat"
+                    st.session_state["view"] = "admin" if user["role"] == "admin" else "chat"
                     st.rerun()
                 else:
                     st.error("Invalid credentials.")
