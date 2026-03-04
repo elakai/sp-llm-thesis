@@ -28,7 +28,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading ranking model...")
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder

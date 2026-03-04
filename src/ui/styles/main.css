@@ -565,3 +565,33 @@ button[kind="header"],
 [data-testid="stSidebar"] .user-profile small {
     font-size: 0.98rem !important;
 }
+
+/* Make toast notifications 30% bigger */
+[data-testid="stToast"] {
+    font-size: 1.3rem !important;
+    padding: 1.3rem 1.3rem !important;
+}
+
+[data-testid="stToast"] p,
+[data-testid="stToast"] span {
+    font-size: 1.3rem !important;
+    line-height: 1.4 !important;
+}
+
+/* Make info banners (including welcome note) 30% bigger */
+[data-testid="stAlert"] {
+    font-size: 1.3rem !important;
+    padding: 1.3rem !important;
+}
+
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span,
+[data-testid="stAlert"] div {
+    font-size: 1.3rem !important;
+    line-height: 1.4 !important;
+}
+
+[data-testid="stAlert"] svg {
+    width: 1.3em !important;
+    height: 1.3em !important;
+}

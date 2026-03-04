@@ -196,36 +196,13 @@ def _process_user_query(query: str):
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
         try:
-            # Create placeholder for thinking animation
-            thinking_placeholder = st.empty()
-            thinking_html = """
-            <div class="thinking-container">
-                <span class="thinking-text">Thinking</span>
-                <div class="thinking-dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </div>
-            </div>
-            """
-            thinking_placeholder.markdown(thinking_html, unsafe_allow_html=True)
-            
             # Get the response stream
             stream = generate_response(
                 query=query,
                 chat_history_list=st.session_state.messages
             )
-            
-            # Wrap stream to clear placeholder on first chunk
-            def stream_with_clear():
-                first = True
-                for chunk in stream:
-                    if first:
-                        thinking_placeholder.empty()
-                        first = False
-                    yield chunk
-            
-            response = st.write_stream(stream_with_clear())
+
+            response = st.write_stream(stream)
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})

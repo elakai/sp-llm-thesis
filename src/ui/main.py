@@ -11,7 +11,6 @@ _app_start_time = time.time()
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="AXIsstant",
-    page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
