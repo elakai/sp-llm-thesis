@@ -384,6 +384,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
+    print("\n\n=== WHAT THE LLM ACTUALLY SEES ===\n" + context + "\n===================================\n")
     retrieval_time = time.time() - retrieval_start
 
     # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
