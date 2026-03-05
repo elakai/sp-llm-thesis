@@ -28,7 +28,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner="Loading ranking model...")
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
@@ -408,12 +408,9 @@ Answer the student's question using ONLY the context below. Be friendly but dire
 
 4. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 
-5. **STRICTLY FACTUAL — ZERO TOLERANCE FOR INFERENCE**:
-   - Copy table data EXACTLY as it appears in the context. Do NOT reformat, simplify, or reinterpret columns.
-   - If a table in the context has columns CFRS, Numerical, Letter, Qualitative Description, and QPI — reproduce ALL five columns. Never drop columns.
-   - If the context shows ranges like "96-100" and "98-100" as separate columns, keep them as separate columns. Do NOT merge or simplify them.
-   - NEVER complete a partial table with assumed or inferred values.
-   - If the context genuinely lacks the answer, say exactly: 'The retrieved documents do not contain this information.'
+5. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice.
+   If the context genuinely lacks the answer, say:
+   'The retrieved documents do not contain this information.'
 
 6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
 

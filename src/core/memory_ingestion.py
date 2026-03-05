@@ -26,7 +26,7 @@ from src.config.logging_config import logger
 def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
     """
     Processes a Streamlit UploadedFile object entirely in memory.
-    Writes to a temp file only for libraries that require a file path (pymupdf4llm, fitz).
+    Writes to a temp file only for libraries that require a file path (pdfplumber, fitz).
     Deletes the temp file immediately after processing.
     Returns list of Documents with metadata.
     """
@@ -36,8 +36,8 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
     ext = filename.lower().rsplit('.', 1)[-1]
     docs = []
 
-    # Use tempfile for PDF processing since pymupdf4llm/fitz need a file path.
-    # The temp file is deleted immediately after processing.
+    # Use tempfile for PDF processing since pdfplumber/fitz need a file path
+    # The temp file is deleted immediately after processing
     if ext == 'pdf':
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
             tmp.write(file_bytes)
