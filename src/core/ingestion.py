@@ -88,26 +88,27 @@ def extract_program_info(filename: str) -> dict:
     → {'program_full': 'BACHELOR OF SCIENCE IN ARCHITECTURE', 'program_code': 'BS ARCH'}
     """
     match = re.search(r'CURRICULUM\s+FOR\s+(.+?)\s*\(([^)]+)\)', filename, re.IGNORECASE)
-    import cv2
-    import numpy as np
-    import fitz 
-    import pdfplumber
-    import pandas as pd
-    import docx
-    from PIL import Image
-    import pytesseract
-    from datetime import datetime
-    from typing import List, Dict, Tuple
-    from pinecone import Pinecone
-    from collections import defaultdict
-    from langchain_core.documents import Document
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from src.config.settings import PINECONE_INDEX_NAME, get_vectorstore, TESSERACT_CMD
-    from src.config.constants import DOCS_FOLDER, MANIFEST_FILE, CHUNK_SIZE, CHUNK_OVERLAP
-    from src.config.logging_config import logger
-    from src.core.retrieval import invalidate_cache
-    from src.config.constants import VALID_CATEGORIES
-    from src.core.feedback import supabase
+    if match:
+        return {"program_full": match.group(1).strip(), "program_code": match.group(2).strip()}
+    return {}
+
+def find_section_headers_for_tables(all_words: list, table_bboxes: list) -> dict:
+    if not all_words or not table_bboxes:
+        return {}
+    # Group words into lines by y-coordinate
+    lines: Dict[int, List[dict]] = {}
+    for w in all_words:
+        y = round(w['top'])
+        merged = False
+        for ey in list(lines.keys()):
+            if abs(y - ey) < 5:
+                lines[ey].append(w)
+                merged = True
+                break
+        if not merged:
+            lines[y] = [w]
+    # Build sorted (y, text) list
+    line_list = []
     for y in sorted(lines.keys()):
         words_in_line = sorted(lines[y], key=lambda w: w['x0'])
         text = ' '.join(w['text'] for w in words_in_line)
