@@ -264,6 +264,9 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                         if pix.n == 4:
                             img_np = _cv2.cvtColor(img_np, _cv2.COLOR_RGBA2RGB)
 
+                        # Ensure the array is writeable before masking
+                        img_np.setflags(write=True)
+
                         for (x0, y0, x1, y1) in img_bboxes:
                             img_np[y0:y1, x0:x1] = 255
 
