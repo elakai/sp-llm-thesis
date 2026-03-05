@@ -20,6 +20,7 @@ from src.config.settings import PINECONE_INDEX_NAME, get_vectorstore, TESSERACT_
 from src.config.constants import DOCS_FOLDER, MANIFEST_FILE, CHUNK_SIZE, CHUNK_OVERLAP
 from src.config.logging_config import logger
 from src.core.retrieval import invalidate_cache
+from src.core.table_ocr import extract_page_tables
 from src.config.constants import VALID_CATEGORIES
 from src.core.feedback import supabase
 
@@ -309,25 +310,62 @@ def load_pdf(path: str, filename: str) -> List[Document]:
         for page_data in md_pages:
             page_text = page_data.get("text", "").strip()
 
-            # pymupdf4llm uses 0-indexed pages; normalise to 1-indexed to match
-            # the rest of the codebase.
-            page_num = page_data.get("metadata", {}).get("page", 0) + 1
+            # pymupdf4llm returns 1-indexed page numbers in metadata (verified:
+            # chunk 0 → page=1, last chunk → page=N for an N-page document).
+            # Do NOT add 1 — the value is already 1-based.
+            page_num = page_data.get("metadata", {}).get("page", 1)
 
-            # OCR fallback: scanned / image-only pages return empty text from
-            # pymupdf4llm.  Render the page at 300 DPI and run Tesseract so
-            # at least the body paragraphs are indexed (tables in image-only
-            # PDFs still come out garbled — use manual .md overrides for those).
+            # ── OCR FALLBACK for image-only pages ──────────────────────────
+            # pymupdf4llm returns empty text for scanned/image-embedded pages.
+            # Strategy:
+            #   1. extract_page_tables() runs OpenCV cell segmentation → per-cell
+            #      Tesseract OCR → structured GFM table strings.  Each table
+            #      becomes its own Document so split_table_by_rows can chunk it.
+            #   2. Table regions are then painted white on the page image so the
+            #      subsequent full-page Tesseract picks up only body text.
             if not page_text:
                 try:
-                    logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
+                    logger.warning(f"Page {page_num} appears scanned. Running CV2 table extraction + OCR...")
+                    import cv2 as _cv2
+                    import numpy as _np
                     fitz_page = fitz_doc[page_num - 1]
+
+                    # Step 1: OpenCV table detection
+                    md_tables, img_bboxes = extract_page_tables(fitz_page, dpi=300)
+
+                    for md_table in md_tables:
+                        if md_table.strip():
+                            prefix_parts = []
+                            if program_info:
+                                prefix_parts.append(
+                                    f"Program: {program_info['program_full']} "
+                                    f"({program_info['program_code']})"
+                                )
+                            prefix = '\n'.join(prefix_parts) + '\n\n' if prefix_parts else ''
+                            meta_t = {"source": norm_filename, "page": page_num, "type": "table"}
+                            if program_info:
+                                meta_t["program_code"] = program_info.get("program_code", "")
+                            docs.append(Document(page_content=prefix + md_table, metadata=meta_t))
+
+                    # Step 2: Full-page OCR for body text, masking table regions
                     pix = fitz_page.get_pixmap(dpi=300)
-                    img = Image.open(io.BytesIO(pix.tobytes()))
-                    clean_img = preprocess_image_for_ocr(img)
+                    img_np = _np.frombuffer(pix.tobytes(), dtype=_np.uint8)
+                    img_np = img_np.reshape(pix.height, pix.width, pix.n)
+                    if pix.n == 4:
+                        img_np = _cv2.cvtColor(img_np, _cv2.COLOR_RGBA2RGB)
+
+                    # Paint detected table regions white so OCR skips them
+                    for (x0, y0, x1, y1) in img_bboxes:
+                        img_np[y0:y1, x0:x1] = 255
+
+                    from PIL import Image as _PIL_Image
+                    pil_img = _PIL_Image.fromarray(img_np)
+                    clean_img = preprocess_image_for_ocr(pil_img)
                     ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
                     page_text = clean_text(post_process_ocr_text(ocr_text))
+
                 except Exception as ocr_err:
-                    logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
+                    logger.warning(f"OCR fallback failed on page {page_num}: {ocr_err}")
 
             if not page_text:
                 continue
