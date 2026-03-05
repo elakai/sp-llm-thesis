@@ -130,17 +130,79 @@ def find_section_headers_for_tables(all_words: list, table_bboxes: list) -> dict
 
 def convert_table_to_markdown(table_data: list) -> str:
     """
-    Converts a 2-D list (first row = headers) into a GitHub-Flavored Markdown
-    table string.  Cell newlines are collapsed to spaces to keep each row on
-    a single line, which is required for valid Markdown table syntax.
+    Converts pdfplumber table data to a GitHub-Flavored Markdown table string.
+
+    Two key improvements over a naive implementation:
+    1. Forward-fills None/empty cells left-to-right to handle merged/spanned
+       header cells that pdfplumber leaves as None for the spanned columns.
+    2. Detects consecutive all-text header rows at the top and merges them
+       into a single header row (joining with ' — ') so the LLM receives full
+       column context even when the PDF uses a two-row merged header like
+       'Grade & Grade Description' spanning sub-columns.
     """
-    if not table_data: return ""
-    cleaned = [[str(cell).replace('\n', ' ').strip() if cell else "" for cell in row] for row in table_data]
-    header = cleaned[0]
+    if not table_data:
+        return ""
+
+    # Step 1: Forward-fill None values across each row
+    filled = []
+    for row in table_data:
+        filled_row = []
+        last_val = ""
+        for cell in row:
+            if cell is None or str(cell).strip() == "":
+                filled_row.append(last_val)  # Inherit from left neighbour
+            else:
+                last_val = str(cell).replace('\n', ' ').strip()
+                filled_row.append(last_val)
+        filled.append(filled_row)
+
+    if not filled:
+        return ""
+
+    # Step 2: Normalize column count
+    max_cols = max(len(row) for row in filled)
+    for row in filled:
+        while len(row) < max_cols:
+            row.append("")
+
+    # Step 3: Detect and merge multi-row headers
+    # A header row is one where NO cell parses as a bare number or range
+    def _is_header_row(row: list) -> bool:
+        for cell in row:
+            try:
+                float(str(cell).replace('-', '').replace(' ', ''))
+                return False  # Contains a number — treat as data row
+            except ValueError:
+                continue
+        return True
+
+    header_rows = []
+    data_start = 0
+    for i, row in enumerate(filled):
+        if _is_header_row(row):
+            header_rows.append(row)
+            data_start = i + 1
+        else:
+            break
+
+    if len(header_rows) > 1:
+        # Merge multi-row headers column by column, joining unique values with ' — '
+        merged_header = []
+        for col_idx in range(max_cols):
+            col_values = []
+            for hrow in header_rows:
+                val = hrow[col_idx] if col_idx < len(hrow) else ""
+                if val and val not in col_values:
+                    col_values.append(val)
+            merged_header.append(" — ".join(col_values))
+        header = merged_header
+    else:
+        header = filled[0]
+        data_start = 1
+
     md = "| " + " | ".join(header) + " |\n"
     md += "| " + " | ".join(["---"] * len(header)) + " |\n"
-    for row in cleaned[1:]:
-        while len(row) < len(header): row.append("")
+    for row in filled[data_start:]:
         md += "| " + " | ".join(row) + " |\n"
     return md
 
