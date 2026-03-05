@@ -16,15 +16,14 @@ openpyxl
 pytesseract
 python-docx
 PyMuPDF>=1.23.0
+pymupdf4llm
 rank_bm25
 supabase
 plotly 
 ragas 
 datasets
-pdfplumber
 opencv-python-headless
 numpy
-tabulate
 nest-asyncio
 tenacity
 filelock

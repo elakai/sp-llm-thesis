@@ -4,8 +4,8 @@ import json
 import re
 import cv2
 import numpy as np
-import fitz 
-import pdfplumber
+import fitz
+import pymupdf4llm
 import pandas as pd
 import docx
 from PIL import Image
@@ -283,21 +283,17 @@ def extract_docx_text(file_bytes: bytes) -> str:
 # --- LOADERS ---
 def load_pdf(path: str, filename: str) -> List[Document]:
     """
-    Extracts content from a PDF using a two-library strategy:
-      - PyMuPDF (fitz)  : table detection and extraction — uses the 1.23+ table engine
-                          which tracks column spans and merged cells, so transmutation
-                          tables and other merged-header tables are read correctly.
-      - pdfplumber      : word-level body text, with table-region filtering to avoid
-                          duplicating table content.
-      - Tesseract       : OCR fallback for scanned pages with < 100 chars of detected text.
+    Loads a PDF using pymupdf4llm's LLM layout engine, which handles multi-column
+    text, merged table cells, and image-embedded pages — outputting each page as
+    structured Markdown.  This replaces the old pdfplumber + bounding-box pipeline.
 
-    Tables and body text are kept mutually exclusive per page via
-    ``is_inside_any_bbox`` filtering so content is never duplicated.
-    Curriculum PDFs receive a ``Program: <name> (<code>)`` prefix from
-    ``extract_program_info`` so embedding captures the program context.
+    Each page becomes one Document of type 'mixed_markdown', carrying both body
+    text and any tables on that page in standard GFM pipe-table syntax.
+    Curriculum PDFs receive a ``Program: <name> (<code>)`` prefix as before.
+    Pages with no extractable text are silently skipped.
 
     Returns a list of Documents; each has metadata keys:
-        source, page, type ('table' | 'text'), category (set later),
+        source, page, type ('mixed_markdown'), category (set later),
         uploaded_at (set later), program_code (curriculum only).
     """
     logger.info(f"Reading PDF: {filename}...")
@@ -305,90 +301,51 @@ def load_pdf(path: str, filename: str) -> List[Document]:
     program_info = extract_program_info(filename)
     docs = []
     try:
-        # Open both libraries once outside the page loop to optimize memory
+        # page_chunks=True → one dict per page with keys 'text' and 'metadata'
+        md_pages = pymupdf4llm.to_markdown(path, page_chunks=True)
+        # Keep fitz open for the OCR fallback on image-only pages
         fitz_doc = fitz.open(path)
-        pdf_for_text = pdfplumber.open(path)
 
-        for page_num_0 in range(len(fitz_doc)):
-            page_num = page_num_0 + 1
-            fitz_page = fitz_doc[page_num_0]
-            plumber_page = pdf_for_text.pages[page_num_0]
+        for page_data in md_pages:
+            page_text = page_data.get("text", "").strip()
 
-            # ── TABLE EXTRACTION via PyMuPDF (handles merged/spanned cells) ──
-            fitz_tables = fitz_page.find_tables()
-            table_bboxes = []
+            # pymupdf4llm uses 0-indexed pages; normalise to 1-indexed to match
+            # the rest of the codebase.
+            page_num = page_data.get("metadata", {}).get("page", 0) + 1
 
-            if fitz_tables and fitz_tables.tables:
-                for fitz_table in fitz_tables.tables:
-                    data = fitz_table.extract()
-                    if not data:
-                        continue
-
-                    # Track bbox for body text exclusion below
-                    table_bboxes.append(fitz_table.bbox)
-
-                    md = convert_table_to_markdown(data)
-
-                    prefix_parts = []
-                    if program_info:
-                        prefix_parts.append(
-                            f"Program: {program_info['program_full']} "
-                            f"({program_info['program_code']})"
-                        )
-                    if prefix_parts:
-                        md = '\n'.join(prefix_parts) + '\n\n' + md
-
-                    meta = {"source": norm_filename, "page": page_num, "type": "table"}
-                    if program_info:
-                        meta["program_code"] = program_info.get("program_code", "")
-                    docs.append(Document(page_content=md, metadata=meta))
-
-            # ── BODY TEXT EXTRACTION ─────────────────────────────────────────
-            all_words = plumber_page.extract_words(x_tolerance=3, y_tolerance=3)
-
-            if table_bboxes:
-                # Page has tables → filter out words inside table regions so
-                # body text does NOT duplicate table content.
-                non_table_words = [
-                    w for w in all_words
-                    if not is_inside_any_bbox(w, table_bboxes)
-                ]
-                body_text = clean_text(reconstruct_body_text(non_table_words))
-            else:
-                # No tables detected → prefer PyMuPDF for flowing text
-                body_text = clean_text(fitz_page.get_text("text"))
-                if len(body_text) < 100:
-                    plumber_text = clean_text(reconstruct_body_text(all_words))
-                    if len(plumber_text) > len(body_text):
-                        body_text = plumber_text
-
-            # Last-resort OCR (scanned pages with no detected tables)
-            if len(body_text) < 100 and not table_bboxes:
+            # OCR fallback: scanned / image-only pages return empty text from
+            # pymupdf4llm.  Render the page at 300 DPI and run Tesseract so
+            # at least the body paragraphs are indexed (tables in image-only
+            # PDFs still come out garbled — use manual .md overrides for those).
+            if not page_text:
                 try:
                     logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
+                    fitz_page = fitz_doc[page_num - 1]
                     pix = fitz_page.get_pixmap(dpi=300)
                     img = Image.open(io.BytesIO(pix.tobytes()))
                     clean_img = preprocess_image_for_ocr(img)
-                    ocr_text = pytesseract.image_to_string(
-                        clean_img, config="--psm 3 --oem 3"
-                    )
-                    ocr_text = post_process_ocr_text(ocr_text)
-                    body_text = clean_text(ocr_text)
+                    ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
+                    page_text = clean_text(post_process_ocr_text(ocr_text))
                 except Exception as ocr_err:
                     logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
 
-            if len(body_text) > 20:
-                if program_info:
-                    body_text = (
-                        f"Program: {program_info['program_full']} "
-                        f"({program_info['program_code']})\n\n{body_text}"
-                    )
-                meta = {"source": norm_filename, "page": page_num, "type": "text"}
-                if program_info:
-                    meta["program_code"] = program_info.get("program_code", "")
-                docs.append(Document(page_content=body_text, metadata=meta))
+            if not page_text:
+                continue
 
-        pdf_for_text.close()
+            prefix_parts = []
+            if program_info:
+                prefix_parts.append(
+                    f"Program: {program_info['program_full']} "
+                    f"({program_info['program_code']})"
+                )
+            prefix = '\n'.join(prefix_parts) + '\n\n' if prefix_parts else ''
+
+            meta = {"source": norm_filename, "page": page_num, "type": "mixed_markdown"}
+            if program_info:
+                meta["program_code"] = program_info.get("program_code", "")
+
+            docs.append(Document(page_content=prefix + page_text, metadata=meta))
+
         fitz_doc.close()
 
     except Exception as e:
@@ -593,7 +550,9 @@ def ingest_all_files():
 
     # Phase 2: Atomic Chunking
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
+    # 'mixed_markdown' pages (from load_pdf via pymupdf4llm) contain both text
+    # and GFM tables in a single string — route them through the text splitter.
+    text_docs  = [d for d in all_docs if d.metadata.get("type") in ("text", "mixed_markdown")]
 
     # Split large tables row-by-row so every chunk stays within the
     # all-MiniLM-L6-v2 256 word-piece embedding limit.
