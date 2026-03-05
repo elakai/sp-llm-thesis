@@ -349,7 +349,10 @@ def load_pdf(path: str, filename: str) -> List[Document]:
 
                     # Step 2: Full-page OCR for body text, masking table regions
                     pix = fitz_page.get_pixmap(dpi=300)
-                    img_np = _np.frombuffer(pix.tobytes(), dtype=_np.uint8)
+                    # pix.samples is raw pixel bytes (R,G,B[,A] per pixel).
+                    # pix.tobytes() without args returns PNG-encoded bytes which
+                    # cannot be reshaped into (height, width, channels).
+                    img_np = _np.frombuffer(pix.samples, dtype=_np.uint8)
                     img_np = img_np.reshape(pix.height, pix.width, pix.n)
                     if pix.n == 4:
                         img_np = _cv2.cvtColor(img_np, _cv2.COLOR_RGBA2RGB)
