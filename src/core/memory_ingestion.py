@@ -16,6 +16,7 @@ from src.core.ingestion import (
     extract_docx_text,
     upload_in_batches,
     update_manifest,
+    split_table_by_rows,
 )
 from src.core.retrieval import invalidate_cache
 from src.config.constants import CHUNK_SIZE, CHUNK_OVERLAP
@@ -161,12 +162,17 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
     text_docs = [d for d in all_docs if d.metadata.get("type") == "text"]
 
+    # Split large tables row-by-row to stay within the 256 word-piece embedding limit.
+    split_table_docs = []
+    for doc in table_docs:
+        split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
+
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP
     )
     split_text_docs = text_splitter.split_documents(text_docs)
-    final_chunks = table_docs + split_text_docs
+    final_chunks = split_table_docs + split_text_docs
 
     # ── Context Header Injection ───────────────────────────────────────────
     # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is

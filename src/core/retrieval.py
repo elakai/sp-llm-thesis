@@ -151,6 +151,12 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
         formatted_history.append(f"{role}: {content}")
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
+
+def _tokenize(text: str) -> list:
+    """Strip punctuation before BM25 tokenization so 'requirement.' matches 'requirement'."""
+    return re.sub(r'[^\w\s]', ' ', text.lower()).split()
+
+
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
     """
     Re-ranks documents using BM25 combined with a positional bias score.
@@ -169,9 +175,9 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
     """
     if not docs: return []
     try:
-        tokenized_docs = [doc.page_content.split() for doc in docs]
+        tokenized_docs = [_tokenize(doc.page_content) for doc in docs]
         bm25 = BM25Okapi(tokenized_docs)
-        tokenized_query = query.lower().split()
+        tokenized_query = _tokenize(query)
         bm25_scores = bm25.get_scores(tokenized_query)
 
         ranked = []
@@ -185,6 +191,31 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
     except Exception as e:
         logger.warning(f"Hybrid rerank failed: {e}")
         return docs[:RETRIEVAL_K]
+
+def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> List[Document]:
+    """
+    Limits chunks from any single source to max_per_source before CrossEncoder scoring.
+    Ensures cross-document queries retrieve content from multiple files.
+    Preserves BM25 rank ordering within each source group.
+    """
+    source_counts: Dict[str, int] = {}
+    diverse_docs = []
+    for doc in docs:
+        source = doc.metadata.get("source", "unknown")
+        count = source_counts.get(source, 0)
+        if count < max_per_source:
+            diverse_docs.append(doc)
+            source_counts[source] = count + 1
+    return diverse_docs
+
+
+def _contains_markdown_table(text: str) -> bool:
+    """Returns True if the response contains at least one Markdown table row."""
+    return any(
+        '|' in line and line.strip().startswith('|')
+        for line in text.strip().split('\n')
+    )
+
 
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
     """
@@ -315,6 +346,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
+    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=3)
 
     top_score = float("-inf")
     second_score = float("-inf")
@@ -439,10 +471,18 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             final_verified_response = draft_response
         
         # Final Streaming Loop with Fallback
+        # Table-aware: yield entire response at once when a Markdown table is present
+        # so Streamlit never renders a partial/broken table mid-stream.
+        # For plain text, stream sentence-by-sentence for a natural feel.
         try:
-            for word in final_verified_response.split(" "):
-                yield word + " "
-                time.sleep(STREAM_DELAY) # Optimized delay from constants
+            if _contains_markdown_table(final_verified_response):
+                yield final_verified_response
+            else:
+                sentences = re.split(r'(?<=[.!?])\s+', final_verified_response)
+                for sentence in sentences:
+                    if sentence.strip():
+                        yield sentence + " "
+                        time.sleep(0.03)
         except GeneratorExit:
             # User navigated away; cleanup handled by Python GC
             return
@@ -454,7 +494,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         logger.error(f"❌ Generation Pipeline Failed: {e}")
         yield "I'm currently experiencing a technical issue. Please try again in a moment."
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)

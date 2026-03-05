@@ -64,18 +64,31 @@ def render_document_management():
                 st.warning(f"⚠️ {f.name} is over 50 MB. This may take a while to process.")
 
     if st.button("Upload and Index", type="primary", disabled=not uploaded_files):
-        with st.spinner("Processing documents… this may take a minute for large PDFs."):
-            progress = st.progress(0, text="Starting…")
+        total = len(uploaded_files)
+        progress = st.progress(0, text=f"Starting… 0 / {total} files")
+        status_box = st.empty()
+        results = []
 
-            success, message = ingest_uploaded_files(uploaded_files, category)
+        for i, single_file in enumerate(uploaded_files):
+            pct = int((i / total) * 100)
+            progress.progress(pct, text=f"Processing {single_file.name} ({i + 1} / {total})…")
+            status_box.info(f"⏳ Indexing: **{single_file.name}**")
 
-            progress.progress(100, text="Done!")
+            success, message = ingest_uploaded_files([single_file], category)
+            results.append((single_file.name, success, message))
 
+        progress.progress(100, text=f"Done! {total} file(s) processed.")
+        status_box.empty()
+
+        all_ok = all(s for _, s, _ in results)
+        for fname, success, message in results:
             if success:
-                st.success(message)
-                st.balloons()
+                st.success(f"✅ **{fname}**: {message}")
             else:
-                st.error(message)
+                st.error(f"❌ **{fname}**: {message}")
+
+        if all_ok:
+            st.balloons()
 
     st.divider()
 
