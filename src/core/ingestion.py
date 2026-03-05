@@ -418,6 +418,45 @@ def upload_in_batches(vectorstore, chunks, batch_size=50):
             logger.error(f"Batch {i//batch_size + 1} failed: {e}")
             raise 
 
+
+def split_table_by_rows(doc: Document, max_rows: int = 20) -> List[Document]:
+    """
+    Splits a large Markdown table Document into sub-table chunks of max_rows each.
+    Preserves the header row in every chunk so each is self-contained.
+    Does NOT set chunk_index — the caller's source_counters loop handles that.
+    Returns the original doc unchanged if it fits within max_rows or has no
+    valid Markdown table structure.
+    """
+    lines = [l for l in doc.page_content.split('\n') if l.strip()]
+
+    header_lines = []
+    data_lines = []
+    found_separator = False
+
+    for line in lines:
+        if not found_separator:
+            header_lines.append(line)
+            if line.strip().startswith('|') and '---' in line:
+                found_separator = True
+        else:
+            data_lines.append(line)
+
+    # Table fits within limit or no valid Markdown table structure found
+    if len(data_lines) <= max_rows or not found_separator:
+        return [doc]
+
+    header = '\n'.join(header_lines)
+    chunks = []
+    for i in range(0, len(data_lines), max_rows):
+        batch = data_lines[i:i + max_rows]
+        chunk_content = header + '\n' + '\n'.join(batch)
+        chunks.append(Document(
+            page_content=chunk_content,
+            metadata=dict(doc.metadata)  # Copy metadata; chunk_index set by source_counters
+        ))
+    return chunks
+
+
 def ingest_all_files():
     """
     Scans all files under DOCS_FOLDER recursively, loads them into LangChain
@@ -484,9 +523,15 @@ def ingest_all_files():
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
     text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
 
+    # Split large tables row-by-row so every chunk stays within the
+    # all-MiniLM-L6-v2 256 word-piece embedding limit.
+    split_table_docs = []
+    for doc in table_docs:
+        split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     split_text_docs = text_splitter.split_documents(text_docs)
-    final_chunks = table_docs + split_text_docs
+    final_chunks = split_table_docs + split_text_docs
 
     # ── Context Header Injection ───────────────────────────────────────────
     # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is

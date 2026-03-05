@@ -10,7 +10,7 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.core.auth import login_user, register_user, supabase as _sb
+from src.core.auth import login_user, register_user
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: CSS LOADER
@@ -176,6 +176,7 @@ def render_sidebar():
         logout_label = "Logout" if sidebar_open else "🚪"
         if st.button(logout_label, use_container_width=True, type="primary"):
             try:
+                from src.core.auth import supabase as _sb
                 _sb.auth.sign_out()
             except Exception:
                 pass
