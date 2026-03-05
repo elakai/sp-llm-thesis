@@ -15,7 +15,7 @@ pandas
 openpyxl
 pytesseract
 python-docx
-PyMuPDF
+PyMuPDF>=1.23.0
 rank_bm25
 supabase
 plotly 

@@ -283,10 +283,13 @@ def extract_docx_text(file_bytes: bytes) -> str:
 # --- LOADERS ---
 def load_pdf(path: str, filename: str) -> List[Document]:
     """
-    Extracts content from a PDF using a three-library strategy:
-      - pdfplumber  : structured table detection and extraction (yields Markdown table chunks)
-      - PyMuPDF     : flowing body text on non-table pages
-      - Tesseract   : OCR fallback for scanned pages with < 100 chars of detected text
+    Extracts content from a PDF using a two-library strategy:
+      - PyMuPDF (fitz)  : table detection and extraction — uses the 1.23+ table engine
+                          which tracks column spans and merged cells, so transmutation
+                          tables and other merged-header tables are read correctly.
+      - pdfplumber      : word-level body text, with table-region filtering to avoid
+                          duplicating table content.
+      - Tesseract       : OCR fallback for scanned pages with < 100 chars of detected text.
 
     Tables and body text are kept mutually exclusive per page via
     ``is_inside_any_bbox`` filtering so content is never duplicated.
@@ -302,85 +305,92 @@ def load_pdf(path: str, filename: str) -> List[Document]:
     program_info = extract_program_info(filename)
     docs = []
     try:
-        with fitz.open(path) as fitz_doc:
-            with pdfplumber.open(path) as pdf:
-                for page_num, page in enumerate(pdf.pages, start=1):
-                    tables = page.find_tables()
-                    table_bboxes = [t.bbox for t in tables]
+        # Open both libraries once outside the page loop to optimize memory
+        fitz_doc = fitz.open(path)
+        pdf_for_text = pdfplumber.open(path)
 
-                    # ── TABLE EXTRACTION ──────────────────────────
-                    all_words = page.extract_words(x_tolerance=3, y_tolerance=3)
-                    section_hdrs = (
-                        find_section_headers_for_tables(all_words, table_bboxes)
-                        if table_bboxes else {}
+        for page_num_0 in range(len(fitz_doc)):
+            page_num = page_num_0 + 1
+            fitz_page = fitz_doc[page_num_0]
+            plumber_page = pdf_for_text.pages[page_num_0]
+
+            # ── TABLE EXTRACTION via PyMuPDF (handles merged/spanned cells) ──
+            fitz_tables = fitz_page.find_tables()
+            table_bboxes = []
+
+            if fitz_tables and fitz_tables.tables:
+                for fitz_table in fitz_tables.tables:
+                    data = fitz_table.extract()
+                    if not data:
+                        continue
+
+                    # Track bbox for body text exclusion below
+                    table_bboxes.append(fitz_table.bbox)
+
+                    md = convert_table_to_markdown(data)
+
+                    prefix_parts = []
+                    if program_info:
+                        prefix_parts.append(
+                            f"Program: {program_info['program_full']} "
+                            f"({program_info['program_code']})"
+                        )
+                    if prefix_parts:
+                        md = '\n'.join(prefix_parts) + '\n\n' + md
+
+                    meta = {"source": norm_filename, "page": page_num, "type": "table"}
+                    if program_info:
+                        meta["program_code"] = program_info.get("program_code", "")
+                    docs.append(Document(page_content=md, metadata=meta))
+
+            # ── BODY TEXT EXTRACTION ─────────────────────────────────────────
+            all_words = plumber_page.extract_words(x_tolerance=3, y_tolerance=3)
+
+            if table_bboxes:
+                # Page has tables → filter out words inside table regions so
+                # body text does NOT duplicate table content.
+                non_table_words = [
+                    w for w in all_words
+                    if not is_inside_any_bbox(w, table_bboxes)
+                ]
+                body_text = clean_text(reconstruct_body_text(non_table_words))
+            else:
+                # No tables detected → prefer PyMuPDF for flowing text
+                body_text = clean_text(fitz_page.get_text("text"))
+                if len(body_text) < 100:
+                    plumber_text = clean_text(reconstruct_body_text(all_words))
+                    if len(plumber_text) > len(body_text):
+                        body_text = plumber_text
+
+            # Last-resort OCR (scanned pages with no detected tables)
+            if len(body_text) < 100 and not table_bboxes:
+                try:
+                    logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
+                    pix = fitz_page.get_pixmap(dpi=300)
+                    img = Image.open(io.BytesIO(pix.tobytes()))
+                    clean_img = preprocess_image_for_ocr(img)
+                    ocr_text = pytesseract.image_to_string(
+                        clean_img, config="--psm 3 --oem 3"
                     )
+                    ocr_text = post_process_ocr_text(ocr_text)
+                    body_text = clean_text(ocr_text)
+                except Exception as ocr_err:
+                    logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
 
-                    for t_idx, table in enumerate(tables):
-                        data = table.extract()
-                        if not data:
-                            continue
-                        md = convert_table_to_markdown(data)
-                        # Build context prefix (program + semester)
-                        prefix_parts = []
-                        if program_info:
-                            prefix_parts.append(
-                                f"Program: {program_info['program_full']} "
-                                f"({program_info['program_code']})"
-                            )
-                        if t_idx in section_hdrs:
-                            prefix_parts.append(section_hdrs[t_idx])
-                        if prefix_parts:
-                            md = '\n'.join(prefix_parts) + '\n\n' + md
+            if len(body_text) > 20:
+                if program_info:
+                    body_text = (
+                        f"Program: {program_info['program_full']} "
+                        f"({program_info['program_code']})\n\n{body_text}"
+                    )
+                meta = {"source": norm_filename, "page": page_num, "type": "text"}
+                if program_info:
+                    meta["program_code"] = program_info.get("program_code", "")
+                docs.append(Document(page_content=body_text, metadata=meta))
 
-                        meta = {"source": norm_filename, "page": page_num, "type": "table"}
-                        if program_info:
-                            meta["program_code"] = program_info.get("program_code", "")
-                        docs.append(Document(page_content=md, metadata=meta))
+        pdf_for_text.close()
+        fitz_doc.close()
 
-                    # ── BODY TEXT EXTRACTION ──────────────────────
-                    fitz_page = fitz_doc[page_num - 1]
-
-                    if table_bboxes:
-                        # Page has tables → use pdfplumber with table-region filtering
-                        # so body text does NOT duplicate table content.
-                        non_table_words = [
-                            w for w in all_words
-                            if not is_inside_any_bbox(w, table_bboxes)
-                        ]
-                        body_text = clean_text(reconstruct_body_text(non_table_words))
-                    else:
-                        # No tables detected → prefer PyMuPDF for flowing text
-                        body_text = clean_text(fitz_page.get_text("text"))
-                        if len(body_text) < 100:
-                            plumber_text = clean_text(reconstruct_body_text(all_words))
-                            if len(plumber_text) > len(body_text):
-                                body_text = plumber_text
-
-                    # Last-resort OCR (scanned pages with no detected tables)
-                    if len(body_text) < 100 and not table_bboxes:
-                        try:
-                            logger.warning(f"Page {page_num} appears scanned. Initiating OCR...")
-                            pix = fitz_page.get_pixmap(dpi=300)
-                            img = Image.open(io.BytesIO(pix.tobytes()))
-                            clean_img = preprocess_image_for_ocr(img)
-                            ocr_text = pytesseract.image_to_string(
-                                clean_img, config="--psm 3 --oem 3"
-                            )
-                            ocr_text = post_process_ocr_text(ocr_text)
-                            body_text = clean_text(ocr_text)
-                        except Exception as ocr_err:
-                            logger.warning(f"OCR failed on page {page_num}: {ocr_err}")
-
-                    if len(body_text) > 20:
-                        if program_info:
-                            body_text = (
-                                f"Program: {program_info['program_full']} "
-                                f"({program_info['program_code']})\n\n{body_text}"
-                            )
-                        meta = {"source": norm_filename, "page": page_num, "type": "text"}
-                        if program_info:
-                            meta["program_code"] = program_info.get("program_code", "")
-                        docs.append(Document(page_content=body_text, metadata=meta))
     except Exception as e:
         logger.error(f"PDF Processing Error: {e}")
     return docs
