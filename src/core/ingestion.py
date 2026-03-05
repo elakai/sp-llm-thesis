@@ -5,7 +5,6 @@ import re
 import cv2
 import numpy as np
 import fitz
-import pymupdf4llm
 import pandas as pd
 import docx
 from PIL import Image
@@ -220,81 +219,64 @@ def load_pdf(path: str, filename: str) -> List[Document]:
     program_info = extract_program_info(filename)
     docs = []
     
+    import pdfplumber
+    docs = []
+    norm_filename = normalize_source_key(filename)
+    program_info = extract_program_info(filename)
     try:
-        md_pages = pymupdf4llm.to_markdown(path, page_chunks=True)
         fitz_doc = fitz.open(path)
-
-        for page_data in md_pages:
-            page_text = page_data.get("text", "").strip()
-            page_num = page_data.get("metadata", {}).get("page", 1)
-
-            # ── OCR FALLBACK ROUTING ───────────────────────────────────────────
-            if not page_text:
+        with pdfplumber.open(path) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
                 fitz_page = fitz_doc[page_num - 1]
-                raw_fitz_text = fitz_page.get_text("text").strip()
-                
-                if raw_fitz_text and len(raw_fitz_text) > 50:
-                    # 🛡️ MIDDLEMAN FALLBACK: Text layer exists!
-                    logger.info(f"Page {page_num}: pymupdf4llm empty but text layer exists. Using PyMuPDF fallback.")
-                    page_text = clean_text(raw_fitz_text)
+                tables = page.find_tables()
+                table_bboxes = [t.bbox for t in tables]
+                all_words = page.extract_words(x_tolerance=3, y_tolerance=3)
+
+                # Extract tables first
+                for t_idx, table in enumerate(tables):
+                    data = table.extract()
+                    if not data:
+                        continue
+                    md = convert_table_to_markdown(data)
+                    if md.strip():
+                        prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
+                        meta_t = {"source": norm_filename, "page": page_num, "type": "table"}
+                        if program_info:
+                            meta_t["program_code"] = program_info.get("program_code", "")
+                        docs.append(Document(page_content=prefix + md, metadata=meta_t))
+
+                # Extract body text EXCLUDING table regions
+                if table_bboxes:
+                    non_table_words = [w for w in all_words if not is_inside_any_bbox(w, table_bboxes)]
+                    body_text = clean_text(reconstruct_body_text(non_table_words))
                 else:
-                    # 🚨 NUCLEAR FALLBACK: Genuinely scanned/image-only page.
-                    try:
-                        logger.warning(f"Page {page_num} appears scanned. Running CV2 table extraction + OCR...")
-                        import cv2 as _cv2
-                        import numpy as _np
+                    body_text = clean_text(fitz_page.get_text("text"))
+                    if len(body_text) < 100:
+                        plumber_text = clean_text(reconstruct_body_text(all_words))
+                        if len(plumber_text) > len(body_text):
+                            body_text = plumber_text
 
-                        # Step 1: OpenCV table detection
-                        md_tables, img_bboxes = extract_page_tables(fitz_page, dpi=300)
+                # OCR fallback only for genuinely scanned pages
+                if len(body_text) < 50 and not table_bboxes:
+                    raw_fitz = fitz_page.get_text("text").strip()
+                    if not raw_fitz or len(raw_fitz) < 50:
+                        try:
+                            logger.warning(f"Page {page_num} appears scanned. Running CV2 table extraction + OCR...")
+                            md_tables, img_bboxes = extract_page_tables(fitz_page, dpi=300)
+                            for md_table in md_tables:
+                                if md_table.strip():
+                                    prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
+                                    docs.append(Document(page_content=prefix + md_table, metadata={"source": norm_filename, "page": page_num, "type": "table"}))
+                        except Exception as ocr_err:
+                            logger.warning(f"OCR fallback failed on page {page_num}: {ocr_err}")
 
-                        for md_table in md_tables:
-                            if md_table.strip():
-                                prefix_parts = []
-                                if program_info:
-                                    prefix_parts.append(f"Program: {program_info['program_full']} ({program_info['program_code']})")
-                                prefix = '\n'.join(prefix_parts) + '\n\n' if prefix_parts else ''
-                                meta_t = {"source": norm_filename, "page": page_num, "type": "table"}
-                                if program_info: meta_t["program_code"] = program_info.get("program_code", "")
-                                docs.append(Document(page_content=prefix + md_table, metadata=meta_t))
-
-                        # Step 2: Full-page OCR for body text, masking table regions
-                        pix = fitz_page.get_pixmap(dpi=300)
-                        img_np = _np.frombuffer(pix.samples, dtype=_np.uint8).copy()
-                        img_np = img_np.reshape(pix.height, pix.width, pix.n)
-                        if pix.n == 4:
-                            img_np = _cv2.cvtColor(img_np, _cv2.COLOR_RGBA2RGB)
-
-                        # Ensure the array is writeable before masking
-                        img_np.setflags(write=True)
-
-                        for (x0, y0, x1, y1) in img_bboxes:
-                            img_np[y0:y1, x0:x1] = 255
-
-                        from PIL import Image as _PIL_Image
-                        pil_img = _PIL_Image.fromarray(img_np)
-                        clean_img = preprocess_image_for_ocr(pil_img)
-                        ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
-                        page_text = clean_text(post_process_ocr_text(ocr_text))
-
-                    except Exception as ocr_err:
-                        logger.warning(f"OCR fallback failed on page {page_num}: {ocr_err}")
-
-            if not page_text:
-                continue
-
-            prefix_parts = []
-            if program_info:
-                prefix_parts.append(f"Program: {program_info['program_full']} ({program_info['program_code']})")
-            prefix = '\n'.join(prefix_parts) + '\n\n' if prefix_parts else ''
-
-            meta = {"source": norm_filename, "page": page_num, "type": "mixed_markdown"}
-            if program_info:
-                meta["program_code"] = program_info.get("program_code", "")
-
-            docs.append(Document(page_content=prefix + page_text, metadata=meta))
-
+                if len(body_text) > 20:
+                    prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
+                    meta = {"source": norm_filename, "page": page_num, "type": "text"}
+                    if program_info:
+                        meta["program_code"] = program_info.get("program_code", "")
+                    docs.append(Document(page_content=prefix + body_text, metadata=meta))
         fitz_doc.close()
-
     except Exception as e:
         logger.error(f"PDF Processing Error: {e}")
     return docs
