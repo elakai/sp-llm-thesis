@@ -28,3 +28,4 @@ numpy
 nest-asyncio
 tenacity
 filelock
+pdfplumber
