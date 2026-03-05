@@ -17,6 +17,7 @@ pytesseract
 python-docx
 PyMuPDF>=1.23.0
 pymupdf4llm
+pymupdf_layout
 rank_bm25
 supabase
 plotly 
