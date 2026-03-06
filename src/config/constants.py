@@ -74,7 +74,7 @@ VALID_CATEGORIES = {
 #   completely wrong   : below -10
 # LOW_CONFIDENCE_THRESHOLD: abort generation below this — set to -3.0 so the
 # gate actually fires on marginally-relevant or worse retrievals.
-LOW_CONFIDENCE_THRESHOLD = -7.0    # Below this = not relevant enough, abort generation
+LOW_CONFIDENCE_THRESHOLD = -8.0    # Below this = not relevant enough, abort generation
 HIGH_CONFIDENCE_THRESHOLD = 2.5    # At/above this can skip critic (with margin check)
 HIGH_CONFIDENCE_MARGIN = 0.75      # Top1 must beat Top2 by at least this gap to skip critic
 

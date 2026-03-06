@@ -346,7 +346,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=3)
+    # Detect curriculum queries and allow more chunks per source
+    is_curriculum_query = any(
+        kw in standalone_query.lower()
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+    )
+    max_chunks = 8 if is_curriculum_query else 3
+    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
 
     top_score = float("-inf")
     second_score = float("-inf")

@@ -16,6 +16,13 @@ def get_dynamic_k(query: str) -> int:
     """Returns retrieval depth based on query complexity."""
     q = query.lower()
 
+    # Curriculum/subject queries need more chunks to cover all year levels
+    curriculum_keywords = [
+        'curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite'
+    ]
+    if any(kw in q for kw in curriculum_keywords):
+        return 20  # Need more chunks to cover all year levels
+
     # Comparison or multi-topic queries need more context
     complex_signals = [
         " difference ", " compare ", " vs ", " versus ",
