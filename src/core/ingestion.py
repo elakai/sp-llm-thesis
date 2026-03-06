@@ -1,3 +1,36 @@
+def inject_section_context(text: str) -> str:
+    """
+    For curriculum markdown files, prepend the nearest year/semester heading
+    to every table block so chunks don't lose their year context after splitting.
+    """
+    lines = text.split('\n')
+    result = []
+    current_year = ""
+    current_semester = ""
+
+    for line in lines:
+        # Detect year headers like ## FIRST YEAR, ## SECOND YEAR
+        year_match = re.search(
+            r'##\s+(FIRST|SECOND|THIRD|FOURTH|FIFTH)\s+YEAR', line, re.IGNORECASE
+        )
+        if year_match:
+            current_year = line.strip('# ').strip()
+
+        # Detect semester headers like ### 1st SEMESTER, ### 2nd SEMESTER
+        sem_match = re.search(
+            r'###\s+(1st|2nd|First|Second|Summer)\s+SEMESTER', line, re.IGNORECASE
+        )
+        if sem_match:
+            current_semester = line.strip('# ').strip()
+
+        # Inject context label before every table header row
+        if line.startswith('| CODE') or line.startswith('| Course Code') or line.startswith('| COURSE'):
+            if current_year or current_semester:
+                result.append(f"\n**{current_year} — {current_semester}**\n")
+
+        result.append(line)
+
+    return '\n'.join(result)
 import os
 import io
 import json
@@ -402,7 +435,14 @@ def load_txt(path: str, filename: str) -> List[Document]:
     docs = []
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            docs.append(Document(page_content=clean_text(f.read()), metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}))
+            raw = f.read()
+        # Inject year/semester context for curriculum markdown files
+        if 'Curriculum_' in filename or 'CURRICULUM' in filename.upper():
+            raw = inject_section_context(raw)
+        docs.append(Document(
+            page_content=clean_text(raw),
+            metadata={"source": normalize_source_key(filename), "page": 1, "type": "text"}
+        ))
     except Exception as e:
         logger.error(f"TXT Error: {e}")
     return docs

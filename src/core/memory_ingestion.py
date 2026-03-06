@@ -85,7 +85,12 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
 
     elif ext in ('txt', 'md'):
         try:
-            text = clean_text(file_bytes.decode('utf-8', errors='ignore'))
+            raw = file_bytes.decode('utf-8', errors='ignore')
+            # Inject year/semester context for curriculum markdown files
+            if 'Curriculum_' in filename or 'CURRICULUM' in filename.upper():
+                from src.core.ingestion import inject_section_context
+                raw = inject_section_context(raw)
+            text = clean_text(raw)
             if text:
                 docs.append(Document(
                     page_content=text,
