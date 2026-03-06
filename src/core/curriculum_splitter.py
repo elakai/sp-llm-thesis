@@ -91,7 +91,20 @@ def split_curriculum_by_section(doc: Document) -> List[Document]:
             sem_match = re.match(r'^###\s+([^\n]+)', sem_block.strip(), re.IGNORECASE)
             sem_label = sem_match.group(1).strip() if sem_match else ""
 
-            header = f"**{year_label} — {sem_label}**\n\n" if sem_label else f"**{year_label}**\n\n"
+            # Extract program name from filename e.g. "Curriculum_BS_ECE.md" → "BS ECE"
+            src = doc.metadata.get("source", "")
+            program_match = re.search(r'Curriculum[_\s]+(BS[_\s]+\w+)', src, re.IGNORECASE)
+            program_label = program_match.group(1).replace("_", " ").upper() if program_match else ""
+
+            if program_label and sem_label:
+                header = f"**{program_label} — {year_label} — {sem_label}**\n\n"
+            elif program_label:
+                header = f"**{program_label} — {year_label}**\n\n"
+            elif sem_label:
+                header = f"**{year_label} — {sem_label}**\n\n"
+            else:
+                header = f"**{year_label}**\n\n"
+
             chunk_content = header + sem_block.strip()
 
             meta = dict(doc.metadata)

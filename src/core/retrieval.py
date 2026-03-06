@@ -376,7 +376,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             top_reranked = hybrid_results[:RERANKER_TOP_K]
     else:
         top_reranked = []
-
+    
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
     logger.info(
@@ -385,6 +385,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         f"(Cutoffs — low: {LOW_CONFIDENCE_THRESHOLD}, high: {HIGH_CONFIDENCE_THRESHOLD}, "
         f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
+    logger.info(f"📄 Top chunks: {[(doc.metadata.get('year','?'), doc.metadata.get('semester','?')) for doc in top_reranked]}")
 
     # 🚀 STEP 6: BUILD CONTEXT
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
@@ -421,6 +422,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
    'The retrieved documents do not contain this information.'
 
 6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
+
+7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, retrieve ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) and present them together.
 
 **Context:**
 {context}
