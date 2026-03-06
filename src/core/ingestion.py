@@ -36,6 +36,7 @@ import io
 import json
 import re
 import cv2
+from src.core.curriculum_splitter import split_curriculum_by_section
 import numpy as np
 import fitz 
 import pdfplumber
@@ -424,11 +425,24 @@ def load_spreadsheet(path: str, filename: str, is_csv: bool = False) -> List[Doc
         ))
     except Exception as e:
         logger.error(f"Spreadsheet Error: {e}")
-    return docs
+            # Split curriculum markdown files by year/semester heading first
+            pre_split_text_docs = []
+            for doc in text_docs:
+                src = doc.metadata.get("source", "")
+                if "curriculum" in src.lower():
+                    pre_split_text_docs.extend(split_curriculum_by_section(doc))
+                else:
+                    pre_split_text_docs.append(doc)
 
-def load_txt(path: str, filename: str) -> List[Document]:
-    """
-    Reads a plain-text file and returns a single text Document.
+            # Split large tables row-by-row so every chunk stays within the
+            # all-MiniLM-L6-v2 256 word-piece embedding limit.
+            split_table_docs = []
+            for doc in table_docs:
+                split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
+
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+            split_text_docs = text_splitter.split_documents(pre_split_text_docs)
+            final_chunks = split_table_docs + split_text_docs
     Decodes with UTF-8 and ``errors='ignore'`` so Latin-1 or Windows-1252
     encoded files don't silently fail with UnicodeDecodeError.
     """

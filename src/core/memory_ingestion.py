@@ -11,6 +11,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.core.ingestion import (
     normalize_source_key,
     is_already_ingested,
+from src.core.curriculum_splitter import split_curriculum_by_section
+
     convert_table_to_markdown,
     clean_text,
     extract_docx_text,
@@ -168,7 +170,15 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
     text_docs = [d for d in all_docs if d.metadata.get("type") == "text"]
 
     # Split large tables row-by-row to stay within the 256 word-piece embedding limit.
-    split_table_docs = []
+    pre_split_text_docs = []
+    for doc in text_docs:
+        src = doc.metadata.get("source", "")
+        if "curriculum" in src.lower():
+            pre_split_text_docs.extend(split_curriculum_by_section(doc))
+        else:
+            pre_split_text_docs.append(doc)
+
+    split_text_docs = text_splitter.split_documents(pre_split_text_docs)
     for doc in table_docs:
         split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
