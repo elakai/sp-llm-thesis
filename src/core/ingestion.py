@@ -549,7 +549,7 @@ def ingest_all_files():
             file_docs = []
             if ext == 'pdf': file_docs = load_pdf(file_path, filename)
             elif ext in ['xlsx', 'xls', 'csv']: file_docs = load_spreadsheet(file_path, filename, ext == 'csv')
-            elif ext == 'txt': file_docs = load_txt(file_path, filename)
+            elif ext in ['txt', 'md']: file_docs = load_txt(file_path, filename)
             elif ext in ['doc', 'docx']: file_docs = load_docx(file_path, filename)
             elif ext in ['jpg', 'jpeg', 'png']: file_docs = load_image(file_path, filename)
 

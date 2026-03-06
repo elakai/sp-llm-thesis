@@ -83,7 +83,7 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
         except Exception as e:
             logger.error(f"DOCX processing error: {e}")
 
-    elif ext == 'txt':
+    elif ext in ('txt', 'md'):
         try:
             text = clean_text(file_bytes.decode('utf-8', errors='ignore'))
             if text:
@@ -92,7 +92,7 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
                     metadata={"source": norm_filename, "page": 1, "type": "text"}
                 ))
         except Exception as e:
-            logger.error(f"TXT processing error: {e}")
+            logger.error(f"{ext.upper()} processing error: {e}")
 
     elif ext in ('png', 'jpg', 'jpeg', 'tiff', 'bmp'):
         # OCR: extract text from images using Tesseract
