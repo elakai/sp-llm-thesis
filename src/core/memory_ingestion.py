@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import tempfile
 from datetime import datetime
 from collections import defaultdict
@@ -17,7 +18,9 @@ from src.core.ingestion import (
     upload_in_batches,
     update_manifest,
     split_table_by_rows,
+    is_curriculum_file,
 )
+from src.core.curriculum_splitter import split_curriculum_by_section
 from src.core.retrieval import invalidate_cache
 from src.config.constants import CHUNK_SIZE, CHUNK_OVERLAP
 from src.config.logging_config import logger
@@ -85,12 +88,7 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
 
     elif ext in ('txt', 'md'):
         try:
-            raw = file_bytes.decode('utf-8', errors='ignore')
-            # Inject year/semester context for curriculum markdown files
-            if 'Curriculum_' in filename or 'CURRICULUM' in filename.upper():
-                from src.core.ingestion import inject_section_context
-                raw = inject_section_context(raw)
-            text = clean_text(raw)
+            text = clean_text(file_bytes.decode('utf-8', errors='ignore'))
             if text:
                 docs.append(Document(
                     page_content=text,
@@ -165,19 +163,27 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
 
     # Two-phase atomic chunking
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs = [d for d in all_docs if d.metadata.get("type") == "text"]
+    text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
 
-    # Split large tables row-by-row to stay within the 256 word-piece embedding limit.
     split_table_docs = []
     for doc in table_docs:
         split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
-    )
-    split_text_docs = text_splitter.split_documents(text_docs)
-    final_chunks = split_table_docs + split_text_docs
+    curriculum_chunks = []
+    regular_text_docs = []
+    for doc in text_docs:
+        src = doc.metadata.get("source", "")
+        if is_curriculum_file(src):
+            sections = split_curriculum_by_section(doc)
+            logger.info(f"📚 Curriculum split: {src} → {len(sections)} sections")
+            curriculum_chunks.extend(sections)
+        else:
+            regular_text_docs.append(doc)
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+    split_regular_docs = text_splitter.split_documents(regular_text_docs)
+
+    final_chunks = split_table_docs + curriculum_chunks + split_regular_docs
 
     # ── Context Header Injection ───────────────────────────────────────────
     # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is
@@ -187,7 +193,7 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
     # not just the first.  Curriculum chunks are exempt (load_pdf already
     # prepends "Program: BACHELOR OF SCIENCE IN ...").
     for chunk in final_chunks:
-        if not chunk.page_content.startswith("Program:"):
+        if not chunk.page_content.startswith("Program:") and not chunk.page_content.startswith("**"):
             src = chunk.metadata.get("source", "")
             category_label = chunk.metadata.get("category", "general")
             src_label = src.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")

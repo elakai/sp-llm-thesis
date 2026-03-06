@@ -346,7 +346,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=3)
+    # Detect curriculum queries and allow more chunks per source
+    is_curriculum_query = any(
+        kw in standalone_query.lower()
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+    )
+    max_chunks = 8 if is_curriculum_query else 3
+    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
 
     top_score = float("-inf")
     second_score = float("-inf")
@@ -370,7 +376,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             top_reranked = hybrid_results[:RERANKER_TOP_K]
     else:
         top_reranked = []
-
+    
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
     logger.info(
@@ -379,11 +385,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         f"(Cutoffs — low: {LOW_CONFIDENCE_THRESHOLD}, high: {HIGH_CONFIDENCE_THRESHOLD}, "
         f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
+    logger.info(f"📄 Top chunks: {[(doc.metadata.get('year','?'), doc.metadata.get('semester','?')) for doc in top_reranked]}")
 
     # 🚀 STEP 6: BUILD CONTEXT
-    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content}" for doc in top_reranked]
+    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
+    # Log which chunk indices are being retrieved for debugging
+    logger.info(f"📄 Context sources: {[doc.metadata.get('source','?') + ' chunk_' + str(doc.metadata.get('chunk_index','?')) for doc in top_reranked]}")
     retrieval_time = time.time() - retrieval_start
 
     # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
@@ -413,6 +422,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
    'The retrieved documents do not contain this information.'
 
 6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
+
+7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, retrieve ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) and present them together.
 
 **Context:**
 {context}
