@@ -387,9 +387,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     )
 
     # 🚀 STEP 6: BUILD CONTEXT
-    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]]\n{doc.page_content}" for doc in top_reranked]
+    context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
+    # Log which chunk indices are being retrieved for debugging
+    logger.info(f"📄 Context sources: {[doc.metadata.get('source','?') + ' chunk_' + str(doc.metadata.get('chunk_index','?')) for doc in top_reranked]}")
     retrieval_time = time.time() - retrieval_start
 
     # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
