@@ -429,7 +429,7 @@ def load_spreadsheet(path: str, filename: str, is_csv: bool = False) -> List[Doc
             pre_split_text_docs = []
             for doc in text_docs:
                 src = doc.metadata.get("source", "")
-                if "curriculum" in src.lower():
+                if re.search(r'curriculum', src, re.IGNORECASE):
                     pre_split_text_docs.extend(split_curriculum_by_section(doc))
                 else:
                     pre_split_text_docs.append(doc)
