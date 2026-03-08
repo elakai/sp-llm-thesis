@@ -28,7 +28,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading ranking model...")
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
@@ -208,6 +208,41 @@ def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> L
             source_counts[source] = count + 1
     return diverse_docs
 
+def filter_to_program(docs: List[Document], query: str) -> List[Document]:
+    """
+    For analytical queries (most, least, compare, rank), returns ALL chunks
+    from the single most-relevant program file so the LLM sees the full picture.
+    """
+    PROGRAM_KEYWORDS = {
+        'computer engineering': 'cpe',
+        'cpe': 'cpe',
+        'civil engineering': 'ce',
+        'bs ce': 'ce',
+        'electronics engineering': 'ece',
+        'bs ece': 'ece',
+        'architecture': 'arch',
+        'bs arch': 'arch',
+        'biology': 'bio',
+        'bs bio': 'bio',
+        'mathematics': 'math',
+        'bs math': 'math',
+        'environmental management': 'em',
+        'bs em': 'em',
+    }
+    q = query.lower()
+    matched_program = None
+    for keyword, code in PROGRAM_KEYWORDS.items():
+        if keyword in q:
+            matched_program = code
+            break
+
+    if not matched_program:
+        return docs
+
+    return [
+        d for d in docs
+        if matched_program in d.metadata.get("source", "").lower()
+    ]
 
 def _contains_markdown_table(text: str) -> bool:
     """Returns True if the response contains at least one Markdown table row."""
@@ -347,35 +382,64 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
     # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule', 'ojt', 'practicum', 'internship', 'immersion']
     )
-    max_chunks = 8 if is_curriculum_query else 3
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+    
+    ANALYTICAL_TRIGGERS = [
+        'most', 'least', 'highest', 'lowest', 'compare', 'which course',
+        'how many courses', 'most prerequisites', 'hardest', 'rank'
+    ]
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
 
     top_score = float("-inf")
     second_score = float("-inf")
 
-    if hybrid_results:
-        try:
-            pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-            scores = get_reranker().predict(pairs)
-            sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    if is_analytical_query and is_curriculum_query:
+        # Pull ALL chunks from Pinecone for this program, not just top-K
+        all_program_docs = filter_to_program(
+            prefer_latest_per_source(list(unique_docs_map.values())),
+            standalone_query
+        )
+        # Re-run retrieval with high K to get more chunks
+        big_retriever = get_retriever(k=50)
+        extra_docs = big_retriever.invoke(standalone_query)
+        extra_filtered = filter_to_program(
+            prefer_latest_per_source(extra_docs),
+            standalone_query
+        )
+        combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
+        top_reranked = list(combined.values())
+        
+        # Artificially pass the confidence gate since we successfully pulled the whole curriculum
+        if top_reranked:
+            top_score = 10.0 
             
-            top_score = float(scores[sorted_indices[0]])
-            if len(sorted_indices) > 1:
-                second_score = float(scores[sorted_indices[1]])
-            
-            # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
-            # Step 7's Three-Tier logic will handle the confidence check.
-
-            top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
-        except Exception as e:
-            logger.error(f"Reranking failed: {e}")
-            top_reranked = hybrid_results[:RERANKER_TOP_K]
+        logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
+        
     else:
-        top_reranked = []
+        max_chunks = 8 if is_curriculum_query else 3
+        hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+
+        if hybrid_results:
+            try:
+                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
+                scores = get_reranker().predict(pairs)
+                sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                
+                top_score = float(scores[sorted_indices[0]])
+                if len(sorted_indices) > 1:
+                    second_score = float(scores[sorted_indices[1]])
+                
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+            except Exception as e:
+                logger.error(f"Reranking failed: {e}")
+                top_reranked = hybrid_results[:RERANKER_TOP_K]
+        else:
+            top_reranked = []
     
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
@@ -399,31 +463,38 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
-    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University.
-Answer the student's question using ONLY the context below. Be friendly but direct.
+    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
+
+Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
-1. **NO FILLER**: Do NOT start with "To provide you with..." or "I'll need to refer to...". 
-   Go straight to the answer. Do NOT end with "If you need more information, please let me know."
+1. **TONE**: Be warm and natural but NEVER start with "Great question!", 
+   "Good question!", "Excellent question!", or any variation of that. 
+   It sounds fake and annoying. You can start directly with the answer, 
+   or use a very brief natural opener like "Sure!", "Here's what I found:", 
+   or "Based on the guidelines," — but only when it flows naturally. 
+   Most of the time, just answer directly.
 
-2. **LANGUAGE**: Always respond in English.
+2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or "Let me check the handbook for you..." or any variation.
 
-3. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales,
-   schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table.
-   Include specific course codes, titles, units, and prerequisites — not vague summaries like
-   "Multiple levels of design courses."
-   **SHOW EVERY ROW** — never truncate, summarize, or skip rows. If there are 15 grade levels, show all 15.
+3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino. 
 
-4. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
+4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. Include specific course codes, titles, units, and prerequisites. **SHOW EVERY ROW** — never truncate or skip rows.
 
-5. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice.
-   If the context genuinely lacks the answer, say:
-   'The retrieved documents do not contain this information.'
+5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 
-6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
+6. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
 
-7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, retrieve ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) and present them together.
+7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) together in one response.
+
+8. **BE CONCISE**: One short friendly opener, then the answer. No repetition.
+
+9. **LISTS**: When listing multiple items, always put each item on its own 
+   line with a blank line before the list starts. Never write list items 
+   inline like "1. Item 2. Item 3. Item".
+
+10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
 
 **Context:**
 {context}
@@ -439,7 +510,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         # Tier 1: Retrieval is too weak — Exit early to prevent hallucination
         if top_score < LOW_CONFIDENCE_THRESHOLD:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield "I checked the handbook but couldn't find enough specific information to answer that confidently. Please consult the CSEA Department Chair."
+            yield "I checked the documents I currently have but couldn't find enough specific information to answer that confidently. Please consult your respective department chair directly."
             return
 
         # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
@@ -480,6 +551,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         if not final_verified_response:
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
+
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
         # Final Streaming Loop with Fallback
         # Table-aware: yield entire response at once when a Markdown table is present
@@ -489,11 +562,13 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                sentences = re.split(r'(?<=[.!?])\s+', final_verified_response)
-                for sentence in sentences:
-                    if sentence.strip():
-                        yield sentence + " "
-                        time.sleep(0.03)
+                # ── WORD-BY-WORD STREAMING (FIX 2) ──
+                # Stream word by word so the warm opener lands first
+                words = final_verified_response.split(" ")
+                for word in words:
+                    yield word + " "
+                    time.sleep(STREAM_DELAY) 
+                    
         except GeneratorExit:
             # User navigated away; cleanup handled by Python GC
             return
@@ -507,5 +582,6 @@ Answer the student's question using ONLY the context below. Be friendly but dire
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
+
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)

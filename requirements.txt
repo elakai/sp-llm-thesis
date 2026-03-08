@@ -29,3 +29,6 @@ nest-asyncio
 tenacity
 filelock
 pdfplumber
+wordcloud
+matplotlib
+scikit-learn

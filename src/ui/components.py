@@ -95,8 +95,6 @@ def render_login():
                         st.error(f"Error: {message}")
 
 def render_sidebar():
-    # Note: We don't load main.css here because 'render_main_styles' 
-    # is usually called in main.py. But if you want it loaded with the sidebar:
     load_css("main.css")
 
     with st.sidebar:
@@ -126,45 +124,57 @@ def render_sidebar():
             st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
         st.markdown("---")
         
-        # New Chat button
-        new_chat_label = "New Chat" if sidebar_open else "✏️"
-        if st.button(new_chat_label, use_container_width=True):
-            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
-                if "chat_history" not in st.session_state:
-                    st.session_state["chat_history"] = []
-                if st.session_state.get("active_convo_idx") is not None:
-                    idx = st.session_state["active_convo_idx"]
-                    if 0 <= idx < len(st.session_state["chat_history"]):
-                        st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
-                else:
-                    st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
+        # Hide Chat and History navigation from Admin users
+        if st.session_state.get("role") != "admin":
             
-            st.session_state["messages"] = []
-            st.session_state["active_convo_idx"] = None 
-            st.session_state["session_id"] = str(uuid.uuid4())
-            st.session_state["view"] = "chat"
-            st.rerun()
-        
-        # History button
-        history_label = "History" if sidebar_open else "🕘"
-        if st.button(history_label, use_container_width=True):
-            if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
-                if "chat_history" not in st.session_state:
-                    st.session_state["chat_history"] = []
-                if st.session_state.get("active_convo_idx") is not None:
-                    idx = st.session_state["active_convo_idx"]
-                    if 0 <= idx < len(st.session_state["chat_history"]):
-                        st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
-                else:
-                    st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
-                    st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
-            st.session_state["view"] = "history"
-            st.rerun()
+            # New Chat button
+            new_chat_label = "New Chat" if sidebar_open else "✏️"
+            if st.button(new_chat_label, use_container_width=True):
+                if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                    if "chat_history" not in st.session_state:
+                        st.session_state["chat_history"] = []
+                    if st.session_state.get("active_convo_idx") is not None:
+                        idx = st.session_state["active_convo_idx"]
+                        if 0 <= idx < len(st.session_state["chat_history"]):
+                            st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
+                    else:
+                        st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
+                
+                st.session_state["messages"] = []
+                st.session_state["active_convo_idx"] = None 
+                st.session_state["session_id"] = str(uuid.uuid4())
+                st.session_state["view"] = "chat"
+                st.rerun()
             
+            # History button
+            history_label = "History" if sidebar_open else "🕘"
+            if st.button(history_label, use_container_width=True):
+                if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
+                    if "chat_history" not in st.session_state:
+                        st.session_state["chat_history"] = []
+                    if st.session_state.get("active_convo_idx") is not None:
+                        idx = st.session_state["active_convo_idx"]
+                        if 0 <= idx < len(st.session_state["chat_history"]):
+                            st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
+                    else:
+                        st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
+                        st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
+                st.session_state["view"] = "history"
+                st.rerun()
+            
+        # Admin specific navigation
         if st.session_state.get("role") == "admin":
-            admin_label = "🛠️ **Admin Dashboard**" if sidebar_open and st.session_state.get("view") == "admin" else ("🛠️ Admin Dashboard" if sidebar_open else "🛠️")
+            
+            # Main Dashboard Button
+            admin_label = "**Admin Dashboard**" if sidebar_open and st.session_state.get("view") == "admin" else ("Admin Dashboard" if sidebar_open else "🛠️")
             if st.button(admin_label, use_container_width=True):
                 st.session_state["view"] = "admin"
+                st.rerun()
+                
+            # Indexed Documents Button
+            docs_label = "**Document Management**" if sidebar_open and st.session_state.get("view") == "indexed_docs" else ("Document Management" if sidebar_open else "📚")
+            if st.button(docs_label, use_container_width=True):
+                st.session_state["view"] = "indexed_docs"
                 st.rerun()
 
         st.markdown("---")
@@ -186,7 +196,5 @@ def render_sidebar():
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPORT HELPERS (Used in main.py)
 # ─────────────────────────────────────────────────────────────────────────────
-# We can keep this empty function signature for compatibility with main.py
-# or assume main.py calls 'render_sidebar' which now loads the CSS.
 def render_main_styles():
     load_css("main.css")

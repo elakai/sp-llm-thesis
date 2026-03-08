@@ -26,7 +26,7 @@ if str(project_root) not in sys.path:
 # 3. IMPORTS (Local modules must be imported AFTER set_page_config)
 # ─────────────────────────────────────────────────────────────────────────────
 from src.ui.components import render_login, render_sidebar, render_main_styles
-from src.ui.admin_dashboard import render_admin_view
+from src.ui.admin_dashboard import render_admin_view, render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
 from src.core.auth import supabase as _sb
@@ -88,6 +88,7 @@ if "app_loaded" not in st.session_state:
         get_generator_llm()
         st.session_state["app_loaded"] = True
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ if not st.session_state["authenticated"]:
                     .eq("id", user_id) \
                     .single() \
                     .execute()
+                
                 db_role = profile.data.get("role", "student")
                 db_name = profile.data.get("full_name", "Student")
             except Exception:
@@ -118,6 +120,11 @@ if not st.session_state["authenticated"]:
             st.session_state["email"] = session.user.email
             st.session_state["role"] = db_role
             st.session_state["full_name"] = db_name
+            
+            # Route admin users straight to the dashboard
+            if db_role == "admin":
+                st.session_state["view"] = "admin"
+                
             logger.info(f"Session restored for {session.user.email}")
     except Exception:
         pass  # No session to restore — show login page
@@ -153,12 +160,14 @@ render_sidebar()
 if st.session_state["view"] == "admin" and st.session_state.get("role") == "admin":
     render_admin_view()
 
-# --- OPTION B: HISTORY VIEW ---
+# --- OPTION B: INDEXED DOCUMENTS VIEW ---
+elif st.session_state["view"] == "indexed_docs" and st.session_state.get("role") == "admin":
+    render_indexed_documents_view()
+
+# --- OPTION C: HISTORY VIEW ---
 elif st.session_state["view"] == "history":
     render_history_view()
 
-# --- OPTION C: MAIN CHAT VIEW ---
+# --- OPTION D: MAIN CHAT VIEW ---
 else:
     render_chat_view()
-
-    

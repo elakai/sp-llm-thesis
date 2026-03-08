@@ -259,22 +259,51 @@ def extract_docx_text(file_bytes: bytes) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LOADERS
+# LOADERS & PRE-PROCESSORS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_pdf(path: str, filename: str) -> List[Document]:
+def load_pdf(path: str, filename: str, header_margin_pct=0.08, footer_margin_pct=0.08) -> List[Document]:
+    """
+    Reads a PDF, applies SPATIAL FILTERING to crop out headers and footers,
+    extracts tables, extracts body text, and applies regex cleanup to remove page numbers.
+    """
     logger.info(f"Reading PDF: {filename}...")
     norm_filename = normalize_source_key(filename)
     program_info = extract_program_info(filename)
     docs = []
+    
     try:
         fitz_doc = fitz.open(path)
         with pdfplumber.open(path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
                 fitz_page = fitz_doc[page_num - 1]
-                tables = page.find_tables()
+                
+                # ── 1. SPATIAL FILTERING (Cropping the Page) ──
+                width = page.width
+                height = page.height
+                
+                # Bounding box for pdfplumber (Left, Top, Right, Bottom)
+                plumber_bbox = (
+                    0, 
+                    height * header_margin_pct, 
+                    width, 
+                    height * (1 - footer_margin_pct)
+                )
+                cropped_page = page.crop(plumber_bbox)
+                
+                # Clipping Rectangle for PyMuPDF (fitz)
+                f_rect = fitz_page.rect
+                fitz_clip = fitz.Rect(
+                    f_rect.x0, 
+                    f_rect.y0 + (f_rect.height * header_margin_pct), 
+                    f_rect.x1, 
+                    f_rect.y1 - (f_rect.height * footer_margin_pct)
+                )
+
+                # ── 2. EXTRACT TABLES (From cropped page) ──
+                tables = cropped_page.find_tables()
                 table_bboxes = [t.bbox for t in tables]
-                all_words = page.extract_words(x_tolerance=3, y_tolerance=3)
+                all_words = cropped_page.extract_words(x_tolerance=3, y_tolerance=3)
 
                 for table in tables:
                     data = table.extract()
@@ -290,22 +319,26 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                         meta_t["program_code"] = program_info.get("program_code", "")
                     docs.append(Document(page_content=prefix + md, metadata=meta_t))
 
+                # ── 3. EXTRACT BODY TEXT ──
                 if table_bboxes:
                     non_table_words = [w for w in all_words if not is_inside_any_bbox(w, table_bboxes)]
                     body_text = clean_text(reconstruct_body_text(non_table_words))
                 else:
-                    body_text = clean_text(fitz_page.get_text("text"))
+                    # Extract from fitz using the clipped region to avoid headers/footers
+                    body_text = clean_text(fitz_page.get_text("text", clip=fitz_clip))
                     if len(body_text) < 100:
                         plumber_text = clean_text(reconstruct_body_text(all_words))
                         if len(plumber_text) > len(body_text):
                             body_text = plumber_text
 
+                # ── 4. OCR FALLBACK (On Clipped Region Only) ──
                 if len(body_text) < 50 and not table_bboxes:
-                    raw_fitz = fitz_page.get_text("text").strip()
+                    raw_fitz = fitz_page.get_text("text", clip=fitz_clip).strip()
                     if not raw_fitz or len(raw_fitz) < 50:
                         try:
                             logger.warning(f"Page {page_num} appears scanned. Running Tesseract OCR...")
-                            pix = fitz_page.get_pixmap(dpi=300)
+                            # OCR ONLY the body, skipping header/footer
+                            pix = fitz_page.get_pixmap(dpi=300, clip=fitz_clip)
                             pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
                             clean_img = preprocess_image_for_ocr(pil_img)
                             ocr_text = pytesseract.image_to_string(clean_img, config="--psm 3 --oem 3")
@@ -313,6 +346,16 @@ def load_pdf(path: str, filename: str) -> List[Document]:
                         except Exception as ocr_err:
                             logger.warning(f"OCR fallback failed on page {page_num}: {ocr_err}")
 
+                # ── 5. REGEX CLEANUP (Remove leftover artifacts) ──
+                # Remove standalone numbers (like page numbers that barely survived the crop)
+                body_text = re.sub(r'(?m)^\s*-?\s*\d+\s*-?\s*$', '', body_text)
+                # Remove repetitive handbook headers just in case
+                body_text = re.sub(r'(?i)Ateneo de Naga University', '', body_text)
+                body_text = re.sub(r'(?i)College of Science, Engineering, and Architecture', '', body_text)
+                # Fix spacing
+                body_text = re.sub(r'\n{3,}', '\n\n', body_text).strip()
+
+                # Add Document if valid
                 if len(body_text) > 20:
                     prefix = (f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n"
                               if program_info else "")
@@ -328,10 +371,7 @@ def load_pdf(path: str, filename: str) -> List[Document]:
 
 
 def load_txt_or_md(path: str, filename: str) -> List[Document]:
-    """Loads .txt and .md files.
-    Curriculum markdown files are returned as a single Document so that
-    split_curriculum_by_section in Phase 2 can split on year/semester
-    headings — RecursiveCharacterTextSplitter must NOT touch these files."""
+    """Loads .txt and .md files."""
     docs = []
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -450,7 +490,6 @@ def ingest_all_files():
     all_docs = []
     logger.info(f"📂 Scanning {DOCS_FOLDER} and all subfolders...")
 
-    # ── Phase 1: Load ─────────────────────────────────────────────────────────
     for root, dirs, files in os.walk(DOCS_FOLDER):
         rel_path = os.path.relpath(root, DOCS_FOLDER)
         raw_category = "general" if rel_path == "." else rel_path.split(os.sep)[0].lower()
@@ -489,16 +528,13 @@ def ingest_all_files():
     if not all_docs:
         return True
 
-    # ── Phase 2: Chunking ─────────────────────────────────────────────────────
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
     text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
 
-    # Tables: split by row count only
     split_table_docs = []
     for doc in table_docs:
         split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
-    # Text: curriculum files bypass RecursiveCharacterTextSplitter entirely
     curriculum_chunks = []
     regular_text_docs = []
     for doc in text_docs:
@@ -515,10 +551,8 @@ def ingest_all_files():
 
     final_chunks = split_table_docs + curriculum_chunks + split_regular_docs
 
-    # ── Phase 2b: Context Header Injection ───────────────────────────────────
     for chunk in final_chunks:
         content = chunk.page_content
-        # Skip if already has a program prefix or curriculum year header
         if content.startswith("Program:") or content.startswith("**"):
             continue
         src = chunk.metadata.get("source", "")
@@ -526,7 +560,6 @@ def ingest_all_files():
         src_label = src.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
         chunk.page_content = f"[{category_label.upper()}] {src_label}\n\n{content}"
 
-    # Assign chunk indices
     source_counters = defaultdict(int)
     chunk_counts = {}
     for chunk in final_chunks:
@@ -535,7 +568,6 @@ def ingest_all_files():
         source_counters[src] += 1
         chunk_counts[src] = chunk_counts.get(src, 0) + 1
 
-    # ── Phase 3: Upload & Cleanup ─────────────────────────────────────────────
     try:
         vectorstore = get_vectorstore()
         logger.info(f"🚀 Uploading {len(final_chunks)} chunks to Pinecone...")
