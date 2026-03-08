@@ -47,6 +47,7 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
             tmp_path = tmp.name
         try:
             from src.core.ingestion import load_pdf
+            # load_pdf now natively handles the Spatial Filtering
             docs = load_pdf(tmp_path, filename)
         finally:
             os.unlink(tmp_path)  # Always delete temp file
