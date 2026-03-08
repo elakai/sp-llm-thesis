@@ -37,18 +37,21 @@ os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/transformers_cache")
 os.environ.setdefault("HF_HOME", "/tmp/hf_home")
 
 # 4. CACHED FACTORIES  (imports are lazy — heavy libraries load only when first called)
-@st.cache_resource(show_spinner="Loading embedding model...")
+@st.cache_resource(show_spinner=False)
 def get_embeddings():
     from langchain_huggingface import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        cache_folder="/tmp/hf_cache"
+    )
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_generator_llm():
     """LLM for main answer generation. Lives in server RAM permanently."""
     from langchain_groq import ChatGroq
     return ChatGroq(model=GROQ_MODEL, temperature=0.1, groq_api_key=GROQ_API_KEY)
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_critic_llm():
     """LLM for answer verification (Critic persona). Zero temperature for deterministic checking."""
     from langchain_groq import ChatGroq
@@ -56,7 +59,7 @@ def get_critic_llm():
 
 # Cached with 5-minute TTL: connection stays alive across queries but refreshes
 # automatically to prevent Pinecone idle timeouts.
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=300, show_spinner=False)
 def get_vectorstore():
     from langchain_pinecone import PineconeVectorStore
     return PineconeVectorStore.from_existing_index(
@@ -64,6 +67,7 @@ def get_vectorstore():
         embedding=get_embeddings()
     )
 
+@st.cache_resource(show_spinner=False)
 def get_retriever(k: int = 5):
     """Centralized retriever call to prevent mismatched 'k' values."""
     return get_vectorstore().as_retriever(search_kwargs={"k": k})

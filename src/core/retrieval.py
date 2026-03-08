@@ -28,7 +28,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading ranking model...")
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
@@ -347,9 +347,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
     # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+        for kw in [
+            'curriculum', 'subject', 'course', 'year', 'semester',
+            'units', 'prerequisite', 'schedule', 'ojt', 'practicum',
+            'internship', 'immersion'
+        ]
     )
     max_chunks = 8 if is_curriculum_query else 3
     hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
@@ -405,7 +410,12 @@ Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
-1. **TONE**: Be warm and natural. You can start with a short friendly phrase like "Sure!", "Great question!", "Here's what I found:" or similar — but keep it brief. Never sound robotic or formal.
+1. **TONE**: Be warm and natural but NEVER start with "Great question!", 
+   "Good question!", "Excellent question!", or any variation of that. 
+   It sounds fake and annoying. You can start directly with the answer, 
+   or use a very brief natural opener like "Sure!", "Here's what I found:", 
+   or "Based on the guidelines," — but only when it flows naturally. 
+   Most of the time, just answer directly.
 
 2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or end with "If you need more information, please let me know." or "I hope this helps!"
 
@@ -420,6 +430,10 @@ Answer the question using ONLY the context below.
 7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) together in one response.
 
 8. **BE CONCISE**: One short friendly opener, then the answer. No repetition.
+
+9. **LISTS**: When listing multiple items, always put each item on its own 
+   line with a blank line before the list starts. Never write list items 
+   inline like "1. Item 2. Item 3. Item".
 
 **Context:**
 {context}
@@ -476,6 +490,8 @@ Answer the question using ONLY the context below.
         if not final_verified_response:
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
+
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
         # Final Streaming Loop with Fallback
         # Table-aware: yield entire response at once when a Markdown table is present
@@ -485,11 +501,13 @@ Answer the question using ONLY the context below.
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                sentences = re.split(r'(?<=[.!?])\s+', final_verified_response)
-                for sentence in sentences:
-                    if sentence.strip():
-                        yield sentence + " "
-                        time.sleep(0.03)
+                # ── WORD-BY-WORD STREAMING (FIX 2) ──
+                # Stream word by word so the warm opener lands first
+                words = final_verified_response.split(" ")
+                for word in words:
+                    yield word + " "
+                    time.sleep(STREAM_DELAY) 
+                    
         except GeneratorExit:
             # User navigated away; cleanup handled by Python GC
             return
@@ -503,5 +521,6 @@ Answer the question using ONLY the context below.
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
+
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
