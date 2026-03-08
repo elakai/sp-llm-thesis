@@ -146,11 +146,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Thanks for your feedback!", icon="✅")
                             st.rerun()
                     with sub2:
@@ -158,11 +158,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "not_helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("We'll improve this answer.", icon="📝")
                             st.rerun()
                 
@@ -210,7 +210,7 @@ def _process_user_query(query: str):
             log_conversation(
                 query=query,
                 response=response,
-                user_email=st.session_state.get("user_id", "Guest"),
+                user_email=st.session_state.get("email", "Guest"),
                 session_id=st.session_state.get("session_id"),
                 context=current_context,
                 metrics=performance_metrics
