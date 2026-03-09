@@ -437,6 +437,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
    inline like "1. Item 2. Item 3. Item".
 
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
+
+**Context:**
 {context}
 
 **Chat History:**
@@ -529,7 +531,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         logger.error(f"❌ Generation Pipeline Failed: {e}")
         yield "Something went wrong on my end. Give it another try in a bit!"
 
-        
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     """Reliable wrapper for LLM calls with exponential backoff."""
