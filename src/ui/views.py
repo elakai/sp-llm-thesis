@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import uuid
 import copy
@@ -146,11 +147,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Thanks for your feedback!", icon="✅")
                             st.rerun()
                     with sub2:
@@ -158,11 +159,11 @@ def render_chat_view():
                             query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
                             if current_feedback == "not_helpful":
                                 st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("Feedback removed")
                             else:
                                 st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
+                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
                                 st.toast("We'll improve this answer.", icon="📝")
                             st.rerun()
                 
@@ -196,13 +197,34 @@ def _process_user_query(query: str):
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
         try:
-            # Get the response stream
-            stream = generate_response(
-                query=query,
-                chat_history_list=st.session_state.messages
-            )
+            with st.spinner("Thinking..."):
+                stream = generate_response(
+                    query=query,
+                    chat_history_list=st.session_state.messages
+                )
+                response_placeholder = st.empty()
+                full_response = ""
+                for chunk in stream:
+                    full_response += chunk
+                    if '|' in full_response:
+                        response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                    else:
+                        response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
+                response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                response = full_response
 
-            response = st.write_stream(stream)
+            # ── NEW: Extract and render suggested questions as clickable buttons ──
+            suggested_q_match = re.search(
+                r'\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
+                full_response
+            )
+            if suggested_q_match:
+                questions = re.findall(r'- (.+)', suggested_q_match.group(1))
+                if questions:
+                    st.markdown("**You might also want to ask:**")
+                    for q in questions:
+                        if st.button(q, key=f"sugg_{q[:30]}_{len(st.session_state.messages)}"):
+                            _process_user_query(q)
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
@@ -210,7 +232,7 @@ def _process_user_query(query: str):
             log_conversation(
                 query=query,
                 response=response,
-                user_email=st.session_state.get("user_id", "Guest"),
+                user_email=st.session_state.get("email", "Guest"),
                 session_id=st.session_state.get("session_id"),
                 context=current_context,
                 metrics=performance_metrics
