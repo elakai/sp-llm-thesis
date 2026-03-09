@@ -29,7 +29,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading ranking model...")
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
@@ -209,6 +209,41 @@ def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> L
             source_counts[source] = count + 1
     return diverse_docs
 
+def filter_to_program(docs: List[Document], query: str) -> List[Document]:
+    """
+    For analytical queries (most, least, compare, rank), returns ALL chunks
+    from the single most-relevant program file so the LLM sees the full picture.
+    """
+    PROGRAM_KEYWORDS = {
+        'computer engineering': 'cpe',
+        'cpe': 'cpe',
+        'civil engineering': 'ce',
+        'bs ce': 'ce',
+        'electronics engineering': 'ece',
+        'bs ece': 'ece',
+        'architecture': 'arch',
+        'bs arch': 'arch',
+        'biology': 'bio',
+        'bs bio': 'bio',
+        'mathematics': 'math',
+        'bs math': 'math',
+        'environmental management': 'em',
+        'bs em': 'em',
+    }
+    q = query.lower()
+    matched_program = None
+    for keyword, code in PROGRAM_KEYWORDS.items():
+        if keyword in q:
+            matched_program = code
+            break
+
+    if not matched_program:
+        return docs
+
+    return [
+        d for d in docs
+        if matched_program in d.metadata.get("source", "").lower()
+    ]
 
 def _contains_markdown_table(text: str) -> bool:
     """Returns True if the response contains at least one Markdown table row."""
@@ -352,35 +387,64 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
     # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule', 'ojt', 'practicum', 'internship', 'immersion']
     )
-    max_chunks = 8 if is_curriculum_query else 3
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+    
+    ANALYTICAL_TRIGGERS = [
+        'most', 'least', 'highest', 'lowest', 'compare', 'which course',
+        'how many courses', 'most prerequisites', 'hardest', 'rank'
+    ]
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
 
     top_score = float("-inf")
     second_score = float("-inf")
 
-    if hybrid_results:
-        try:
-            pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-            scores = get_reranker().predict(pairs)
-            sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    if is_analytical_query and is_curriculum_query:
+        # Pull ALL chunks from Pinecone for this program, not just top-K
+        all_program_docs = filter_to_program(
+            prefer_latest_per_source(list(unique_docs_map.values())),
+            standalone_query
+        )
+        # Re-run retrieval with high K to get more chunks
+        big_retriever = get_retriever(k=50)
+        extra_docs = big_retriever.invoke(standalone_query)
+        extra_filtered = filter_to_program(
+            prefer_latest_per_source(extra_docs),
+            standalone_query
+        )
+        combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
+        top_reranked = list(combined.values())
+        
+        # Artificially pass the confidence gate since we successfully pulled the whole curriculum
+        if top_reranked:
+            top_score = 10.0 
             
-            top_score = float(scores[sorted_indices[0]])
-            if len(sorted_indices) > 1:
-                second_score = float(scores[sorted_indices[1]])
-            
-            # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
-            # Step 7's Three-Tier logic will handle the confidence check.
-
-            top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
-        except Exception as e:
-            logger.error(f"Reranking failed: {e}")
-            top_reranked = hybrid_results[:RERANKER_TOP_K]
+        logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
+        
     else:
-        top_reranked = []
+        max_chunks = 8 if is_curriculum_query else 3
+        hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+
+        if hybrid_results:
+            try:
+                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
+                scores = get_reranker().predict(pairs)
+                sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                
+                top_score = float(scores[sorted_indices[0]])
+                if len(sorted_indices) > 1:
+                    second_score = float(scores[sorted_indices[1]])
+                
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+            except Exception as e:
+                logger.error(f"Reranking failed: {e}")
+                top_reranked = hybrid_results[:RERANKER_TOP_K]
+        else:
+            top_reranked = []
     
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
@@ -404,8 +468,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
-    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University.
-Answer the student's question using ONLY the context below. Be friendly but direct.
+    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
+
+Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
@@ -491,6 +556,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         if not final_verified_response:
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
+
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
         # Fix inline numbered lists
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
@@ -532,6 +599,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
+
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
 

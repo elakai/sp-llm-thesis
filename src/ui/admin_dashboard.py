@@ -95,7 +95,7 @@ def render_indexed_documents_view():
                     if f.size > 50 * 1024 * 1024:  # 50 MB
                         st.warning(f"Note: **{f.name}** is over 50 MB. This may take a while to process.")
 
-            if st.button("Upload and Index", type="primary", disabled=not uploaded_files, use_container_width=True):
+            if st.button("Upload and Index", type="primary", disabled=not uploaded_files, width="stretch"):
                 total = len(uploaded_files)
                 progress = st.progress(0, text=f"Starting… 0 / {total} files")
                 status_box = st.empty()
@@ -175,7 +175,7 @@ def render_indexed_documents_view():
                         "Date Indexed": st.column_config.TextColumn("Date Indexed", disabled=True, width="medium"),
                     },
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     height=dynamic_height,
                     key=f"doc_table_editor_{st.session_state['table_key']}"
                 )
@@ -188,13 +188,13 @@ def render_indexed_documents_view():
                 btn_left, spacer, btn_right = st.columns([2, 5, 2])
                 
                 with btn_left:
-                    if st.button("Select All", use_container_width=True):
+                    if st.button("Select All", width="stretch"):
                         st.session_state["selected_docs"] = set(manifest.keys())
                         st.session_state["table_key"] += 1  
                         st.rerun()
                         
                 with btn_right:
-                    if st.button("Deselect All", use_container_width=True):
+                    if st.button("Deselect All", width="stretch"):
                         st.session_state["selected_docs"] = set()
                         st.session_state["table_key"] += 1 
                         st.rerun()
@@ -210,22 +210,22 @@ def render_indexed_documents_view():
                     
                     with c_insp:
                         if len(selected) == 1:
-                            if st.button("Inspect LLM Chunks", use_container_width=True):
+                            if st.button("Inspect LLM Chunks", width="stretch"):
                                 st.session_state["inspect_doc"] = list(selected)[0]
                                 st.session_state["confirm_bulk_delete"] = False
                                 st.rerun()
                         else:
-                            st.button("Inspect LLM Chunks", use_container_width=True, disabled=True, help="Please Select Exactly ONE Document to Inspect")
+                            st.button("Inspect LLM Chunks", width="stretch", disabled=True, help="Please Select Exactly ONE Document to Inspect")
                             
                     with c_del:
                         if not st.session_state["confirm_bulk_delete"]:
-                            if st.button("Delete Selected Documents", type="primary", use_container_width=True):
+                            if st.button("Delete Selected Documents", type="primary", width="stretch"):
                                 st.session_state["confirm_bulk_delete"] = True
                                 st.rerun()
                         else:
                             st.error("⚠️ Permanently delete these documents? This action cannot be undone.")
                             col_y, col_n = st.columns([1, 1])
-                            if col_y.button("Yes, delete", type="primary", use_container_width=True):
+                            if col_y.button("Yes, delete", type="primary", width="stretch"):
                                 progress = st.progress(0, text="Deleting…")
                                 deleted, failed = 0, 0
                                 files_to_delete = list(selected)
@@ -252,7 +252,7 @@ def render_indexed_documents_view():
                                     del st.session_state["inspect_doc"]
                                 st.rerun()
                                 
-                            if col_n.button("Cancel", use_container_width=True):
+                            if col_n.button("Cancel", width="stretch"):
                                 st.session_state["confirm_bulk_delete"] = False
                                 st.rerun()
 
@@ -330,7 +330,7 @@ def render_indexed_documents_view():
                 algo = c1.selectbox("Algorithm", ["PCA", "t-SNE"], help="PCA is faster and shows overall variance. t-SNE is slower but creates tighter local clusters.")
                 dims = c2.selectbox("Dimensions", [2, 3], index=1)
                 
-                if st.button("Generate Knowledge Map", type="primary", use_container_width=True):
+                if st.button("Generate Knowledge Map", type="primary", width="stretch"):
                     with st.spinner(f"Extracting Vectors from Pinecone and Running {algo}..."):
                         try:
                             vectorstore = get_vectorstore()
@@ -416,7 +416,7 @@ def render_indexed_documents_view():
                                         )
                                     )
                                 
-                                st.plotly_chart(fig, use_container_width=True)
+                                st.plotly_chart(fig, width="stretch")
                                 st.success(f"Successfully Mapped {len(matches)} Vector Chunks into {dims}D Space!")
 
                         except Exception as e:
@@ -430,7 +430,7 @@ def render_indexed_documents_view():
                 </div>
             """, unsafe_allow_html=True)
 
-            if st.button("Verify Database Sync", use_container_width=True):
+            if st.button("Verify Database Sync", width="stretch"):
                 with st.spinner("Checking sync status…"):
                     sync_result = verify_sync()
                     if sync_result:
@@ -455,14 +455,14 @@ def render_indexed_documents_view():
                 st.session_state["confirm_purge_all"] = False
 
             if not st.session_state["confirm_purge_all"]:
-                if st.button("Purge ALL Vectors from Database", type="primary", use_container_width=True):
+                if st.button("Purge ALL Vectors from Database", type="primary", width="stretch"):
                     st.session_state["confirm_purge_all"] = True
                     st.rerun()
             else:
                 st.warning("This will DELETE EVERY vector from the Pinecone index and clear the manifest.")
                 confirm_text = st.text_input('Type **DELETE ALL** to confirm:', key="purge_confirm_text")
                 c1, c2 = st.columns(2)
-                if c1.button("Permanently Execute Purge", type="primary", use_container_width=True):
+                if c1.button("Permanently Execute Purge", type="primary", width="stretch"):
                     if confirm_text == "DELETE ALL":
                         with st.spinner("Purging…"):
                             ok, msg = purge_all_vectors()
@@ -479,7 +479,7 @@ def render_indexed_documents_view():
                         st.rerun()
                     else:
                         st.error('Please type "DELETE ALL" exactly to confirm.')
-                if c2.button("Cancel", use_container_width=True):
+                if c2.button("Cancel", width="stretch"):
                     st.session_state["confirm_purge_all"] = False
                     st.rerun()
 
@@ -653,7 +653,7 @@ def render_admin_view():
                     display_table = display_table.rename(columns=rename_dict)
                     
                     # ── INCREASED TO 500 ROWS ──
-                    st.dataframe(display_table.head(500), use_container_width=True, hide_index=True)
+                    st.dataframe(display_table.head(500), width="stretch", hide_index=True)
                 else:
                     st.info("No user feedback logs found.")
 
@@ -786,7 +786,7 @@ def render_admin_view():
                             mode='lines+markers', 
                             marker=dict(size=8, color='#FD9001')
                         )
-                        st.plotly_chart(fig_dau, use_container_width=True)
+                        st.plotly_chart(fig_dau, width="stretch")
                     else:
                         dau_fallback = dau.rename(columns={'user_email': 'Number of Users'}).set_index('date')
                         st.line_chart(dau_fallback, y="Number of Users")
@@ -839,7 +839,7 @@ def render_admin_view():
                                         annotations=[dict(text=f"{helpfulness_score:.0f}%", x=0.5, y=0.5, font_size=36, font_weight="bold", showarrow=False)],
                                         height=280
                                     )
-                                    st.plotly_chart(fig_pie, use_container_width=True)
+                                    st.plotly_chart(fig_pie, width="stretch")
                                 else:
                                     st.metric("Overall Helpfulness", f"{helpfulness_score:.1f}%")
                                     feedback_df = pd.DataFrame({
@@ -930,7 +930,7 @@ def render_admin_view():
                                     height=350
                                 )
                                 fig_bad.update_traces(marker_color='#EF4444')
-                                st.plotly_chart(fig_bad, use_container_width=True)
+                                st.plotly_chart(fig_bad, width="stretch")
                             except ImportError:
                                 st.bar_chart(bad_df.set_index('Keyword'))
                         else:
@@ -951,7 +951,7 @@ def render_admin_view():
                             "query": "Failed Query", 
                             "user_email": "User"
                         })
-                        st.dataframe(failed_table, hide_index=True, use_container_width=True)
+                        st.dataframe(failed_table, hide_index=True, width="stretch")
                 else:
                     st.success("🎉 Great job! No negative feedback found in the logs yet.")
 
@@ -1010,7 +1010,7 @@ def render_admin_view():
                 st.caption("Your CSV must Contain Two Columns: `question` and `ground_truth`.")
                 eval_file = st.file_uploader("Upload Test Dataset", type=["csv"], label_visibility="collapsed")
 
-                if st.button("Run RAGAS Evaluation", type="primary", use_container_width=True, disabled=not eval_file):
+                if st.button("Run RAGAS Evaluation", type="primary", width="stretch", disabled=not eval_file):
                     progress_bar = st.progress(5, text="Initializing Evaluation Dataset...")
 
                     try:
@@ -1096,6 +1096,6 @@ def render_admin_view():
                             height=350,
                             hovermode="x unified"
                         )
-                        st.plotly_chart(fig_eval, use_container_width=True)
+                        st.plotly_chart(fig_eval, width="stretch")
                     except ImportError:
                         st.line_chart(df_runs.set_index('run_at')[['faithfulness', 'answer_correctness']])

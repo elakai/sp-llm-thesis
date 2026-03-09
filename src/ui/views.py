@@ -76,6 +76,7 @@ def render_history_view():
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
                         st.rerun()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ def render_chat_view():
     st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
-        st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
+        st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code.")
 
     # Initialize feedback tracking if not exists
     if "message_feedback" not in st.session_state:
@@ -197,13 +198,24 @@ def _process_user_query(query: str):
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
         try:
-            # Get the response stream
-            stream = generate_response(
-                query=query,
-                chat_history_list=st.session_state.messages
-            )
-
-            response = st.write_stream(stream)
+            # ── SPINNER & MANUAL MARKDOWN STREAMING (FIX 1) ──
+            with st.spinner("Thinking..."):
+                stream = generate_response(
+                    query=query,
+                    chat_history_list=st.session_state.messages
+                )
+                
+                response_placeholder = st.empty()
+                full_response = ""
+                
+                for chunk in stream:
+                    full_response += chunk
+                    # Add a blinking cursor effect while streaming
+                    response_placeholder.markdown(full_response + "▌")
+                
+                # Render the final markdown perfectly without the cursor
+                response_placeholder.markdown(full_response)
+                response = full_response
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
