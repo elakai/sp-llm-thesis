@@ -76,6 +76,7 @@ def render_history_view():
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
                         st.rerun()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,6 +182,14 @@ def render_chat_view():
                     </div>
                     """, unsafe_allow_html=True)
 
+                # ── RENDER SUGGESTED QUESTIONS (ONLY ON THE MOST RECENT MESSAGE) ──
+                if message.get("suggestions") and idx == len(st.session_state.messages) - 1:
+                    st.markdown("<br>**You might also want to ask:**", unsafe_allow_html=True)
+                    for q_idx, q in enumerate(message["suggestions"]):
+                        # Render button. If clicked, automatically send it as a query.
+                        if st.button(q, key=f"sugg_{idx}_{q_idx}"):
+                            _process_user_query(q)
+
     # Handle new user input
     if query := st.chat_input("Ask AXIsstant about rules, exemptions, or curriculum..."):
         _process_user_query(query)
@@ -211,27 +220,28 @@ def _process_user_query(query: str):
                     else:
                         response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
                 response_placeholder.markdown(full_response, unsafe_allow_html=True)
-                response = full_response
-
-            # ── NEW: Extract and render suggested questions as clickable buttons ──
+                
+            # ── EXTRACT & STRIP SUGGESTED QUESTIONS FROM RAW TEXT ──
             suggested_q_match = re.search(
                 r'\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
                 full_response
             )
+            
+            extracted_questions = []
+            clean_response = full_response
+            
             if suggested_q_match:
-                questions = re.findall(r'- (.+)', suggested_q_match.group(1))
-                if questions:
-                    st.markdown("**You might also want to ask:**")
-                    for q in questions:
-                        if st.button(q, key=f"sugg_{q[:30]}_{len(st.session_state.messages)}"):
-                            _process_user_query(q)
+                # Get the questions
+                extracted_questions = re.findall(r'- (.+)', suggested_q_match.group(1))
+                # Remove the raw markdown from the text so it doesn't print as a bulleted list
+                clean_response = full_response.replace(suggested_q_match.group(0), "").strip()
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
             
             log_conversation(
                 query=query,
-                response=response,
+                response=clean_response,
                 user_email=st.session_state.get("email", "Guest"),
                 session_id=st.session_state.get("session_id"),
                 context=current_context,
@@ -239,11 +249,18 @@ def _process_user_query(query: str):
             )
 
         except Exception as e:
-            response = f"⚠️ Backend Error: {str(e)}"
-            st.error(response)
+            clean_response = f"⚠️ Backend Error: {str(e)}"
+            extracted_questions = []
+            st.error(clean_response)
         
         asst_ts = datetime.now().strftime("%I:%M %p")
-        st.session_state.messages.append({"role": "assistant", "content": response, "timestamp": asst_ts})
+        # Save the Clean text and the Suggestions array into the dictionary
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": clean_response, 
+            "timestamp": asst_ts,
+            "suggestions": extracted_questions  # <--- Added to state here!
+        })
         
         # Update chat history - handle both new and continued conversations
         if "chat_history" not in st.session_state:
@@ -269,5 +286,5 @@ def _process_user_query(query: str):
             })
             st.session_state["active_convo_idx"] = len(chat_history) - 1
 
-        # Rerun to cleanly display from session state with feedback buttons
+        # Rerun to cleanly display from session state with feedback buttons and suggestion chips
         st.rerun()
