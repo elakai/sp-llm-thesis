@@ -438,6 +438,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
 
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
 
+11. **MULTIPLE TABLES**: When presenting multiple tables (e.g. different class periods), give each table a clear bold label above it like **1-hour class period** and put a blank line between each table. Never run tables together without labels.
+
 **Context:**
 {context}
 
@@ -494,7 +496,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
         
-        # Fix inline numbered lists
+        # ── NEW/UPDATED: Clean up Markdown Tables & Lists ──
+        final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
         # ── Generate suggested follow-up questions ──
@@ -530,6 +533,44 @@ Answer the student's question using ONLY the context below. Be friendly but dire
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
         yield "Something went wrong on my end. Give it another try in a bit!"
+
+def fix_markdown_tables(text: str) -> str:
+    lines = text.split('\n')
+    fixed = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        
+        # Add blank line before a table row if previous line is not blank/separator
+        if (line.strip().startswith('|') and 
+            fixed and 
+            fixed[-1].strip() and 
+            not fixed[-1].strip().startswith('|')):
+            fixed.append('')
+            
+        fixed.append(line)
+        
+        # Inject missing separator row after header
+        if (line.strip().startswith('|') and 
+            i + 1 < len(lines) and 
+            lines[i + 1].strip().startswith('|') and 
+            '---' not in lines[i + 1]):
+            
+            col_count = line.count('|') - 1
+            if col_count > 0:
+                separator = '|' + '---|' * col_count
+                fixed.append(separator)
+                
+        # Add blank line after a table ends (next line is not a table row)
+        if (line.strip().startswith('|') and 
+            i + 1 < len(lines) and 
+            lines[i + 1].strip() and 
+            not lines[i + 1].strip().startswith('|')):
+            fixed.append('')
+            
+        i += 1
+        
+    return '\n'.join(fixed)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
