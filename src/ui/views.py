@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import uuid
 import copy
@@ -203,6 +204,39 @@ def _process_user_query(query: str):
             )
 
             response = st.write_stream(stream)
+
+            current_context = st.session_state.get("last_retrieved_context", "")
+            performance_metrics = st.session_state.get("performance_metrics", {})
+            with st.chat_message("assistant", avatar="assets/logo.png"):
+        try:
+            with st.spinner("Thinking..."):
+                stream = generate_response(
+                    query=query,
+                    chat_history_list=st.session_state.messages
+                )
+                response_placeholder = st.empty()
+                full_response = ""
+                for chunk in stream:
+                    full_response += chunk
+                    if '|' in full_response:
+                        response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                    else:
+                        response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
+                response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                response = full_response
+
+            # ── NEW: Extract and render suggested questions as clickable buttons ──
+            suggested_q_match = re.search(
+                r'\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
+                full_response
+            )
+            if suggested_q_match:
+                questions = re.findall(r'- (.+)', suggested_q_match.group(1))
+                if questions:
+                    st.markdown("**You might also want to ask:**")
+                    for q in questions:
+                        if st.button(q, key=f"sugg_{q[:30]}_{len(st.session_state.messages)}"):
+                            _process_user_query(q)
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})

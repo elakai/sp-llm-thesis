@@ -1,3 +1,4 @@
+import json
 import time
 import numpy as np
 import streamlit as st
@@ -303,7 +304,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     # Handle greetings and off-topic early
     if intent in ["greeting", "off_topic"]:
-        msg = "Hello! I am AXIsstant..." if intent == "greeting" else "I am designed for CSEA questions only."
+        if intent == "greeting":
+            msg = "Hey! I'm AXIsstant, your CSEA academic assistant. Ask me anything about your curriculum, lab guidelines, or school policies!"
+        else:
+            msg = "That's a bit outside my expertise — I'm mainly built for CSEA-related questions. Try asking me about your curriculum, guidelines, or academic policies!"
+        
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
@@ -336,7 +341,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🛑 Early exit if no information is found
     if not all_docs:
         logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
-        yield "I checked the handbook, but I couldn't find any information about that."
+        yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
         return
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
@@ -404,28 +409,34 @@ Answer the student's question using ONLY the context below. Be friendly but dire
 
 ### RULES (FOLLOW STRICTLY):
 
-1. **NO FILLER**: Do NOT start with "To provide you with..." or "I'll need to refer to...". 
-   Go straight to the answer. Do NOT end with "If you need more information, please let me know."
+1. **TONE**: Write like a friendly, approachable upperclassman helping a 
+   classmate — casual but still accurate. Use natural conversational 
+   language. Contractions are fine ("you'll", "it's", "here's"). 
+   Never sound like a formal document or a customer service bot.
+   Do NOT start with "Great question!", "Good question!", or any 
+   sycophantic opener. Just talk like a normal person would.
 
-2. **LANGUAGE**: Always respond in English.
+2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or "Let me check the handbook for you..." or any variation.
 
-3. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales,
-   schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table.
-   Include specific course codes, titles, units, and prerequisites — not vague summaries like
-   "Multiple levels of design courses."
-   **SHOW EVERY ROW** — never truncate, summarize, or skip rows. If there are 15 grade levels, show all 15.
+3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino. 
 
-4. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
+4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. Include specific course codes, titles, units, and prerequisites. **SHOW EVERY ROW** — never truncate or skip rows.
 
-5. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice.
-   If the context genuinely lacks the answer, say:
-   'The retrieved documents do not contain this information.'
+5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 
-6. **BE CONCISE**: One short intro sentence, then the data. No repetition.
+6. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
 
-7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, retrieve ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) and present them together.
+7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) together in one response.
 
-**Context:**
+8. **BE CONCISE**: Get to the point quickly. One natural opener if it 
+   helps the flow, then the answer. No repetition, no padding, no 
+   sign-offs like "I hope this helps!" or "Feel free to ask more!".
+
+9. **LISTS**: When listing multiple items, always put each item on its own 
+   line with a blank line before the list starts. Never write list items 
+   inline like "1. Item 2. Item 3. Item".
+
+10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
 {context}
 
 **Chat History:**
@@ -439,7 +450,7 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         # Tier 1: Retrieval is too weak — Exit early to prevent hallucination
         if top_score < LOW_CONFIDENCE_THRESHOLD:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield "I checked the handbook but couldn't find enough specific information to answer that confidently. Please consult the CSEA Department Chair."
+            yield "I don't have enough info to answer that confidently — best to check with your department chair directly."
             return
 
         # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
@@ -481,19 +492,32 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
         
+        # Fix inline numbered lists
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
+        
+        # ── Generate suggested follow-up questions ──
+        suggested_questions = generate_suggested_questions(
+            standalone_query, final_verified_response, context
+        )
+        if suggested_questions:
+            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
+                "\n".join(f"- {q}" for q in suggested_questions)
+            final_verified_response += suggestions_md
+        
         # Final Streaming Loop with Fallback
         # Table-aware: yield entire response at once when a Markdown table is present
         # so Streamlit never renders a partial/broken table mid-stream.
-        # For plain text, stream sentence-by-sentence for a natural feel.
+        # For plain text, stream word-by-word for a natural feel.
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                sentences = re.split(r'(?<=[.!?])\s+', final_verified_response)
-                for sentence in sentences:
-                    if sentence.strip():
-                        yield sentence + " "
-                        time.sleep(0.03)
+                # Stream word by word so the warm opener lands first
+                words = final_verified_response.split(" ")
+                for word in words:
+                    yield word + " "
+                    time.sleep(STREAM_DELAY) 
+                    
         except GeneratorExit:
             # User navigated away; cleanup handled by Python GC
             return
@@ -503,9 +527,39 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
-        yield "I'm currently experiencing a technical issue. Please try again in a moment."
+        yield "Something went wrong on my end. Give it another try in a bit!"
 
+        
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
+
+def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
+    """
+    Generates 3 related follow-up questions based on the query, response, and context.
+    Returns a list of question strings, or empty list on failure.
+    """
+    try:
+        llm = get_generator_llm()
+        prompt = f"""Based on this conversation, suggest exactly 3 short follow-up questions 
+the user might want to ask next. Return ONLY the 3 questions as a JSON array of strings.
+No explanations, no numbering, no extra text. Just the JSON array.
+
+Example output: ["Question 1?", "Question 2?", "Question 3?"]
+
+User asked: {query}
+Assistant answered: {response[:300]}
+Available topic context: {context[:500]}
+
+Output (JSON array only):"""
+        
+        result = llm.invoke(prompt).content.strip()
+        # Strip markdown code fences if present
+        result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
+        questions = json.loads(result)
+        if isinstance(questions, list):
+            return [q for q in questions if isinstance(q, str)][:3]
+    except Exception as e:
+        logger.warning(f"Suggested questions failed: {e}")
+    return []
