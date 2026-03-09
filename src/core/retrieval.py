@@ -323,7 +323,20 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🚀 STEP 1: CACHE
     cached_answer = check_semantic_cache(standalone_query)
     if cached_answer:
-        for word in cached_answer.split(" "):
+        cached_with_suggestions = cached_answer
+        if "**You might also want to ask:**" not in cached_with_suggestions:
+            cached_suggestions = generate_suggested_questions(
+                standalone_query,
+                cached_answer,
+                st.session_state.get("last_retrieved_context", ""),
+            )
+            if cached_suggestions:
+                cached_with_suggestions += (
+                    "\n\n---\n**You might also want to ask:**\n"
+                    + "\n".join(f"- {q}" for q in cached_suggestions)
+                )
+
+        for word in cached_with_suggestions.split(" "):
             yield word + " "
             time.sleep(0.01)
         return
@@ -655,14 +668,85 @@ def get_llm_response(llm, prompt):
 
 def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
     """
-    Generates 3 related follow-up questions based on the query, response, and context.
-    Returns a list of question strings, or empty list on failure.
+    Generates 3 related follow-up questions that are answerable from the
+    current response + retrieved context.
+
+    We ask the LLM for candidates, then validate them so we avoid suggestions
+    that introduce topics/entities absent from retrieval evidence.
     """
+    def _extract_tokens(text: str) -> set[str]:
+        return {
+            tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
+            if len(tok) >= 4
+        }
+
+    def _extract_course_codes(text: str) -> set[str]:
+        return set(re.findall(r"\b[A-Z]{2,5}\d{3}\b", text.upper()))
+
+    def _cleanup_question(q: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(q or "")).strip()
+        if not cleaned:
+            return ""
+        if not cleaned.endswith("?"):
+            cleaned += "?"
+        return cleaned
+
+    def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
+        # Basic shape checks
+        if len(q) < 12 or len(q) > 140:
+            return False
+
+        q_codes = _extract_course_codes(q)
+        # Reject if question introduces unseen course codes.
+        if q_codes and not q_codes.issubset(source_codes):
+            return False
+
+        q_tokens = _extract_tokens(q)
+        overlap = q_tokens.intersection(source_tokens)
+        # Require enough lexical grounding in current evidence.
+        return len(overlap) >= 2
+
+    def _fallback_questions(source_text: str) -> list[str]:
+        source_lower = source_text.lower()
+        fallbacks: list[str] = []
+
+        if "prereq" in source_lower or "pre-requisite" in source_lower or "prerequisite" in source_lower:
+            fallbacks.append("What are the exact prerequisites mentioned here?")
+        if _extract_course_codes(source_text):
+            fallbacks.append("Can you list all course codes mentioned in this answer?")
+        if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
+            fallbacks.append("Can you summarize this by semester or category?")
+
+        # Always include safe, answerable fallbacks that rely on existing output.
+        fallbacks.extend([
+            "Can you summarize that in 3 short bullet points?",
+            "Which part of the available documents supports this answer?",
+            "What is the key takeaway I should remember from this?",
+        ])
+
+        # Deduplicate while preserving order, and cap at 3.
+        deduped = []
+        seen = set()
+        for q in fallbacks:
+            normalized = q.lower().strip()
+            if normalized not in seen:
+                deduped.append(q)
+                seen.add(normalized)
+            if len(deduped) == 3:
+                break
+        return deduped
+
     try:
         llm = get_generator_llm()
-        prompt = f"""Based on this conversation, suggest exactly 3 short follow-up questions 
-the user might want to ask next. Return ONLY the 3 questions as a JSON array of strings.
-No explanations, no numbering, no extra text. Just the JSON array.
+        prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
+USING ONLY the provided response and context.
+
+Hard constraints:
+- Do not introduce new facts, entities, course codes, policies, or assumptions.
+- Keep each question specific to details already present.
+- Keep each question under 16 words.
+- Return ONLY a JSON array of 3 strings.
+- No markdown, no numbering, no extra text.
 
 Example output: ["Question 1?", "Question 2?", "Question 3?"]
 
@@ -675,9 +759,44 @@ Output (JSON array only):"""
         result = llm.invoke(prompt).content.strip()
         # Strip markdown code fences if present
         result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
-        questions = json.loads(result)
-        if isinstance(questions, list):
-            return [q for q in questions if isinstance(q, str)][:3]
+        raw_questions = json.loads(result)
+
+        source_text = f"{response}\n{context}"
+        source_tokens = _extract_tokens(source_text)
+        source_codes = _extract_course_codes(source_text)
+
+        validated: list[str] = []
+        seen = set()
+
+        if isinstance(raw_questions, list):
+            for q in raw_questions:
+                cleaned = _cleanup_question(q)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                if _is_answerable_question(cleaned, source_tokens, source_codes):
+                    validated.append(cleaned)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        if len(validated) < 3:
+            for q in _fallback_questions(source_text):
+                key = q.lower()
+                if key not in seen:
+                    validated.append(q)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        return validated[:3]
     except Exception as e:
         logger.warning(f"Suggested questions failed: {e}")
-    return []
+    # Final fallback keeps UX stable even when suggestion generation fails.
+    return [
+        "Can you summarize that in 3 short bullet points?",
+        "Which part of the available documents supports this answer?",
+        "What is the key takeaway I should remember from this?",
+    ]

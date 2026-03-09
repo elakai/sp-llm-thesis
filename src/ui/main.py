@@ -10,7 +10,7 @@ _app_start_time = time.time()
 # 1. CONFIG (CRITICAL: Must be the very first Streamlit command)
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AXIsstant",
+    page_title="AXIstant",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -82,7 +82,7 @@ st.markdown(
 
 # Pre-load heavy ML resources on first cold start
 if "app_loaded" not in st.session_state:
-    with st.spinner("Starting AXIsstant… please wait"):
+    with st.spinner("Starting AXIstant… please wait"):
         from src.config.settings import get_embeddings, get_generator_llm
         get_embeddings()    # triggers model download/cache on first run
         get_generator_llm()
@@ -134,7 +134,9 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 if not st.session_state["chat_history_loaded"]:
-    user_history = load_chat_history(st.session_state["user_id"])
+    # chat_logs are stored by user_email, so load with email for refresh persistence.
+    history_owner = st.session_state.get("email") or st.session_state.get("user_id")
+    user_history = load_chat_history(history_owner)
     if user_history:
         st.session_state["chat_history"] = user_history
         
@@ -143,9 +145,10 @@ if not st.session_state["chat_history_loaded"]:
         if current_msgs and st.session_state.get("active_convo_idx") is None:
             # Look for a conversation that matches current messages
             for i, conv in enumerate(user_history):
-                if conv and len(conv) > 0 and len(current_msgs) > 0:
+                messages = conv.get("messages", []) if isinstance(conv, dict) else conv
+                if messages and len(current_msgs) > 0:
                     # Match by first message content
-                    if conv[0].get("content") == current_msgs[0].get("content"):
+                    if messages[0].get("content") == current_msgs[0].get("content"):
                         st.session_state["active_convo_idx"] = i
                         break
     st.session_state["chat_history_loaded"] = True
