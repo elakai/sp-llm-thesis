@@ -540,36 +540,43 @@ def fix_markdown_tables(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        
-        # Add blank line before a table row if previous line is not blank/separator
-        if (line.strip().startswith('|') and 
-            fixed and 
-            fixed[-1].strip() and 
-            not fixed[-1].strip().startswith('|')):
+        next_line = lines[i + 1] if i + 1 < len(lines) else ''
+
+        # Add blank line before a new table if previous line is non-empty, non-table
+        if (line.strip().startswith('|') and
+                fixed and
+                fixed[-1].strip() and
+                not fixed[-1].strip().startswith('|')):
             fixed.append('')
-            
+
         fixed.append(line)
-        
-        # Inject missing separator row after header
-        if (line.strip().startswith('|') and 
-            i + 1 < len(lines) and 
-            lines[i + 1].strip().startswith('|') and 
-            '---' not in lines[i + 1]):
-            
+
+        # Only inject separator if:
+        # 1. Current line is a table row
+        # 2. Next line is also a table row
+        # 3. Next line has NO separator yet
+        # 4. The line AFTER next is also a table row (confirms header + data pattern)
+        #    OR next line is the only remaining row
+        next_next_line = lines[i + 2] if i + 2 < len(lines) else ''
+        is_header_candidate = (
+            line.strip().startswith('|') and
+            next_line.strip().startswith('|') and
+            '---' not in next_line and
+            '---' not in line and
+            not any('---' in f for f in fixed[-3:])  # no separator already nearby
+        )
+        if is_header_candidate:
             col_count = line.count('|') - 1
             if col_count > 0:
-                separator = '|' + '---|' * col_count
-                fixed.append(separator)
-                
-        # Add blank line after a table ends (next line is not a table row)
-        if (line.strip().startswith('|') and 
-            i + 1 < len(lines) and 
-            lines[i + 1].strip() and 
-            not lines[i + 1].strip().startswith('|')):
+                fixed.append('|' + '---|' * col_count)
+
+        # Add blank line after table block ends
+        if (line.strip().startswith('|') and
+                next_line.strip() and
+                not next_line.strip().startswith('|')):
             fixed.append('')
-            
+
         i += 1
-        
     return '\n'.join(fixed)
 
 
