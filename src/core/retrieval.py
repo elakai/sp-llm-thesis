@@ -1,3 +1,4 @@
+import json
 import time
 import numpy as np
 import streamlit as st
@@ -338,7 +339,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     # Handle greetings and off-topic early
     if intent in ["greeting", "off_topic"]:
-        msg = "Hello! I am AXIsstant..." if intent == "greeting" else "I am designed for CSEA questions only."
+        if intent == "greeting":
+            msg = "Hey! I'm AXIsstant, your CSEA academic assistant. Ask me anything about your curriculum, lab guidelines, or school policies!"
+        else:
+            msg = "That's a bit outside my expertise — I'm mainly built for CSEA-related questions. Try asking me about your curriculum, guidelines, or academic policies!"
+        
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
@@ -371,7 +376,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🛑 Early exit if no information is found
     if not all_docs:
         logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
-        yield "I checked the handbook, but I couldn't find any information about that."
+        yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
         return
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
@@ -469,12 +474,12 @@ Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
-1. **TONE**: Be warm and natural but NEVER start with "Great question!", 
-   "Good question!", "Excellent question!", or any variation of that. 
-   It sounds fake and annoying. You can start directly with the answer, 
-   or use a very brief natural opener like "Sure!", "Here's what I found:", 
-   or "Based on the guidelines," — but only when it flows naturally. 
-   Most of the time, just answer directly.
+1. **TONE**: Write like a friendly, approachable upperclassman helping a 
+   classmate — casual but still accurate. Use natural conversational 
+   language. Contractions are fine ("you'll", "it's", "here's"). 
+   Never sound like a formal document or a customer service bot.
+   Do NOT start with "Great question!", "Good question!", or any 
+   sycophantic opener. Just talk like a normal person would.
 
 2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or "Let me check the handbook for you..." or any variation.
 
@@ -488,13 +493,17 @@ Answer the question using ONLY the context below.
 
 7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) together in one response.
 
-8. **BE CONCISE**: One short friendly opener, then the answer. No repetition.
+8. **BE CONCISE**: Get to the point quickly. One natural opener if it 
+   helps the flow, then the answer. No repetition, no padding, no 
+   sign-offs like "I hope this helps!" or "Feel free to ask more!".
 
 9. **LISTS**: When listing multiple items, always put each item on its own 
    line with a blank line before the list starts. Never write list items 
    inline like "1. Item 2. Item 3. Item".
 
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
+
+11. **MULTIPLE TABLES**: When presenting multiple tables (e.g. different class periods), give each table a clear bold label above it like **1-hour class period** and put a blank line between each table. Never run tables together without labels.
 
 **Context:**
 {context}
@@ -510,7 +519,7 @@ Answer the question using ONLY the context below.
         # Tier 1: Retrieval is too weak — Exit early to prevent hallucination
         if top_score < LOW_CONFIDENCE_THRESHOLD:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield "I checked the documents I currently have but couldn't find enough specific information to answer that confidently. Please consult your respective department chair directly."
+            yield "I don't have enough info to answer that confidently — best to check with your department chair directly."
             return
 
         # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
@@ -554,15 +563,27 @@ Answer the question using ONLY the context below.
 
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
+        # ── NEW/UPDATED: Clean up Markdown Tables & Lists ──
+        final_verified_response = fix_markdown_tables(final_verified_response)
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
+        
+        # ── Generate suggested follow-up questions ──
+        suggested_questions = generate_suggested_questions(
+            standalone_query, final_verified_response, context
+        )
+        if suggested_questions:
+            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
+                "\n".join(f"- {q}" for q in suggested_questions)
+            final_verified_response += suggestions_md
+        
         # Final Streaming Loop with Fallback
         # Table-aware: yield entire response at once when a Markdown table is present
         # so Streamlit never renders a partial/broken table mid-stream.
-        # For plain text, stream sentence-by-sentence for a natural feel.
+        # For plain text, stream word-by-word for a natural feel.
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                # ── WORD-BY-WORD STREAMING (FIX 2) ──
                 # Stream word by word so the warm opener lands first
                 words = final_verified_response.split(" ")
                 for word in words:
@@ -578,10 +599,85 @@ Answer the question using ONLY the context below.
             
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
-        yield "I'm currently experiencing a technical issue. Please try again in a moment."
+        yield "Something went wrong on my end. Give it another try in a bit!"
+
+def fix_markdown_tables(text: str) -> str:
+    lines = text.split('\n')
+    fixed = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        next_line = lines[i + 1] if i + 1 < len(lines) else ''
+
+        # Add blank line before a new table if previous line is non-empty, non-table
+        if (line.strip().startswith('|') and
+                fixed and
+                fixed[-1].strip() and
+                not fixed[-1].strip().startswith('|')):
+            fixed.append('')
+
+        fixed.append(line)
+
+        # Only inject separator if:
+        # 1. Current line is a table row
+        # 2. Next line is also a table row
+        # 3. Next line has NO separator yet
+        # 4. The line AFTER next is also a table row (confirms header + data pattern)
+        #    OR next line is the only remaining row
+        next_next_line = lines[i + 2] if i + 2 < len(lines) else ''
+        is_header_candidate = (
+            line.strip().startswith('|') and
+            next_line.strip().startswith('|') and
+            '---' not in next_line and
+            '---' not in line and
+            not any('---' in f for f in fixed[-3:])  # no separator already nearby
+        )
+        if is_header_candidate:
+            col_count = line.count('|') - 1
+            if col_count > 0:
+                fixed.append('|' + '---|' * col_count)
+
+        # Add blank line after table block ends
+        if (line.strip().startswith('|') and
+                next_line.strip() and
+                not next_line.strip().startswith('|')):
+            fixed.append('')
+
+        i += 1
+    return '\n'.join(fixed)
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
 
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
+
+def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
+    """
+    Generates 3 related follow-up questions based on the query, response, and context.
+    Returns a list of question strings, or empty list on failure.
+    """
+    try:
+        llm = get_generator_llm()
+        prompt = f"""Based on this conversation, suggest exactly 3 short follow-up questions 
+the user might want to ask next. Return ONLY the 3 questions as a JSON array of strings.
+No explanations, no numbering, no extra text. Just the JSON array.
+
+Example output: ["Question 1?", "Question 2?", "Question 3?"]
+
+User asked: {query}
+Assistant answered: {response[:300]}
+Available topic context: {context[:500]}
+
+Output (JSON array only):"""
+        
+        result = llm.invoke(prompt).content.strip()
+        # Strip markdown code fences if present
+        result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
+        questions = json.loads(result)
+        if isinstance(questions, list):
+            return [q for q in questions if isinstance(q, str)][:3]
+    except Exception as e:
+        logger.warning(f"Suggested questions failed: {e}")
+    return []
