@@ -197,18 +197,6 @@ def _process_user_query(query: str):
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
         try:
-            # Get the response stream
-            stream = generate_response(
-                query=query,
-                chat_history_list=st.session_state.messages
-            )
-
-            response = st.write_stream(stream)
-
-            current_context = st.session_state.get("last_retrieved_context", "")
-            performance_metrics = st.session_state.get("performance_metrics", {})
-            with st.chat_message("assistant", avatar="assets/logo.png"):
-        try:
             with st.spinner("Thinking..."):
                 stream = generate_response(
                     query=query,
