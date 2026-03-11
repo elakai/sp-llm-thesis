@@ -81,19 +81,6 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
         return query
 
 def check_semantic_cache(query: str, threshold: float = SEMANTIC_CACHE_THRESHOLD) -> str:
-    """
-    Checks the in-process semantic cache for a response to a near-identical
-    prior query.  Uses cosine similarity between all-MiniLM-L6-v2 embeddings.
-
-    Args:
-        query:     The (already contextualized) standalone query string.
-        threshold: Minimum cosine similarity for a cache hit.  Defaults to
-                   ``SEMANTIC_CACHE_THRESHOLD`` (0.88).  Set higher for stricter
-                   matching; lower values risk returning off-topic cached answers.
-
-    Returns:
-        The cached response string on a hit, or ``None`` on a miss.
-    """
     if not GLOBAL_CACHE: return None
     try:
         emb_model = get_embeddings()
@@ -109,12 +96,6 @@ def check_semantic_cache(query: str, threshold: float = SEMANTIC_CACHE_THRESHOLD
     return None
 
 def add_to_cache(query: str, response: str):
-    """
-    Embeds ``query`` and stores the (embedding, response) pair in ``GLOBAL_CACHE``.
-    Uses a fixed-size FIFO eviction policy (max 50 entries) to stay within
-    Streamlit Cloud RAM limits.
-    Failures are logged as warnings and do not interrupt the response stream.
-    """
     try:
         emb_model = get_embeddings()
         query_emb = np.array(emb_model.embed_query(query))
@@ -132,18 +113,6 @@ def invalidate_cache():
 # 2. HELPER FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
-    """
-    Formats the last 6 non-system messages into a plain-text "User: ... \nAssistant: ..."
-    block for injection into the LLM prompt.  Curly braces in message content
-    are escaped to ``{{`` / ``}}`` to prevent Python f-string substitution errors.
-
-    Args:
-        messages: Full conversation list including the system prompt at index 0.
-
-    Returns:
-        A newline-joined string of the last 6 turns, or "No previous context."
-        if the conversation contains only the system prompt.
-    """
     formatted_history = []
     history_to_process = messages[1:] if len(messages) > 1 else []
     for msg in history_to_process[-6:]: 
@@ -152,28 +121,11 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
         formatted_history.append(f"{role}: {content}")
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
-
 def _tokenize(text: str) -> list:
     """Strip punctuation before BM25 tokenization so 'requirement.' matches 'requirement'."""
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
 
-
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
-    """
-    Re-ranks documents using BM25 combined with a positional bias score.
-
-    The positional score (POSITIONAL_SCORE_WEIGHT * remaining position) encodes
-    a mild preference for Pinecone’s original ANN rank, on the assumption that
-    semantic similarity already provides a reasonable prior ordering.  The
-    CrossEncoder in Step 5 provides the definitive final ranking.
-
-    Args:
-        query: The user’s standalone query string.
-        docs:  Candidate documents from Pinecone retrieval.
-
-    Returns:
-        Top RETRIEVAL_K documents sorted by combined BM25 + positional score.
-    """
     if not docs: return []
     try:
         tokenized_docs = [_tokenize(doc.page_content) for doc in docs]
@@ -194,11 +146,6 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
         return docs[:RETRIEVAL_K]
 
 def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> List[Document]:
-    """
-    Limits chunks from any single source to max_per_source before CrossEncoder scoring.
-    Ensures cross-document queries retrieve content from multiple files.
-    Preserves BM25 rank ordering within each source group.
-    """
     source_counts: Dict[str, int] = {}
     diverse_docs = []
     for doc in docs:
@@ -209,25 +156,45 @@ def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> L
             source_counts[source] = count + 1
     return diverse_docs
 
+def filter_to_program(docs: List[Document], query: str) -> List[Document]:
+    PROGRAM_KEYWORDS = {
+        'computer engineering': 'cpe',
+        'cpe': 'cpe',
+        'civil engineering': 'ce',
+        'bs ce': 'ce',
+        'electronics engineering': 'ece',
+        'bs ece': 'ece',
+        'architecture': 'arch',
+        'bs arch': 'arch',
+        'biology': 'bio',
+        'bs bio': 'bio',
+        'mathematics': 'math',
+        'bs math': 'math',
+        'environmental management': 'em',
+        'bs em': 'em',
+    }
+    q = query.lower()
+    matched_program = None
+    for keyword, code in PROGRAM_KEYWORDS.items():
+        if keyword in q:
+            matched_program = code
+            break
+
+    if not matched_program:
+        return docs
+
+    return [
+        d for d in docs
+        if matched_program in d.metadata.get("source", "").lower()
+    ]
 
 def _contains_markdown_table(text: str) -> bool:
-    """Returns True if the response contains at least one Markdown table row."""
     return any(
         '|' in line and line.strip().startswith('|')
         for line in text.strip().split('\n')
     )
 
-
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
-    """
-    Filters documents so only chunks from the most recently ingested version
-    of each source file are kept.
-
-    Comparison is done via the ``uploaded_at`` Unix timestamp injected during
-    ingestion.  If two ingestions of the same file share the same timestamp
-    (edge case), all chunks are retained.  Documents lacking ``uploaded_at``
-    default to 0 and are superseded by any version that has the field set.
-    """
     if not docs: return []
     grouped: Dict[str, List[Document]] = {}
     for doc in docs:
@@ -245,32 +212,6 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None):
-    """
-    Main RAG generator pipeline.  A Streamlit generator function (uses ``yield``).
-
-    Pipeline stages:
-        0. Query validation and PII redaction (guardrails)
-        1. Semantic cache check
-        2. Intent routing (greeting / off_topic / search)
-        3. Query decomposition for multi-topic questions
-        4. Parallel Pinecone retrieval with dynamic K
-        5. BM25 hybrid rerank + CrossEncoder rerank
-        6. Context assembly
-        7. Three-tier confidence gating:
-               Tier 1 (score < LOW_CONFIDENCE_THRESHOLD)  → refuse to answer
-               Tier 2 (moderate confidence)               → Critic LLM verifies draft
-               Tier 3 (score ≥ HIGH_CONFIDENCE_THRESHOLD) → stream draft directly
-        8. Metrics recording, cache population, and word-by-word streaming
-
-    Args:
-        query:             Raw user query string from the Streamlit text input.
-        chat_history_list: List of {"role": str, "content": str} dicts representing
-                           the full conversation so far (including the system prompt
-                           at index 0 if present).
-
-    Yields:
-        str: Individual words (space-appended) for streaming display.
-    """
     if chat_history_list is None:
         chat_history_list = []
     start_time = time.time()
@@ -288,8 +229,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🚀 STEP 1: CACHE
     cached_answer = check_semantic_cache(standalone_query)
     if cached_answer:
-        for word in cached_answer.split(" "):
-            yield word + " "
+        # [FIX 1 & 3]: Removed suggestion gen here, stream in chunks of 3 for speed
+        words = cached_answer.split(" ")
+        chunk_size = 3
+        for i in range(0, len(words), chunk_size):
+            yield " ".join(words[i:i+chunk_size]) + " "
             time.sleep(0.01)
         return
 
@@ -351,36 +295,91 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
-    # Detect curriculum queries and allow more chunks per source
+    
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule', 'ojt', 'practicum', 'internship', 'immersion']
     )
-    max_chunks = 8 if is_curriculum_query else 3
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+    
+    ANALYTICAL_TRIGGERS = [
+        'most', 'least', 'highest', 'lowest', 'compare', 'which course',
+        'how many courses', 'most prerequisites', 'hardest', 'rank'
+    ]
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
 
     top_score = float("-inf")
     second_score = float("-inf")
 
-    if hybrid_results:
-        try:
-            pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-            scores = get_reranker().predict(pairs)
-            sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    if is_analytical_query and is_curriculum_query:
+        # Pull ALL chunks from Pinecone for this program, not just top-K
+        all_program_docs = filter_to_program(
+            prefer_latest_per_source(list(unique_docs_map.values())),
+            standalone_query
+        )
+        # Re-run retrieval with high K to get more chunks
+        big_retriever = get_retriever(k=50)
+        extra_docs = big_retriever.invoke(standalone_query)
+        extra_filtered = filter_to_program(
+            prefer_latest_per_source(extra_docs),
+            standalone_query
+        )
+        combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
+        top_reranked = list(combined.values())
+        
+        # Artificially pass the confidence gate since we successfully pulled the whole curriculum
+        if top_reranked:
+            top_score = 10.0 
             
-            top_score = float(scores[sorted_indices[0]])
-            if len(sorted_indices) > 1:
-                second_score = float(scores[sorted_indices[1]])
-            
-            # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
-            # Step 7's Three-Tier logic will handle the confidence check.
-
-            top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
-        except Exception as e:
-            logger.error(f"Reranking failed: {e}")
-            top_reranked = hybrid_results[:RERANKER_TOP_K]
+        logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
+        
     else:
-        top_reranked = []
+        max_chunks = 8 if is_curriculum_query else 3
+        hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+
+        if hybrid_results:
+            try:
+                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
+                scores = get_reranker().predict(pairs)
+                sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                
+                top_score = float(scores[sorted_indices[0]])
+                if len(sorted_indices) > 1:
+                    second_score = float(scores[sorted_indices[1]])
+                
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+            except Exception as e:
+                logger.error(f"Reranking failed: {e}")
+                top_reranked = hybrid_results[:RERANKER_TOP_K]
+        else:
+            top_reranked = []
+            
+    # ── NEW: Facility Query Detector & Directory Injection ──
+    is_facility_query = any(
+        kw in standalone_query.lower()
+        for kw in [
+            'room', 'building', 'floor', 'lab', 'laboratory', 
+            'office', 'located', 'where is', 'campus', 'facility'
+        ]
+    )
+
+    if is_facility_query:
+        # [FIX 5]: Skip extra retrieval if directory content is already present
+        already_has_directory = any(
+            'directory' in doc.metadata.get('source', '').lower() or
+            'campus' in doc.metadata.get('source', '').lower()
+            for doc in top_reranked
+        )
+        if not already_has_directory:
+            directory_retriever = get_retriever(k=5)
+            directory_docs = directory_retriever.invoke("campus building directory acronym")
+            directory_filtered = prefer_latest_per_source(directory_docs)
+            # Merge into top_reranked without duplicates
+            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            for doc in directory_filtered:
+                if hash(doc.page_content) not in existing_hashes:
+                    top_reranked.append(doc)
+                    existing_hashes.add(hash(doc.page_content))
+            logger.info(f"🏢 Facility query — appended {len(directory_filtered)} campus directory chunks")
     
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
@@ -390,8 +389,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         f"(Cutoffs — low: {LOW_CONFIDENCE_THRESHOLD}, high: {HIGH_CONFIDENCE_THRESHOLD}, "
         f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
-    logger.info(f"📄 Top chunks: {[(doc.metadata.get('year','?'), doc.metadata.get('semester','?')) for doc in top_reranked]}")
-
+    
     # 🚀 STEP 6: BUILD CONTEXT
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
@@ -404,8 +402,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
-    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University.
-Answer the student's question using ONLY the context below. Be friendly but direct.
+    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
+
+Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
@@ -439,6 +438,18 @@ Answer the student's question using ONLY the context below. Be friendly but dire
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
 
 11. **MULTIPLE TABLES**: When presenting multiple tables (e.g. different class periods), give each table a clear bold label above it like **1-hour class period** and put a blank line between each table. Never run tables together without labels.
+
+12. **LINKS**: Never paste raw URLs. Always format links as descriptive 
+    markdown like [Download the official curriculum here](url) or 
+    [Fill out the form here](url). The link text should describe what 
+    the link does, not the URL itself.
+
+13. **ROOM CODES**: When mentioning a room code like "EB213", always 
+    break it down for the user: the letters are the building acronym 
+    (e.g. EB = Engineering Building), the first digit is the floor 
+    number, and the remaining digits are the room number. So EB213 
+    means Engineering Building, 2nd floor, Room 13. Only do this if 
+    the building name is available in the context — never guess.
 
 **Context:**
 {context}
@@ -490,15 +501,15 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             "total_latency": time.time() - start_time,
             "confidence_score": float(top_score)
         }
-        add_to_cache(standalone_query, final_verified_response)
 
         if not final_verified_response:
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
-        
-        # ── NEW/UPDATED: Clean up Markdown Tables & Lists ──
+
+        # ── Clean up Markdown Tables, Lists, and Links ──
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
+        final_verified_response = format_raw_links(final_verified_response)
         
         # ── Generate suggested follow-up questions ──
         suggested_questions = generate_suggested_questions(
@@ -508,19 +519,22 @@ Answer the student's question using ONLY the context below. Be friendly but dire
             suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
                 "\n".join(f"- {q}" for q in suggested_questions)
             final_verified_response += suggestions_md
+            
+        # [FIX 6]: Cache added here so suggestions are included in the cache
+        add_to_cache(standalone_query, final_verified_response)
         
         # Final Streaming Loop with Fallback
         # Table-aware: yield entire response at once when a Markdown table is present
         # so Streamlit never renders a partial/broken table mid-stream.
-        # For plain text, stream word-by-word for a natural feel.
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                # Stream word by word so the warm opener lands first
+                # [FIX 3]: Stream in chunks of 3 words for faster UX
                 words = final_verified_response.split(" ")
-                for word in words:
-                    yield word + " "
+                chunk_size = 3
+                for i in range(0, len(words), chunk_size):
+                    yield " ".join(words[i:i+chunk_size]) + " "
                     time.sleep(STREAM_DELAY) 
                     
         except GeneratorExit:
@@ -535,6 +549,10 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         yield "Something went wrong on my end. Give it another try in a bit!"
 
 def fix_markdown_tables(text: str) -> str:
+    # [FIX 2]: Early return to save processing on non-table text
+    if '|' not in text:
+        return text
+        
     lines = text.split('\n')
     fixed = []
     i = 0
@@ -579,6 +597,33 @@ def fix_markdown_tables(text: str) -> str:
         i += 1
     return '\n'.join(fixed)
 
+def format_raw_links(text: str) -> str:
+    """Converts any leftover raw URLs into clean markdown links."""
+    # [FIX 4]: Better lookbehind regex for URLs
+    raw_url_pattern = re.compile(
+        r'(?<!\()'
+        r'(https?://[^\s\)\]\,\"\']+)'
+    )
+    def replace_url(match):
+        url = match.group(1)
+        full_text = text
+        pos = match.start()
+        # Check if already wrapped in markdown link [label](url)
+        preceding = full_text[max(0, pos-50):pos]
+        if re.search(r'\[[^\]]*\]\($', preceding):
+            return url  # already formatted, leave it
+            
+        # Generate a human-readable label from the URL
+        if 'supabase' in url or 'storage' in url:
+            label = 'Download here'
+        elif 'form' in url or 'docs.google' in url:
+            label = 'Access the form here'
+        elif 'drive.google' in url:
+            label = 'View document here'
+        else:
+            label = 'View link here'
+        return f'[{label}]({url})'
+    return raw_url_pattern.sub(replace_url, text)
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
@@ -587,14 +632,85 @@ def get_llm_response(llm, prompt):
 
 def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
     """
-    Generates 3 related follow-up questions based on the query, response, and context.
-    Returns a list of question strings, or empty list on failure.
+    Generates 3 related follow-up questions that are answerable from the
+    current response + retrieved context.
+
+    We ask the LLM for candidates, then validate them so we avoid suggestions
+    that introduce topics/entities absent from retrieval evidence.
     """
+    def _extract_tokens(text: str) -> set[str]:
+        return {
+            tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
+            if len(tok) >= 4
+        }
+
+    def _extract_course_codes(text: str) -> set[str]:
+        return set(re.findall(r"\b[A-Z]{2,5}\d{3}\b", text.upper()))
+
+    def _cleanup_question(q: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(q or "")).strip()
+        if not cleaned:
+            return ""
+        if not cleaned.endswith("?"):
+            cleaned += "?"
+        return cleaned
+
+    def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
+        # Basic shape checks
+        if len(q) < 12 or len(q) > 140:
+            return False
+
+        q_codes = _extract_course_codes(q)
+        # Reject if question introduces unseen course codes.
+        if q_codes and not q_codes.issubset(source_codes):
+            return False
+
+        q_tokens = _extract_tokens(q)
+        overlap = q_tokens.intersection(source_tokens)
+        # Require enough lexical grounding in current evidence.
+        return len(overlap) >= 2
+
+    def _fallback_questions(source_text: str) -> list[str]:
+        source_lower = source_text.lower()
+        fallbacks: list[str] = []
+
+        if "prereq" in source_lower or "pre-requisite" in source_lower or "prerequisite" in source_lower:
+            fallbacks.append("What are the exact prerequisites mentioned here?")
+        if _extract_course_codes(source_text):
+            fallbacks.append("Can you list all course codes mentioned in this answer?")
+        if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
+            fallbacks.append("Can you summarize this by semester or category?")
+
+        # Always include safe, answerable fallbacks that rely on existing output.
+        fallbacks.extend([
+            "Can you summarize that in 3 short bullet points?",
+            "Which part of the available documents supports this answer?",
+            "What is the key takeaway I should remember from this?",
+        ])
+
+        # Deduplicate while preserving order, and cap at 3.
+        deduped = []
+        seen = set()
+        for q in fallbacks:
+            normalized = q.lower().strip()
+            if normalized not in seen:
+                deduped.append(q)
+                seen.add(normalized)
+            if len(deduped) == 3:
+                break
+        return deduped
+
     try:
         llm = get_generator_llm()
-        prompt = f"""Based on this conversation, suggest exactly 3 short follow-up questions 
-the user might want to ask next. Return ONLY the 3 questions as a JSON array of strings.
-No explanations, no numbering, no extra text. Just the JSON array.
+        prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
+USING ONLY the provided response and context.
+
+Hard constraints:
+- Do not introduce new facts, entities, course codes, policies, or assumptions.
+- Keep each question specific to details already present.
+- Keep each question under 16 words.
+- Return ONLY a JSON array of 3 strings.
+- No markdown, no numbering, no extra text.
 
 Example output: ["Question 1?", "Question 2?", "Question 3?"]
 
@@ -607,9 +723,44 @@ Output (JSON array only):"""
         result = llm.invoke(prompt).content.strip()
         # Strip markdown code fences if present
         result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
-        questions = json.loads(result)
-        if isinstance(questions, list):
-            return [q for q in questions if isinstance(q, str)][:3]
+        raw_questions = json.loads(result)
+
+        source_text = f"{response}\n{context}"
+        source_tokens = _extract_tokens(source_text)
+        source_codes = _extract_course_codes(source_text)
+
+        validated: list[str] = []
+        seen = set()
+
+        if isinstance(raw_questions, list):
+            for q in raw_questions:
+                cleaned = _cleanup_question(q)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                if _is_answerable_question(cleaned, source_tokens, source_codes):
+                    validated.append(cleaned)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        if len(validated) < 3:
+            for q in _fallback_questions(source_text):
+                key = q.lower()
+                if key not in seen:
+                    validated.append(q)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        return validated[:3]
     except Exception as e:
         logger.warning(f"Suggested questions failed: {e}")
-    return []
+    # Final fallback keeps UX stable even when suggestion generation fails.
+    return [
+        "Can you summarize that in 3 short bullet points?",
+        "Which part of the available documents supports this answer?",
+        "What is the key takeaway I should remember from this?",
+    ]

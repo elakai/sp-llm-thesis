@@ -23,6 +23,27 @@ def _get_logo_base64() -> str:
 def render_history_view():
     """Renders the chat history view with conversation list and controls."""
     st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>Chat History</h1>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        /* Scope to widgets keyed like delete_0, delete_1, ... */
+        [class*="st-key-delete_"] button {
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            border: 1px solid #b91c1c !important;
+        }
+        [class*="st-key-delete_"] button:hover {
+            background-color: #b91c1c !important;
+            border-color: #991b1b !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-delete_"] button:focus {
+            box-shadow: 0 0 0 0.2rem rgba(220, 38, 38, 0.35) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
     
     if not st.session_state.get("chat_history"):
@@ -52,7 +73,7 @@ def render_history_view():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("📂 Continue", key=f"load_{i}"):
+                    if st.button("Continue", key=f"load_{i}"):
                         # Pass only the messages list to the chat window
                         st.session_state["messages"] = copy.deepcopy(messages)
                         st.session_state["active_convo_idx"] = actual_idx
@@ -61,7 +82,7 @@ def render_history_view():
                         st.session_state["view"] = "chat"
                         st.rerun()
                 with col2:
-                    if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
+                    if st.button("Delete", key=f"delete_{i}", type="secondary"):
                         # Delete from database first
                         user_email = st.session_state.get("user_id")
                         delete_conversation(session_id, user_email)
@@ -116,14 +137,16 @@ def render_chat_view():
             unsafe_allow_html=True,
         )
     
-    st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>Your CSEA Information Assistant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
-        st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
+        st.info("Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code.")
 
     # Initialize feedback tracking if not exists
     if "message_feedback" not in st.session_state:
         st.session_state.message_feedback = {}
+    if "pending_suggested_query" not in st.session_state:
+        st.session_state.pending_suggested_query = None
 
     # Display existing messages
     for idx, message in enumerate(st.session_state.messages):
@@ -186,12 +209,22 @@ def render_chat_view():
                 if message.get("suggestions") and idx == len(st.session_state.messages) - 1:
                     st.markdown("<br>**You might also want to ask:**", unsafe_allow_html=True)
                     for q_idx, q in enumerate(message["suggestions"]):
-                        # Render button. If clicked, automatically send it as a query.
+                        # Queue clicked suggestion and process it outside this bubble
+                        # so it appears as a brand-new user input turn.
                         if st.button(q, key=f"sugg_{idx}_{q_idx}"):
-                            _process_user_query(q)
+                            st.session_state.pending_suggested_query = q
+                            st.rerun()
+
+    # Process queued suggestion after the history loop so it renders as
+    # a separate chat turn, not inside the previous assistant message container.
+    queued_query = st.session_state.get("pending_suggested_query")
+    if queued_query:
+        st.session_state.pending_suggested_query = None
+        _process_user_query(queued_query)
+        return
 
     # Handle new user input
-    if query := st.chat_input("Ask AXIsstant about rules, exemptions, or curriculum..."):
+    if query := st.chat_input("Ask AXIstant about rules, exemptions, or curriculum..."):
         _process_user_query(query)
 
 
