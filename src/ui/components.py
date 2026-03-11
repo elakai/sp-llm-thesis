@@ -43,9 +43,9 @@ def render_login():
     
     logo_base64 = get_base64_logo()
     if logo_base64:
-        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FF950A;">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FF950A;">AXIstant</div></div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="logo-container"><div class="logo-title" style="color: #FF950A;">AXIsstant</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="logo-container"><div class="logo-title" style="color: #FF950A;">AXIstant</div></div>', unsafe_allow_html=True)
 
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
 
@@ -110,7 +110,7 @@ def render_sidebar():
             st.markdown(f"""
                 <div class="sidebar-brand-open" style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
-                    <div style="margin-top: 5px; font-size: 3rem; font-weight: 800; color: #FF950A; letter-spacing: 0.8px;">AXIsstant</div>
+                    <div style="margin-top: 5px; font-size: 3rem; font-weight: 800; color: #FF950A; letter-spacing: 0.8px;">AXIstant</div>
                 </div>
             """, unsafe_allow_html=True)
         elif logo_base64 and not sidebar_open:
@@ -120,7 +120,7 @@ def render_sidebar():
                 </div>
             """, unsafe_allow_html=True)
         else:
-            fallback_text = "AXIsstant" if sidebar_open else "AXI"
+            fallback_text = "AXIstant" if sidebar_open else "AXI"
             st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
         st.markdown("---")
         
@@ -130,16 +130,6 @@ def render_sidebar():
             # New Chat button
             new_chat_label = "New Chat" if sidebar_open else "✏️"
             if st.button(new_chat_label, use_container_width=True):
-                if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
-                    if "chat_history" not in st.session_state:
-                        st.session_state["chat_history"] = []
-                    if st.session_state.get("active_convo_idx") is not None:
-                        idx = st.session_state["active_convo_idx"]
-                        if 0 <= idx < len(st.session_state["chat_history"]):
-                            st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
-                    else:
-                        st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
-                
                 st.session_state["messages"] = []
                 st.session_state["active_convo_idx"] = None 
                 st.session_state["session_id"] = str(uuid.uuid4())
@@ -149,16 +139,6 @@ def render_sidebar():
             # History button
             history_label = "History" if sidebar_open else "🕘"
             if st.button(history_label, use_container_width=True):
-                if st.session_state.get("messages") and len(st.session_state["messages"]) > 0:
-                    if "chat_history" not in st.session_state:
-                        st.session_state["chat_history"] = []
-                    if st.session_state.get("active_convo_idx") is not None:
-                        idx = st.session_state["active_convo_idx"]
-                        if 0 <= idx < len(st.session_state["chat_history"]):
-                            st.session_state["chat_history"][idx] = copy.deepcopy(st.session_state["messages"])
-                    else:
-                        st.session_state["chat_history"].append(copy.deepcopy(st.session_state["messages"]))
-                        st.session_state["active_convo_idx"] = len(st.session_state["chat_history"]) - 1
                 st.session_state["view"] = "history"
                 st.rerun()
             

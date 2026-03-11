@@ -29,7 +29,7 @@ from src.config.logging_config import logger
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading ranking model...")
+@st.cache_resource(show_spinner=False)
 def get_reranker():
     """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
@@ -209,6 +209,41 @@ def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> L
             source_counts[source] = count + 1
     return diverse_docs
 
+def filter_to_program(docs: List[Document], query: str) -> List[Document]:
+    """
+    For analytical queries (most, least, compare, rank), returns ALL chunks
+    from the single most-relevant program file so the LLM sees the full picture.
+    """
+    PROGRAM_KEYWORDS = {
+        'computer engineering': 'cpe',
+        'cpe': 'cpe',
+        'civil engineering': 'ce',
+        'bs ce': 'ce',
+        'electronics engineering': 'ece',
+        'bs ece': 'ece',
+        'architecture': 'arch',
+        'bs arch': 'arch',
+        'biology': 'bio',
+        'bs bio': 'bio',
+        'mathematics': 'math',
+        'bs math': 'math',
+        'environmental management': 'em',
+        'bs em': 'em',
+    }
+    q = query.lower()
+    matched_program = None
+    for keyword, code in PROGRAM_KEYWORDS.items():
+        if keyword in q:
+            matched_program = code
+            break
+
+    if not matched_program:
+        return docs
+
+    return [
+        d for d in docs
+        if matched_program in d.metadata.get("source", "").lower()
+    ]
 
 def _contains_markdown_table(text: str) -> bool:
     """Returns True if the response contains at least one Markdown table row."""
@@ -288,7 +323,20 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # 🚀 STEP 1: CACHE
     cached_answer = check_semantic_cache(standalone_query)
     if cached_answer:
-        for word in cached_answer.split(" "):
+        cached_with_suggestions = cached_answer
+        if "**You might also want to ask:**" not in cached_with_suggestions:
+            cached_suggestions = generate_suggested_questions(
+                standalone_query,
+                cached_answer,
+                st.session_state.get("last_retrieved_context", ""),
+            )
+            if cached_suggestions:
+                cached_with_suggestions += (
+                    "\n\n---\n**You might also want to ask:**\n"
+                    + "\n".join(f"- {q}" for q in cached_suggestions)
+                )
+
+        for word in cached_with_suggestions.split(" "):
             yield word + " "
             time.sleep(0.01)
         return
@@ -352,35 +400,64 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
     # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
+    # Detect curriculum queries and allow more chunks per source
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule']
+        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule', 'ojt', 'practicum', 'internship', 'immersion']
     )
-    max_chunks = 8 if is_curriculum_query else 3
-    hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+    
+    ANALYTICAL_TRIGGERS = [
+        'most', 'least', 'highest', 'lowest', 'compare', 'which course',
+        'how many courses', 'most prerequisites', 'hardest', 'rank'
+    ]
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
 
     top_score = float("-inf")
     second_score = float("-inf")
 
-    if hybrid_results:
-        try:
-            pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-            scores = get_reranker().predict(pairs)
-            sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    if is_analytical_query and is_curriculum_query:
+        # Pull ALL chunks from Pinecone for this program, not just top-K
+        all_program_docs = filter_to_program(
+            prefer_latest_per_source(list(unique_docs_map.values())),
+            standalone_query
+        )
+        # Re-run retrieval with high K to get more chunks
+        big_retriever = get_retriever(k=50)
+        extra_docs = big_retriever.invoke(standalone_query)
+        extra_filtered = filter_to_program(
+            prefer_latest_per_source(extra_docs),
+            standalone_query
+        )
+        combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
+        top_reranked = list(combined.values())
+        
+        # Artificially pass the confidence gate since we successfully pulled the whole curriculum
+        if top_reranked:
+            top_score = 10.0 
             
-            top_score = float(scores[sorted_indices[0]])
-            if len(sorted_indices) > 1:
-                second_score = float(scores[sorted_indices[1]])
-            
-            # 🛑 REMOVED the hard `if top_score < -10.0:` block here. 
-            # Step 7's Three-Tier logic will handle the confidence check.
-
-            top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
-        except Exception as e:
-            logger.error(f"Reranking failed: {e}")
-            top_reranked = hybrid_results[:RERANKER_TOP_K]
+        logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
+        
     else:
-        top_reranked = []
+        max_chunks = 8 if is_curriculum_query else 3
+        hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
+
+        if hybrid_results:
+            try:
+                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
+                scores = get_reranker().predict(pairs)
+                sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                
+                top_score = float(scores[sorted_indices[0]])
+                if len(sorted_indices) > 1:
+                    second_score = float(scores[sorted_indices[1]])
+                
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+            except Exception as e:
+                logger.error(f"Reranking failed: {e}")
+                top_reranked = hybrid_results[:RERANKER_TOP_K]
+        else:
+            top_reranked = []
     
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
@@ -404,8 +481,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     gen_start = time.time()
     
     # Define the Prompt (Instruction-Heavy for formatting)
-    prompt = f"""You are AXIsstant, the official Academic AI of Ateneo de Naga University.
-Answer the student's question using ONLY the context below. Be friendly but direct.
+    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
+
+Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
 
@@ -495,6 +573,8 @@ Answer the student's question using ONLY the context below. Be friendly but dire
         if not final_verified_response:
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
+
+        final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         
         # ── NEW/UPDATED: Clean up Markdown Tables & Lists ──
         final_verified_response = fix_markdown_tables(final_verified_response)
@@ -582,19 +662,91 @@ def fix_markdown_tables(text: str) -> str:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
+
     """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
 
 def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
     """
-    Generates 3 related follow-up questions based on the query, response, and context.
-    Returns a list of question strings, or empty list on failure.
+    Generates 3 related follow-up questions that are answerable from the
+    current response + retrieved context.
+
+    We ask the LLM for candidates, then validate them so we avoid suggestions
+    that introduce topics/entities absent from retrieval evidence.
     """
+    def _extract_tokens(text: str) -> set[str]:
+        return {
+            tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
+            if len(tok) >= 4
+        }
+
+    def _extract_course_codes(text: str) -> set[str]:
+        return set(re.findall(r"\b[A-Z]{2,5}\d{3}\b", text.upper()))
+
+    def _cleanup_question(q: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(q or "")).strip()
+        if not cleaned:
+            return ""
+        if not cleaned.endswith("?"):
+            cleaned += "?"
+        return cleaned
+
+    def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
+        # Basic shape checks
+        if len(q) < 12 or len(q) > 140:
+            return False
+
+        q_codes = _extract_course_codes(q)
+        # Reject if question introduces unseen course codes.
+        if q_codes and not q_codes.issubset(source_codes):
+            return False
+
+        q_tokens = _extract_tokens(q)
+        overlap = q_tokens.intersection(source_tokens)
+        # Require enough lexical grounding in current evidence.
+        return len(overlap) >= 2
+
+    def _fallback_questions(source_text: str) -> list[str]:
+        source_lower = source_text.lower()
+        fallbacks: list[str] = []
+
+        if "prereq" in source_lower or "pre-requisite" in source_lower or "prerequisite" in source_lower:
+            fallbacks.append("What are the exact prerequisites mentioned here?")
+        if _extract_course_codes(source_text):
+            fallbacks.append("Can you list all course codes mentioned in this answer?")
+        if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
+            fallbacks.append("Can you summarize this by semester or category?")
+
+        # Always include safe, answerable fallbacks that rely on existing output.
+        fallbacks.extend([
+            "Can you summarize that in 3 short bullet points?",
+            "Which part of the available documents supports this answer?",
+            "What is the key takeaway I should remember from this?",
+        ])
+
+        # Deduplicate while preserving order, and cap at 3.
+        deduped = []
+        seen = set()
+        for q in fallbacks:
+            normalized = q.lower().strip()
+            if normalized not in seen:
+                deduped.append(q)
+                seen.add(normalized)
+            if len(deduped) == 3:
+                break
+        return deduped
+
     try:
         llm = get_generator_llm()
-        prompt = f"""Based on this conversation, suggest exactly 3 short follow-up questions 
-the user might want to ask next. Return ONLY the 3 questions as a JSON array of strings.
-No explanations, no numbering, no extra text. Just the JSON array.
+        prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
+USING ONLY the provided response and context.
+
+Hard constraints:
+- Do not introduce new facts, entities, course codes, policies, or assumptions.
+- Keep each question specific to details already present.
+- Keep each question under 16 words.
+- Return ONLY a JSON array of 3 strings.
+- No markdown, no numbering, no extra text.
 
 Example output: ["Question 1?", "Question 2?", "Question 3?"]
 
@@ -607,9 +759,44 @@ Output (JSON array only):"""
         result = llm.invoke(prompt).content.strip()
         # Strip markdown code fences if present
         result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
-        questions = json.loads(result)
-        if isinstance(questions, list):
-            return [q for q in questions if isinstance(q, str)][:3]
+        raw_questions = json.loads(result)
+
+        source_text = f"{response}\n{context}"
+        source_tokens = _extract_tokens(source_text)
+        source_codes = _extract_course_codes(source_text)
+
+        validated: list[str] = []
+        seen = set()
+
+        if isinstance(raw_questions, list):
+            for q in raw_questions:
+                cleaned = _cleanup_question(q)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                if _is_answerable_question(cleaned, source_tokens, source_codes):
+                    validated.append(cleaned)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        if len(validated) < 3:
+            for q in _fallback_questions(source_text):
+                key = q.lower()
+                if key not in seen:
+                    validated.append(q)
+                    seen.add(key)
+                if len(validated) == 3:
+                    break
+
+        return validated[:3]
     except Exception as e:
         logger.warning(f"Suggested questions failed: {e}")
-    return []
+    # Final fallback keeps UX stable even when suggestion generation fails.
+    return [
+        "Can you summarize that in 3 short bullet points?",
+        "Which part of the available documents supports this answer?",
+        "What is the key takeaway I should remember from this?",
+    ]
