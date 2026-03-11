@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import os
 import re
+import math
 from collections import Counter
 
 from src.config.settings import get_vectorstore
@@ -11,9 +12,130 @@ from src.core.memory_ingestion import ingest_uploaded_files
 from src.core.ingestion import get_uploaded_files, delete_document, verify_sync, purge_all_vectors
 from src.config.constants import VALID_CATEGORIES
 
+# ── POPUP DIALOG FOR INSPECTING CHUNKS ──
+@st.dialog("🔎 Inspect LLM Chunks", width="large")
+def show_inspect_dialog(inspect_target):
+    with st.spinner("Fetching Chunks Directly from Vector Database..."):
+        try:
+            vectorstore = get_vectorstore()
+            idx = vectorstore._index
+            stats = idx.describe_index_stats()
+            dim = stats.get('dimension', 384)
+            
+            res = idx.query(
+                vector=[0.0] * dim,
+                filter={"source": inspect_target},
+                top_k=100, 
+                include_metadata=True
+            )
+            
+            matches = res.get("matches", [])
+            
+            st.markdown(f"**Document:** `{inspect_target}` &nbsp;&nbsp;|&nbsp;&nbsp; **Chunks:** `{len(matches)}`")
+            
+            if not matches:
+                st.warning("No chunks found in Pinecone. This file might be orphaned, or still indexing.")
+            else:
+                with st.container(height=480):
+                    for i, match in enumerate(matches):
+                        chunk_text = match.get("metadata", {}).get("text", "[No text available]")
+                        st.markdown(f"**Chunk {i+1}**")
+                        st.markdown(f"""
+                            <div style='background-color: #FFFFFF; color: #111827; padding: 15px; border-radius: 8px; border: 1px solid rgba(128,128,128,0.2); font-family: monospace; font-size: 0.9rem; margin-bottom: 15px; line-height: 1.5;'>
+                                {chunk_text}
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+        except Exception as e:
+            st.error(f"Failed to retrieve chunks: {e}")
 
+# ── POPUP DIALOG FOR KNOWLEDGE MAP ──
+@st.dialog("🌌 Vector Knowledge Map", width="large")
+def show_knowledge_map_dialog(algo, dims):
+    with st.spinner(f"Extracting Vectors from Pinecone and Running {algo}..."):
+        try:
+            import numpy as np
+            from sklearn.decomposition import PCA
+            from sklearn.manifold import TSNE
+            import plotly.express as px
+            
+            vectorstore = get_vectorstore()
+            idx = vectorstore._index
+            
+            query_vec = vectorstore.embeddings.embed_query("University policies handbook computer engineering department")
+            res = idx.query(vector=query_vec, top_k=800, include_values=True, include_metadata=True)
+            matches = res.get('matches', [])
+            
+            if len(matches) < 10:
+                st.error("Not enough document vectors found in the database to generate a cluster map.")
+            else:
+                vectors = [m['values'] for m in matches]
+                texts = [m['metadata'].get('text', '')[:120] + '...' for m in matches]
+                sources = [m['metadata'].get('source', 'Unknown Document') for m in matches]
+                
+                X = np.array(vectors)
+                
+                if algo == "PCA":
+                    reducer = PCA(n_components=dims)
+                else:
+                    perp = min(30, max(2, len(vectors) - 1))
+                    reducer = TSNE(n_components=dims, perplexity=perp, random_state=42)
+                    
+                X_reduced = reducer.fit_transform(X)
+                
+                df_plot = pd.DataFrame(X_reduced, columns=[f"Dim{i+1}" for i in range(dims)])
+                df_plot['Document Source'] = sources
+                df_plot['Chunk Text'] = texts
+                
+                custom_colors = ['#FF950A', '#3B82F6', '#10B981', '#8B5CF6', '#EF4444', '#F43F5E', '#14B8A6', '#F59E0B']
+
+                if dims == 2:
+                    fig = px.scatter(
+                        df_plot, x="Dim1", y="Dim2", color="Document Source", 
+                        color_discrete_sequence=custom_colors,
+                        hover_data={"Chunk Text": True, "Dim1": False, "Dim2": False}
+                    )
+                    fig.update_traces(marker=dict(size=10, line=dict(width=1.5, color='rgba(255,255,255,0.9)'), opacity=0.85))
+                else:
+                    fig = px.scatter_3d(
+                        df_plot, x="Dim1", y="Dim2", z="Dim3", color="Document Source",
+                        color_discrete_sequence=custom_colors,
+                        hover_data={"Chunk Text": True, "Dim1": False, "Dim2": False, "Dim3": False}
+                    )
+                    fig.update_traces(marker=dict(size=5, line=dict(width=0.5, color='rgba(255,255,255,0.7)'), opacity=0.9))
+
+                fig.update_layout(
+                    paper_bgcolor='rgba(128,128,128,0.05)',
+                    plot_bgcolor='rgba(128,128,128,0.05)',
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    legend=dict(
+                        orientation="v", yanchor="top", y=1, xanchor="left", x=1.0,
+                        title_font_family="sans-serif", font=dict(size=12),
+                        bgcolor='rgba(128,128,128,0.05)', bordercolor='rgba(128,128,128,0.2)', borderwidth=1
+                    ),
+                    hoverlabel=dict(bgcolor="white", font_size=13, font_family="sans-serif", font_color="black"),
+                    height=480 
+                )
+                
+                if dims == 2:
+                    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.15)', zeroline=False, title_text="")
+                    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.15)', zeroline=False, title_text="")
+                else:
+                    fig.update_layout(
+                        scene=dict(
+                            xaxis=dict(showgrid=True, gridwidth=2, showbackground=True, backgroundcolor='rgba(128,128,128,0.05)', gridcolor='rgba(128,128,128,0.25)', zerolinecolor='rgba(128,128,128,0.25)', title_text=""),
+                            yaxis=dict(showgrid=True, gridwidth=2, showbackground=True, backgroundcolor='rgba(128,128,128,0.05)', gridcolor='rgba(128,128,128,0.25)', zerolinecolor='rgba(128,128,128,0.25)', title_text=""),
+                            zaxis=dict(showgrid=True, gridwidth=2, showbackground=True, backgroundcolor='rgba(128,128,128,0.05)', gridcolor='rgba(128,128,128,0.25)', zerolinecolor='rgba(128,128,128,0.25)', title_text=""),
+                        )
+                    )
+                
+                st.plotly_chart(fig, width="stretch")
+
+        except Exception as e:
+            st.error(f"Error generating map: {e}")
+
+# ── HELPERS ──
 def fetch_eval_metrics():
-    """Fetches feedback, usage data, latency metrics, and session mapping for analytics."""
     try:
         response = supabase.table("chat_logs") \
             .select("session_id, rating, query, user_email, created_at, retrieval_latency, generation_latency, total_latency") \
@@ -23,9 +145,7 @@ def fetch_eval_metrics():
         st.error(f"🚨 Database Error fetching chat logs: {e}")
         return pd.DataFrame()
 
-
 def fetch_evaluation_runs():
-    """Fetches RAGAS evaluation run history from the evaluation_runs table."""
     try:
         response = supabase.table("evaluation_runs") \
             .select("*") \
@@ -36,21 +156,66 @@ def fetch_evaluation_runs():
     except Exception:
         return pd.DataFrame()
 
-
 def inject_admin_styles():
-    """Reads custom CSS from the styles folder to beautify tabs, tables, and metric cards."""
     css_path = os.path.join(os.path.dirname(__file__), "styles", "admin.css")
     try:
-        with open(css_path, "r") as f:
+        with open(css_path, "r", encoding="utf-8") as f:
             css = f.read()
         st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     except FileNotFoundError:
         st.warning("⚠️ CSS file not found at src/ui/styles/admin.css. Styles may not load correctly.")
 
+def generate_saas_table_html(df, is_scrollable=False):
+    if df.empty:
+        return "<div style='padding: 20px; text-align: center; opacity: 0.6;'>No data available.</div>"
+
+    container_class = "saas-table-scroll" if is_scrollable else "saas-table-page"
+    html = f'<div class="{container_class}"><table class="saas-table">'
+    
+    html += '<thead><tr>'
+    for col in df.columns:
+        if col == "User":
+            html += f'<th style="width: 200px;">{col}</th>'
+        elif col == "Time":
+            html += f'<th style="width: 180px;">{col}</th>'
+        elif col == "Rating":
+            html += f'<th style="width: 130px;">{col}</th>'
+        else:
+            html += f'<th>{col}</th>'
+    html += '</tr></thead><tbody>'
+
+    for _, row in df.iterrows():
+        html += '<tr>'
+        for col in df.columns:
+            val = row[col]
+            if pd.isna(val):
+                val = "-"
+            
+            if col == "Rating":
+                val_str = str(val).lower()
+                if val_str == "helpful":
+                    html += f'<td style="vertical-align: middle;"><div class="table-badge badge-helpful">HELPFUL</div></td>'
+                elif val_str == "not_helpful" or val_str == "not helpful":
+                    html += f'<td style="vertical-align: middle;"><div class="table-badge badge-not-helpful">NOT HELPFUL</div></td>'
+                else:
+                    html += f'<td style="vertical-align: middle;"><div class="table-badge badge-neutral">{val}</div></td>'
+            elif col == "Time":
+                html += f'<td style="white-space: nowrap; color: #6B7280; font-size: 0.8rem; font-weight: 500;">{val}</td>'
+            elif col == "User":
+                html += f'<td style="font-weight: 500;">{val}</td>'
+            else:
+                html += f'<td>{val}</td>'
+        html += '</tr>'
+
+    html += '</tbody></table></div>'
+    return html
 
 # ── CONSOLIDATED DOCUMENT MANAGEMENT VIEW ──
 def render_indexed_documents_view():
     inject_admin_styles()
+    
+    if 'library_page' not in st.session_state:
+        st.session_state.library_page = 0
 
     st.markdown("""
         <div class="admin-page-header">
@@ -87,15 +252,14 @@ def render_indexed_documents_view():
                 "Drop Files Here or Click to Browse",
                 type=["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg", "tiff", "bmp"],
                 accept_multiple_files=True,
-                help="Supported: PDF, Word, Excel, CSV, Text, Markdown, Images (PNG/JPG/TIFF — text extracted via OCR)",
             )
 
             if uploaded_files:
                 for f in uploaded_files:
-                    if f.size > 50 * 1024 * 1024:  # 50 MB
+                    if f.size > 50 * 1024 * 1024:
                         st.warning(f"Note: **{f.name}** is over 50 MB. This may take a while to process.")
 
-            if st.button("Upload and Index", type="primary", disabled=not uploaded_files, width="stretch"):
+            if st.button("Index", type="primary", width="stretch", disabled=not uploaded_files):
                 total = len(uploaded_files)
                 progress = st.progress(0, text=f"Starting… 0 / {total} files")
                 status_box = st.empty()
@@ -112,7 +276,6 @@ def render_indexed_documents_view():
                 progress.progress(100, text=f"Done! {total} file(s) processed.")
                 status_box.empty()
 
-                all_ok = all(s for _, s, _ in results)
                 for fname, success, message in results:
                     if success:
                         st.success(f"Success: **{fname}**: {message}")
@@ -154,164 +317,145 @@ def render_indexed_documents_view():
 
                 sorted_manifest = sorted(manifest.items(), key=lambda x: x[0])
 
+                top_controls_placeholder = st.empty()
+
                 df_data = []
                 for filename, info in sorted_manifest:
+                    raw_date = info.get("uploaded_at", "Unknown")
+                    try:
+                        formatted_date = pd.to_datetime(raw_date).strftime('%b %d, %Y • %I:%M %p')
+                    except Exception:
+                        formatted_date = raw_date
+                        
                     df_data.append({
-                        "Select": filename in st.session_state["selected_docs"],
-                        "Document Name": filename,
-                        "Chunks": info.get("chunks", 0),
-                        "Date Indexed": info.get("uploaded_at", "Unknown")[:16]
+                        "SELECT": filename in st.session_state["selected_docs"],
+                        "DOCUMENT NAME": filename,
+                        "CHUNKS": info.get("chunks", 0),
+                        "DATE INDEXED": formatted_date
                     })
                 df = pd.DataFrame(df_data)
 
-                dynamic_height = (len(df) * 35) + 43
+                ROWS_PER_PAGE = 15
+                total_rows = len(df)
+                total_pages = max(1, math.ceil(total_rows / ROWS_PER_PAGE))
+                
+                if st.session_state.library_page >= total_pages:
+                    st.session_state.library_page = max(0, total_pages - 1)
+                    
+                start_idx = st.session_state.library_page * ROWS_PER_PAGE
+                end_idx = start_idx + ROWS_PER_PAGE
+                
+                page_df = df.iloc[start_idx:end_idx]
+                dynamic_height = (len(page_df) * 35) + 43
 
-                edited_df = st.data_editor(
-                    df,
+                edited_page_df = st.data_editor(
+                    page_df,
                     column_config={
-                        "Select": st.column_config.CheckboxColumn("Select", width="small"),
-                        "Document Name": st.column_config.TextColumn("Document Name", disabled=True, width="large"),
-                        "Chunks": st.column_config.NumberColumn("Chunks", disabled=True, width="small"),
-                        "Date Indexed": st.column_config.TextColumn("Date Indexed", disabled=True, width="medium"),
+                        "SELECT": st.column_config.CheckboxColumn("SELECT", width="small"),
+                        "DOCUMENT NAME": st.column_config.TextColumn("DOCUMENT NAME", disabled=True, width="large"),
+                        "CHUNKS": st.column_config.NumberColumn("CHUNKS", disabled=True, width="small"),
+                        "DATE INDEXED": st.column_config.TextColumn("DATE INDEXED", disabled=True, width="medium"),
                     },
                     hide_index=True,
                     width="stretch",
                     height=dynamic_height,
-                    key=f"doc_table_editor_{st.session_state['table_key']}"
+                    key=f"doc_table_editor_{st.session_state['table_key']}_{st.session_state.library_page}"
                 )
 
-                selected_filenames = edited_df[edited_df["Select"] == True]["Document Name"].tolist()
-                st.session_state["selected_docs"] = set(selected_filenames)
+                current_page_files = set(page_df["DOCUMENT NAME"])
+                selected_on_page = set(edited_page_df[edited_page_df["SELECT"] == True]["DOCUMENT NAME"])
+                deselected_on_page = current_page_files - selected_on_page
 
-                st.markdown("<br>", unsafe_allow_html=True)
-                
-                btn_left, spacer, btn_right = st.columns([2, 5, 2])
-                
-                with btn_left:
-                    if st.button("Select All", width="stretch"):
-                        st.session_state["selected_docs"] = set(manifest.keys())
-                        st.session_state["table_key"] += 1  
-                        st.rerun()
-                        
-                with btn_right:
-                    if st.button("Deselect All", width="stretch"):
-                        st.session_state["selected_docs"] = set()
-                        st.session_state["table_key"] += 1 
-                        st.rerun()
+                st.session_state["selected_docs"].update(selected_on_page)
+                st.session_state["selected_docs"].difference_update(deselected_on_page)
                 
                 selected = st.session_state["selected_docs"]
-                if selected:
-                    st.warning(f"**{len(selected)} Document(s) Selected.**")
 
-                    if "confirm_bulk_delete" not in st.session_state:
-                        st.session_state["confirm_bulk_delete"] = False
+                if "inspect_doc" in st.session_state and st.session_state["inspect_doc"] not in selected:
+                    del st.session_state["inspect_doc"]
 
-                    c_insp, c_del = st.columns([1, 1])
+                with top_controls_placeholder.container():
+                    if st.session_state.get("confirm_bulk_delete", False) and selected:
+                        st.error("⚠️ Permanently delete these documents? This action cannot be undone.")
                     
-                    with c_insp:
-                        if len(selected) == 1:
-                            if st.button("Inspect LLM Chunks", width="stretch"):
-                                st.session_state["inspect_doc"] = list(selected)[0]
-                                st.session_state["confirm_bulk_delete"] = False
-                                st.rerun()
-                        else:
-                            st.button("Inspect LLM Chunks", width="stretch", disabled=True, help="Please Select Exactly ONE Document to Inspect")
-                            
-                    with c_del:
-                        if not st.session_state["confirm_bulk_delete"]:
-                            if st.button("Delete Selected Documents", type="primary", width="stretch"):
-                                st.session_state["confirm_bulk_delete"] = True
-                                st.rerun()
-                        else:
-                            st.error("⚠️ Permanently delete these documents? This action cannot be undone.")
-                            col_y, col_n = st.columns([1, 1])
-                            if col_y.button("Yes, delete", type="primary", width="stretch"):
-                                progress = st.progress(0, text="Deleting…")
-                                deleted, failed = 0, 0
-                                files_to_delete = list(selected)
-                                for i, fname in enumerate(files_to_delete):
-                                    progress.progress(
-                                        (i + 1) / len(files_to_delete),
-                                        text=f"Deleting {fname}…",
-                                    )
-                                    ok, msg = delete_document(fname)
-                                    if ok:
-                                        deleted += 1
-                                    else:
-                                        failed += 1
-                                        st.error(f"Failed: {fname} — {msg}")
-                                progress.progress(1.0, text="Done!")
-                                st.success(f"Deleted {deleted} document(s).")
-                                if failed:
-                                    st.warning(f"{failed} deletion(s) failed.")
-                                
+                    col_sel, col_space, col_btn1, col_btn2 = st.columns([1.5, 5.5, 1.5, 1.5])
+                    
+                    with col_sel:
+                        is_all_selected = len(st.session_state["selected_docs"]) == len(manifest.keys()) and len(manifest) > 0
+                        if is_all_selected:
+                            if st.button("Deselect All", key="toggle_all", width="stretch"):
                                 st.session_state["selected_docs"] = set()
-                                st.session_state["confirm_bulk_delete"] = False
-                                st.session_state["table_key"] += 1
-                                if "inspect_doc" in st.session_state:
-                                    del st.session_state["inspect_doc"]
+                                st.session_state["table_key"] += 1 
+                                st.session_state.pop("inspect_doc", None) 
                                 st.rerun()
-                                
-                            if col_n.button("Cancel", width="stretch"):
-                                st.session_state["confirm_bulk_delete"] = False
+                        else:
+                            if st.button("Select All", key="toggle_all", width="stretch"):
+                                st.session_state["selected_docs"] = set(manifest.keys())
+                                st.session_state["table_key"] += 1  
+                                st.session_state.pop("inspect_doc", None) 
                                 st.rerun()
-
-                    inspect_target = st.session_state.get("inspect_doc")
-                    if inspect_target and inspect_target in selected:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        st.markdown(f"""
-                            <div style='padding: 12px 16px; background-color: rgba(255, 149, 10, 0.08); border-radius: 8px; border-left: 5px solid #FF950A; margin-bottom: 15px;'>
-                                <h4 style='margin: 0; padding: 0; font-size: 1.15rem; font-weight: 700; color: inherit;'>🔎 Inside the LLM's Brain: <span style='font-family: monospace;'>{inspect_target}</span></h4>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        with st.spinner("Fetching Chunks Directly from Vector Database..."):
-                            try:
-                                vectorstore = get_vectorstore()
-                                idx = vectorstore._index
-                                
-                                stats = idx.describe_index_stats()
-                                dim = stats.get('dimension', 384)
-                                
-                                res = idx.query(
-                                    vector=[0.0] * dim,
-                                    filter={"source": inspect_target},
-                                    top_k=100, 
-                                    include_metadata=True
-                                )
-                                
-                                matches = res.get("matches", [])
-                                if not matches:
-                                    st.warning("No chunks found in Pinecone. This file might be orphaned, or still indexing.")
+                    
+                    if selected:
+                        if not st.session_state.get("confirm_bulk_delete", False):
+                            with col_btn1:
+                                if len(selected) == 1:
+                                    if st.button("Inspect", width="stretch"):
+                                        show_inspect_dialog(list(selected)[0])
                                 else:
-                                    st.success(f"Successfully Retrieved **{len(matches)}** Chunk(s).")
-                                    
-                                    with st.container(border=True, height=800):
-                                        for i, match in enumerate(matches):
-                                            chunk_text = match.get("metadata", {}).get("text", "[No text available]")
-                                            st.markdown(f"**Chunk {i+1}**")
-                                            st.markdown(f"""
-                                                <div style='background-color: #FFFFFF; color: #111827; padding: 15px; border-radius: 8px; border: 1px solid rgba(128,128,128,0.2); font-family: monospace; font-size: 0.9rem; margin-bottom: 15px; line-height: 1.5;'>
-                                                    {chunk_text}
-                                                </div>
-                                            """, unsafe_allow_html=True)
-                                            
-                            except Exception as e:
-                                st.error(f"Failed to retrieve chunks: {e}")
+                                    st.button("Inspect", width="stretch", disabled=True)
+                            with col_btn2:
+                                if st.button("Delete", type="primary", width="stretch"):
+                                    st.session_state["confirm_bulk_delete"] = True
+                                    st.rerun()
+                        else:
+                            with col_btn1:
+                                if st.button("Yes, delete", type="primary", width="stretch"):
+                                    progress = st.progress(0, text="Deleting…")
+                                    deleted, failed = 0, 0
+                                    files_to_delete = list(selected)
+                                    for i, fname in enumerate(files_to_delete):
+                                        progress.progress((i + 1) / len(files_to_delete), text=f"Deleting {fname}…")
+                                        ok, msg = delete_document(fname)
+                                        if ok:
+                                            deleted += 1
+                                        else:
+                                            failed += 1
+                                            st.error(f"Failed: {fname} — {msg}")
+                                    progress.progress(1.0, text="Done!")
+                                    st.success(f"Deleted {deleted} document(s).")
+                                    if failed:
+                                        st.warning(f"{failed} deletion(s) failed.")
+                                    st.session_state["selected_docs"] = set()
+                                    st.session_state["confirm_bulk_delete"] = False
+                                    st.session_state["table_key"] += 1
+                                    st.rerun()
+                            with col_btn2:
+                                if st.button("Cancel", width="stretch"):
+                                    st.session_state["confirm_bulk_delete"] = False
+                                    st.rerun()
+
+                col_info, col_prev, col_next = st.columns([7.6, 1.2, 1.2])
+                with col_info:
+                    st.markdown(f"""
+                        <div class="pagination-pill">
+                            PAGE <span>{st.session_state.library_page + 1}</span> OF <span>{total_pages}</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_prev:
+                    if st.button("Previous", key="prev_lib", disabled=st.session_state.library_page == 0, width="stretch"):
+                        st.session_state.library_page -= 1
+                        st.rerun()
+                with col_next:
+                    if st.button("Next", key="next_lib", type="primary", disabled=st.session_state.library_page >= total_pages - 1, width="stretch"):
+                        st.session_state.library_page += 1
+                        st.rerun()
 
     with tab_advanced:
-        
-        # ── KNOWLEDGE MAP IN ADVANCED TOOLS (FULL WIDTH) ──
         with st.container(border=True):
             st.markdown("""
                 <div style='padding: 20px; background-color: rgba(128,128,128,0.03); border-radius: 10px; border: 1px solid rgba(128,128,128,0.1); margin-bottom: 20px;'>
                     <h3 style='margin: 0; padding: 0; font-size: 1.5rem; font-weight: 700; color: inherit;'>🌌 Vector Knowledge Map</h3>
-                    <div style='font-size: 0.9rem; opacity: 0.85; margin-top: 10px; line-height: 1.6;'>
-                        <strong>How it Works:</strong> The AI converts every document chunk into a 384-dimensional mathematical vector based on its underlying meaning. This tool compresses those dimensions down to 2D or 3D space. Points that group closely together represent text chunks that share similar semantic context.<br><br>
-                        <strong>Dimensionality Reduction Algorithms:</strong><br>
-                        <span style='color: #FF950A;'>•</span> <strong>PCA (Global View):</strong> Fast and linear. It preserves the overall "big picture" structure of the dataset, making it ideal for visualizing broad relationships across all documents.<br>
-                        <span style='color: #FF950A;'>•</span> <strong>t-SNE (Local Clusters):</strong> Advanced and non-linear. It strictly focuses on keeping highly similar points close together, making it perfect for discovering tight, distinct groupings of sub-topics.
-                    </div>
+                    <div style='font-size: 0.9rem; opacity: 0.7; margin-top: 5px;'>Apply PCA or t-SNE Dimensionality Reduction to Visualize Semantic Clustering Across the Vector Database</div>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -327,100 +471,11 @@ def render_indexed_documents_view():
 
             if HAS_DEPS:
                 c1, c2 = st.columns(2)
-                algo = c1.selectbox("Algorithm", ["PCA", "t-SNE"], help="PCA is faster and shows overall variance. t-SNE is slower but creates tighter local clusters.")
+                algo = c1.selectbox("Algorithm", ["PCA", "t-SNE"])
                 dims = c2.selectbox("Dimensions", [2, 3], index=1)
                 
-                if st.button("Generate Knowledge Map", type="primary", width="stretch"):
-                    with st.spinner(f"Extracting Vectors from Pinecone and Running {algo}..."):
-                        try:
-                            vectorstore = get_vectorstore()
-                            idx = vectorstore._index
-                            
-                            query_vec = vectorstore.embeddings.embed_query("University policies handbook computer engineering department")
-                            
-                            res = idx.query(vector=query_vec, top_k=800, include_values=True, include_metadata=True)
-                            matches = res.get('matches', [])
-                            
-                            if len(matches) < 10:
-                                st.error("Not enough document vectors found in the database to generate a cluster map.")
-                            else:
-                                vectors = [m['values'] for m in matches]
-                                texts = [m['metadata'].get('text', '')[:120] + '...' for m in matches]
-                                sources = [m['metadata'].get('source', 'Unknown Document') for m in matches]
-                                
-                                X = np.array(vectors)
-                                
-                                if algo == "PCA":
-                                    reducer = PCA(n_components=dims)
-                                else:
-                                    perp = min(30, max(2, len(vectors) - 1))
-                                    reducer = TSNE(n_components=dims, perplexity=perp, random_state=42)
-                                    
-                                X_reduced = reducer.fit_transform(X)
-                                
-                                df_plot = pd.DataFrame(X_reduced, columns=[f"Dim{i+1}" for i in range(dims)])
-                                df_plot['Document Source'] = sources
-                                df_plot['Chunk Text'] = texts
-                                
-                                custom_colors = ['#FF950A', '#3B82F6', '#10B981', '#8B5CF6', '#EF4444', '#F43F5E', '#14B8A6', '#F59E0B']
-
-                                if dims == 2:
-                                    fig = px.scatter(
-                                        df_plot, x="Dim1", y="Dim2", color="Document Source", 
-                                        color_discrete_sequence=custom_colors,
-                                        hover_data={"Chunk Text": True, "Dim1": False, "Dim2": False}
-                                    )
-                                    fig.update_traces(marker=dict(size=10, line=dict(width=1.5, color='rgba(255,255,255,0.9)'), opacity=0.85))
-                                else:
-                                    fig = px.scatter_3d(
-                                        df_plot, x="Dim1", y="Dim2", z="Dim3", color="Document Source",
-                                        color_discrete_sequence=custom_colors,
-                                        hover_data={"Chunk Text": True, "Dim1": False, "Dim2": False, "Dim3": False}
-                                    )
-                                    fig.update_traces(marker=dict(size=5, line=dict(width=0.5, color='rgba(255,255,255,0.7)'), opacity=0.9))
-
-                                fig.update_layout(
-                                    paper_bgcolor='rgba(0,0,0,0)',
-                                    plot_bgcolor='rgba(0,0,0,0)',
-                                    margin=dict(l=0, r=0, t=0, b=0),
-                                    legend=dict(
-                                        orientation="v", 
-                                        yanchor="top", 
-                                        y=1, 
-                                        xanchor="left", 
-                                        x=1.0,
-                                        title_font_family="sans-serif",
-                                        font=dict(size=12),
-                                        bgcolor='rgba(128,128,128,0.05)', 
-                                        bordercolor='rgba(128,128,128,0.2)',
-                                        borderwidth=1
-                                    ),
-                                    hoverlabel=dict(
-                                        bgcolor="white",
-                                        font_size=13,
-                                        font_family="sans-serif",
-                                        font_color="black"
-                                    ),
-                                    height=650
-                                )
-                                
-                                if dims == 2:
-                                    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.15)', zeroline=False, title_text="")
-                                    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.15)', zeroline=False, title_text="")
-                                else:
-                                    fig.update_layout(
-                                        scene=dict(
-                                            xaxis=dict(showbackground=False, gridcolor='rgba(128,128,128,0.15)', zerolinecolor='rgba(128,128,128,0.15)', title_text=""),
-                                            yaxis=dict(showbackground=False, gridcolor='rgba(128,128,128,0.15)', zerolinecolor='rgba(128,128,128,0.15)', title_text=""),
-                                            zaxis=dict(showbackground=False, gridcolor='rgba(128,128,128,0.15)', zerolinecolor='rgba(128,128,128,0.15)', title_text=""),
-                                        )
-                                    )
-                                
-                                st.plotly_chart(fig, width="stretch")
-                                st.success(f"Successfully Mapped {len(matches)} Vector Chunks into {dims}D Space!")
-
-                        except Exception as e:
-                            st.error(f"Error generating map: {e}")
+                if st.button("Generate", type="primary", width="stretch"):
+                    show_knowledge_map_dialog(algo, dims)
 
         with st.container(border=True):
             st.markdown("""
@@ -430,11 +485,11 @@ def render_indexed_documents_view():
                 </div>
             """, unsafe_allow_html=True)
 
-            if st.button("Verify Database Sync", width="stretch"):
+            if st.button("Sync Database", width="stretch"):
                 with st.spinner("Checking sync status…"):
                     sync_result = verify_sync()
                     if sync_result:
-                        st.write(f"**Healthy (In Both):** `{len(sync_result.get('in_both', []))}` Documents")
+                        st.write(f"**Healthy (In Both):** `{len(sync_result.get('in_both', []))}` documents")
                         ghost = sync_result.get("manifest_only", [])
                         orphans = sync_result.get("pinecone_only", [])
                         if ghost:
@@ -449,13 +504,11 @@ def render_indexed_documents_view():
                         st.error("Sync check failed. Check logs.")
 
         with st.expander("🚨 RESET", expanded=False):
-            st.error("The actions below are irreversible. They will permanently destroy the LLM's knowledge base.")
-            
             if "confirm_purge_all" not in st.session_state:
                 st.session_state["confirm_purge_all"] = False
 
             if not st.session_state["confirm_purge_all"]:
-                if st.button("Purge ALL Vectors from Database", type="primary", width="stretch"):
+                if st.button("Purge Vectors", type="primary", width="stretch"):
                     st.session_state["confirm_purge_all"] = True
                     st.rerun()
             else:
@@ -483,10 +536,11 @@ def render_indexed_documents_view():
                     st.session_state["confirm_purge_all"] = False
                     st.rerun()
 
-
-# ── ADMIN DASHBOARD WITH ANALYTICS ──
 def render_admin_view():
     inject_admin_styles()
+    
+    if 'failed_queries_page' not in st.session_state:
+        st.session_state.failed_queries_page = 0
 
     st.markdown("""
         <div class="admin-page-header">
@@ -529,18 +583,16 @@ def render_admin_view():
         if not df_eval.empty:
             likes_val = str((df_eval["rating"] == "helpful").sum())
 
-        # ── Safely check Database/Pinecone Status ──
         try:
             get_vectorstore()
             sys_status = "Online"
-            sys_color = "#10B981"  # Green
+            sys_color = "#10B981"
             sys_desc = "Database Connected"
         except Exception:
             sys_status = "Offline"
-            sys_color = "#EF4444"  # Red
+            sys_color = "#EF4444"
             sys_desc = "Connection Failed"
 
-        # ── HERO CARDS DESIGN FOR OVERALL METRICS ──
         st.markdown(f"""
             <div style="display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 12px 12px 12px;">
                 <div class="hero-card" style="border-bottom: 5px solid #8B5CF6;">
@@ -578,12 +630,10 @@ def render_admin_view():
             </div>
         """, unsafe_allow_html=True)
 
-
     tab_performance, tab_analytics, tab_failures, tab_eval = st.tabs(
         ["System Performance", "Usage Analytics", "Failure Analysis", "Evaluation Logs"]
     )
 
-    # ── SYSTEM PERFORMANCE & LATENCY MONITOR ──
     with tab_performance:
         with st.container(border=True):
             st.markdown("""
@@ -597,12 +647,10 @@ def render_admin_view():
                 df_perf = df_eval.dropna(subset=['total_latency']).copy()
                 
                 if not df_perf.empty:
-                    # Calculate strictly the mathematical averages
                     total_mean = df_perf['total_latency'].mean()
                     retrieval_mean = df_perf['retrieval_latency'].mean() if 'retrieval_latency' in df_perf.columns else 0.0
                     gen_mean = df_perf['generation_latency'].mean() if 'generation_latency' in df_perf.columns else 0.0
                     
-                    # Output standard metric cards without inner container
                     st.markdown(f"""
                         <div class="metric-card-container" style="margin-top: 0px; margin-bottom: 20px;">
                             <div class="metric-card" style="border-top-color: #10B981; padding: 15px 20px;">
@@ -641,19 +689,27 @@ def render_admin_view():
                 """, unsafe_allow_html=True)
                 
                 if not df_eval.empty:
-                    # Removed the raw latency columns to keep the table clean and strictly about Feedback
-                    display_cols = [c for c in ["created_at", "query", "rating"] if c in df_eval.columns]
-                    display_table = df_eval[display_cols].sort_values(by="created_at", ascending=False)
+                    display_cols = ["user_email", "created_at", "query", "rating"]
+                    existing_cols = [c for c in display_cols if c in df_eval.columns]
+                    
+                    display_table = df_eval[existing_cols].sort_values(by="created_at", ascending=False)
                     
                     rename_dict = {
+                        "user_email": "User",
                         "created_at": "Time",
                         "query": "Query",
                         "rating": "Rating"
                     }
                     display_table = display_table.rename(columns=rename_dict)
                     
-                    # ── INCREASED TO 500 ROWS ──
-                    st.dataframe(display_table.head(500), width="stretch", hide_index=True)
+                    ordered_final_cols = [rename_dict[c] for c in display_cols if c in df_eval.columns]
+                    display_table = display_table[ordered_final_cols]
+                    
+                    if 'Time' in display_table.columns:
+                        display_table['Time'] = pd.to_datetime(display_table['Time']).dt.strftime('%b %d, %Y • %I:%M %p')
+                    
+                    html_table = generate_saas_table_html(display_table.head(500), is_scrollable=True)
+                    st.markdown(html_table, unsafe_allow_html=True)
                 else:
                     st.info("No user feedback logs found.")
 
@@ -677,35 +733,28 @@ def render_admin_view():
                     HAS_PLOTLY = False
                     st.warning("💡 Tip: Run `pip install plotly` in your terminal to unlock premium interactive charts.")
 
-                # Setup stop words for reuse in multiple charts
                 stop_words = {"what", "how", "the", "for", "and", "can", "you", "tell", "about", "are", "with", "that", "this", "from", "does", "have", "who", "why", "where"}
 
-                # ── NEW: SESSION ENGAGEMENT METRICS (STRICT 30-MIN FILTER) ──
                 df_eval['created_at'] = pd.to_datetime(df_eval['created_at'])
                 
                 if 'session_id' in df_eval.columns and not df_eval['session_id'].isna().all():
-                    # Group by session_id to find start time, end time, and total queries per session
                     sessions = df_eval.groupby('session_id').agg(
                         start_time=('created_at', 'min'),
                         end_time=('created_at', 'max'),
                         turns=('query', 'count')
                     )
-                    # Calculate duration in seconds
                     sessions['duration_sec'] = (sessions['end_time'] - sessions['start_time']).dt.total_seconds()
                     
                     total_sessions = len(sessions)
                     avg_turns = sessions['turns'].mean()
                     
-                    # DATA CLEANING FOR DURATION: 
-                    # Disregard 0-second sessions (single questions) and extreme ghost sessions (> 30 mins / 1800s)
                     valid_durations = sessions[(sessions['duration_sec'] > 0) & (sessions['duration_sec'] < 1800)]['duration_sec']
                     
                     if not valid_durations.empty:
-                        avg_duration = valid_durations.mean() # True mathematical average, but strictly filtered
+                        avg_duration = valid_durations.mean()
                     else:
                         avg_duration = 0
                     
-                    # Explicit minutes and seconds formatting
                     if pd.isna(avg_duration) or avg_duration == 0:
                         duration_str = "< 1s"
                     elif avg_duration < 60:
@@ -744,8 +793,6 @@ def render_admin_view():
                         </div>
                     """, unsafe_allow_html=True)
 
-
-                # ── CHART 1: DAU ──
                 with st.container(border=True):
                     st.markdown("""
                         <div style='padding: 12px 16px; background-color: rgba(255, 149, 10, 0.08); border-radius: 8px; border-left: 5px solid #FF950A; margin-bottom: 15px;'>
@@ -792,10 +839,8 @@ def render_admin_view():
                         st.line_chart(dau_fallback, y="Number of Users")
 
                 st.markdown("<br>", unsafe_allow_html=True)
-                
                 col1, col2 = st.columns(2)
 
-                # ── CHART 2: USER FEEDBACK ──
                 with col1:
                     with st.container(border=True, height=420):
                         st.markdown("""
@@ -852,7 +897,6 @@ def render_admin_view():
                         else:
                             st.info("No feedback data available.")
 
-                # ── CHART 3: TRENDING TOPICS ──
                 with col2:
                     with st.container(border=True, height=420):
                         st.markdown("""
@@ -945,13 +989,54 @@ def render_admin_view():
                             </div>
                         """, unsafe_allow_html=True)
                         
-                        failed_table = bad_feedback[['created_at', 'query', 'user_email']].sort_values('created_at', ascending=False)
-                        failed_table = failed_table.rename(columns={
-                            "created_at": "Time", 
+                        failed_cols = ["user_email", "query", "created_at"]
+                        existing_failed_cols = [c for c in failed_cols if c in bad_feedback.columns]
+                        
+                        failed_table = bad_feedback[existing_failed_cols].sort_values('created_at', ascending=False)
+                        
+                        failed_rename = {
+                            "user_email": "User",
                             "query": "Failed Query", 
-                            "user_email": "User"
-                        })
-                        st.dataframe(failed_table, hide_index=True, width="stretch")
+                            "created_at": "Time"
+                        }
+                        failed_table = failed_table.rename(columns=failed_rename)
+                        
+                        failed_ordered_cols = [failed_rename[c] for c in failed_cols if c in bad_feedback.columns]
+                        failed_table = failed_table[failed_ordered_cols]
+                        
+                        if 'Time' in failed_table.columns:
+                            failed_table['Time'] = pd.to_datetime(failed_table['Time']).dt.strftime('%b %d, %Y • %I:%M %p')
+                        
+                        ROWS_PER_PAGE = 8
+                        total_rows = len(failed_table)
+                        total_pages = max(1, math.ceil(total_rows / ROWS_PER_PAGE))
+                        
+                        if st.session_state.failed_queries_page >= total_pages:
+                            st.session_state.failed_queries_page = max(0, total_pages - 1)
+                            
+                        start_idx = st.session_state.failed_queries_page * ROWS_PER_PAGE
+                        end_idx = start_idx + ROWS_PER_PAGE
+                        
+                        page_df = failed_table.iloc[start_idx:end_idx]
+
+                        html_table = generate_saas_table_html(page_df, is_scrollable=False)
+                        st.markdown(html_table, unsafe_allow_html=True)
+                        
+                        col_info, col_prev, col_next = st.columns([7.6, 1.2, 1.2])
+                        with col_info:
+                            st.markdown(f"""
+                                <div class="pagination-pill">
+                                    PAGE <span>{st.session_state.failed_queries_page + 1}</span> OF <span>{total_pages}</span>
+                                </div>
+                            """, unsafe_allow_html=True)
+                        with col_prev:
+                            if st.button("Previous", key="prev_fq", disabled=st.session_state.failed_queries_page == 0, width="stretch"):
+                                st.session_state.failed_queries_page -= 1
+                                st.rerun()
+                        with col_next:
+                            if st.button("Next", key="next_fq", type="primary", disabled=st.session_state.failed_queries_page >= total_pages - 1, width="stretch"):
+                                st.session_state.failed_queries_page += 1
+                                st.rerun()
                 else:
                     st.success("🎉 Great job! No negative feedback found in the logs yet.")
 
@@ -971,7 +1056,6 @@ def render_admin_view():
                 cr_val = f"{latest.get('context_recall', 0):.2f}"
                 ac_val = f"{latest.get('answer_correctness', 0):.2f}"
 
-                # Output standard metric cards without inner container
                 st.markdown(f"""
                     <div class="metric-card-container" style="margin-top: 0px; margin-bottom: 20px;">
                         <div class="metric-card" style="border-top-color: #8B5CF6; padding: 15px 20px;">
@@ -999,7 +1083,6 @@ def render_admin_view():
             else:
                 st.info("No evaluation runs found. Upload a Golden Dataset below to run your first evaluation!")
 
-            # ── ONE-CLICK EVALUATOR ──
             with st.container(border=True):
                 st.markdown("""
                     <div style='padding: 12px 16px; background-color: rgba(255, 149, 10, 0.08); border-radius: 8px; border-left: 5px solid #FF950A; margin-bottom: 15px;'>
@@ -1007,14 +1090,13 @@ def render_admin_view():
                     </div>
                 """, unsafe_allow_html=True)
 
-                st.caption("Your CSV must Contain Two Columns: `question` and `ground_truth`.")
+                st.caption("Your CSV must Contain Two Columns: `Question` and `Ground Truth`.")
                 eval_file = st.file_uploader("Upload Test Dataset", type=["csv"], label_visibility="collapsed")
 
-                if st.button("Run RAGAS Evaluation", type="primary", width="stretch", disabled=not eval_file):
+                if st.button("Evaluate", type="primary", width="stretch", disabled=not eval_file):
                     progress_bar = st.progress(5, text="Initializing Evaluation Dataset...")
 
                     try:
-                        # Use the actual filename uploaded by the admin
                         uploaded_filename = eval_file.name
                         with open(uploaded_filename, "wb") as f:
                             f.write(eval_file.getbuffer())
@@ -1024,9 +1106,8 @@ def render_admin_view():
                         from src.core.evaluate_rag import evaluate_from_dataset
 
                         with st.spinner("Generating AI Answers and Grading Metrics... (This will take a few minutes)"):
-                            evaluate_from_dataset(uploaded_filename) # Pass the dynamic filename
+                            evaluate_from_dataset(uploaded_filename) 
 
-                        # Clean up the file locally after evaluation finishes
                         if os.path.exists(uploaded_filename):
                             os.remove(uploaded_filename)
 
@@ -1040,7 +1121,6 @@ def render_admin_view():
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # ── EVALUATION SCORE TRENDS ──
             if not df_runs.empty:
                 with st.container(border=True):
                     st.markdown("""
