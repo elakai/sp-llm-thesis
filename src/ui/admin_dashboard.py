@@ -63,7 +63,7 @@ def show_knowledge_map_dialog(algo, dims):
             idx = vectorstore._index
             
             query_vec = vectorstore.embeddings.embed_query("University policies handbook computer engineering department")
-            res = idx.query(vector=query_vec, top_k=800, include_values=True, include_metadata=True)
+            res = idx.query(vector=query_vec, top_k=300, include_values=True, include_metadata=True)
             matches = res.get('matches', [])
             
             if len(matches) < 10:
@@ -135,6 +135,7 @@ def show_knowledge_map_dialog(algo, dims):
             st.error(f"Error generating map: {e}")
 
 # ── HELPERS ──
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_eval_metrics():
     try:
         response = supabase.table("chat_logs") \
@@ -145,6 +146,7 @@ def fetch_eval_metrics():
         st.error(f"🚨 Database Error fetching chat logs: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_evaluation_runs():
     try:
         response = supabase.table("evaluation_runs") \
@@ -156,13 +158,33 @@ def fetch_evaluation_runs():
     except Exception:
         return pd.DataFrame()
 
-def inject_admin_styles():
+@st.cache_data(ttl=15, show_spinner=False)
+def get_manifest_cached():
+    return get_uploaded_files()
+
+@st.cache_data(ttl=60, show_spinner=False)  
+def get_vector_count_cached() -> str:
+    try:
+        vectorstore = get_vectorstore()
+        stats = vectorstore._index.describe_index_stats()
+        return f"{stats.get('total_vector_count', 0):,}"
+    except Exception:
+        return "Offline"
+
+@st.cache_data(show_spinner=False)
+def load_admin_css() -> str:
     css_path = os.path.join(os.path.dirname(__file__), "styles", "admin.css")
     try:
         with open(css_path, "r", encoding="utf-8") as f:
-            css = f.read()
-        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+            return f.read()
     except FileNotFoundError:
+        return ""
+
+def inject_admin_styles():
+    css = load_admin_css()
+    if css:
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    else:
         st.warning("⚠️ CSS file not found at src/ui/styles/admin.css. Styles may not load correctly.")
 
 def generate_saas_table_html(df, is_scrollable=False):
@@ -275,6 +297,9 @@ def render_indexed_documents_view():
 
                 progress.progress(100, text=f"Done! {total} file(s) processed.")
                 status_box.empty()
+                
+                get_manifest_cached.clear()
+                get_vector_count_cached.clear()
 
                 for fname, success, message in results:
                     if success:
@@ -284,13 +309,7 @@ def render_indexed_documents_view():
 
     with tab_library:
         with st.container(border=True):
-            try:
-                vectorstore = get_vectorstore()
-                stats = vectorstore._index.describe_index_stats()
-                count = stats.get("total_vector_count", 0)
-                count_display = f"{count:,}"
-            except Exception:
-                count_display = "Offline"
+            count_display = get_vector_count_cached()
                 
             st.markdown(f"""
                 <div style='display: flex; justify-content: space-between; align-items: center; padding: 20px; background-color: rgba(128,128,128,0.03); border-radius: 10px; border: 1px solid rgba(128,128,128,0.1); margin-bottom: 20px;'>
@@ -305,7 +324,7 @@ def render_indexed_documents_view():
                 </div>
             """, unsafe_allow_html=True)
             
-            manifest = get_uploaded_files()
+            manifest = get_manifest_cached()
 
             if not manifest:
                 st.info("No documents indexed yet. Upload files from the 'Upload & Index' tab to get started.")
@@ -425,6 +444,10 @@ def render_indexed_documents_view():
                                     st.success(f"Deleted {deleted} document(s).")
                                     if failed:
                                         st.warning(f"{failed} deletion(s) failed.")
+                                    
+                                    get_manifest_cached.clear()
+                                    get_vector_count_cached.clear()
+
                                     st.session_state["selected_docs"] = set()
                                     st.session_state["confirm_bulk_delete"] = False
                                     st.session_state["table_key"] += 1
@@ -521,6 +544,8 @@ def render_indexed_documents_view():
                             ok, msg = purge_all_vectors()
                         if ok:
                             st.success(msg)
+                            get_manifest_cached.clear()
+                            get_vector_count_cached.clear()
                         else:
                             st.error(msg)
                         st.session_state["confirm_purge_all"] = False
@@ -583,15 +608,10 @@ def render_admin_view():
         if not df_eval.empty:
             likes_val = str((df_eval["rating"] == "helpful").sum())
 
-        try:
-            get_vectorstore()
-            sys_status = "Online"
-            sys_color = "#10B981"
-            sys_desc = "Database Connected"
-        except Exception:
-            sys_status = "Offline"
-            sys_color = "#EF4444"
-            sys_desc = "Connection Failed"
+        count_str = get_vector_count_cached()
+        sys_status = "Online" if count_str != "Offline" else "Offline"
+        sys_color = "#10B981" if sys_status == "Online" else "#EF4444"
+        sys_desc = "Database Connected" if sys_status == "Online" else "Connection Failed"
 
         st.markdown(f"""
             <div style="display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 12px 12px 12px;">
