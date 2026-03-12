@@ -41,10 +41,10 @@ def get_semantic_cache() -> list:
 
 GLOBAL_CACHE = get_semantic_cache()
 
-# Words that signal the query references prior conversation and needs rewriting
+# [FIX 6]: Removed 'also' and 'more' to prevent unnecessary query rewrites
 _CONTEXT_TRIGGERS = re.compile(
     r'\b(it|its|they|them|their|this|that|these|those|the same|'
-    r'above|previous|earlier|last|mentioned|said|again|also|more|'
+    r'above|previous|earlier|last|mentioned|said|again|'
     r'how about|what about|and the|the other|besides|aside from)\b',
     re.IGNORECASE
 )
@@ -56,7 +56,6 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
     history_to_process = chat_history_list[1:] if len(chat_history_list) > 1 else []
     if not history_to_process: return query
     
-    # Skip the LLM call if the query doesn't reference prior conversation
     if not _CONTEXT_TRIGGERS.search(query):
         logger.info(f"Context skip: No pronouns/references detected in '{query}'")
         return query
@@ -105,8 +104,7 @@ def add_to_cache(query: str, response: str):
         logger.warning(f"Cache write failed: {e}")
 
 def invalidate_cache():
-    """Wipes the semantic cache object entirely."""
-    GLOBAL_CACHE.clear() # Mutates the existing list object
+    GLOBAL_CACHE.clear() 
     logger.info("🧹 Semantic cache invalidated. AI will now pull fresh data from Pinecone.")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,7 +120,6 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
 def _tokenize(text: str) -> list:
-    """Strip punctuation before BM25 tokenization so 'requirement.' matches 'requirement'."""
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
 
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
@@ -217,19 +214,16 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     start_time = time.time()
     top_score = float("-inf")
     
-    # 🚀 STEP 0: VALIDATION & CONVERSATIONAL MEMORY
-    is_valid, clean_query = validate_query(query) # Call from guardrails.py
+    is_valid, clean_query = validate_query(query) 
     if not is_valid:
         yield clean_query
         return
     
-    safe_query = redact_pii(clean_query) # Call from guardrails.py
+    safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
     
-    # 🚀 STEP 1: CACHE
     cached_answer = check_semantic_cache(standalone_query)
     if cached_answer:
-        # [FIX 1 & 3]: Removed suggestion gen here, stream in chunks of 3 for speed
         words = cached_answer.split(" ")
         chunk_size = 3
         for i in range(0, len(words), chunk_size):
@@ -239,26 +233,28 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     retrieval_start = time.time()
     
-    # 🚀 STEP 2: INTENT DETECTION
     try:
         intent, _, _, _ = route_query(standalone_query)
     except Exception as e:
         logger.warning(f"Router fallback triggered: {e}")
         intent = "search"
 
-    # Handle greetings and off-topic early
     if intent in ["greeting", "off_topic"]:
         if intent == "greeting":
-            msg = "Hey! I'm AXIsstant, your CSEA academic assistant. Ask me anything about your curriculum, lab guidelines, or school policies!"
+            msg = ("Hey! I'm AXIsstant, the academic assistant specifically built "
+                   "for CSEA students and faculty at Ateneo de Naga University. "
+                   "I can help with curriculum info, lab guidelines, school policies, "
+                   "room locations, and more. What do you need?")
         else:
-            msg = "That's a bit outside my expertise — I'm mainly built for CSEA-related questions. Try asking me about your curriculum, guidelines, or academic policies!"
+            msg = ("That's outside what I can help with — I'm specifically built "
+                   "for CSEA at Ateneo de Naga University. Try asking about "
+                   "your curriculum, lab guidelines, or school policies!")
         
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
         return
 
-    # 🚀 STEP 3: DECOMPOSITION 
     is_complex = any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
     sub_queries = [standalone_query]
     if is_complex:
@@ -267,13 +263,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         except:
             pass
 
-    # 🚀 STEP 4: PARALLEL RETRIEVAL WITH DYNAMIC K
     dynamic_k = get_dynamic_k(standalone_query)
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
 
-    # ⚡ Execute Retrieval — skip thread pool overhead for single queries
     if len(sub_queries) == 1:
         all_docs = retriever.invoke(sub_queries[0])
     else:
@@ -282,7 +276,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         for res in results:
             all_docs.extend(res)
 
-    # 🛑 Early exit if no information is found
     if not all_docs:
         logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
         yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
@@ -290,7 +283,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
-    # 🚀 STEP 5: DEDUPLICATION & RERANKING
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
@@ -298,7 +290,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     is_curriculum_query = any(
         kw in standalone_query.lower()
-        for kw in ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite', 'schedule', 'ojt', 'practicum', 'internship', 'immersion']
+        for kw in [
+            'curriculum', 'subject', 'course', 'year', 'semester', 'units',
+            'prerequisite', 'schedule', 'ojt', 'practicum', 'internship',
+            'immersion', 'faculty', 'full-time', 'part-time', 'instructor',
+            'professor', 'chairperson', 'chair', 'dean', 'department',
+            'operating systems', 'elective', 'track'
+        ]
     )
     
     ANALYTICAL_TRIGGERS = [
@@ -307,16 +305,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     ]
     is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
 
+    is_download_query = any(
+        kw in standalone_query.lower()
+        for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download']
+    )
+
     top_score = float("-inf")
     second_score = float("-inf")
 
     if is_analytical_query and is_curriculum_query:
-        # Pull ALL chunks from Pinecone for this program, not just top-K
         all_program_docs = filter_to_program(
             prefer_latest_per_source(list(unique_docs_map.values())),
             standalone_query
         )
-        # Re-run retrieval with high K to get more chunks
         big_retriever = get_retriever(k=50)
         extra_docs = big_retriever.invoke(standalone_query)
         extra_filtered = filter_to_program(
@@ -326,7 +327,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
         top_reranked = list(combined.values())
         
-        # Artificially pass the confidence gate since we successfully pulled the whole curriculum
         if top_reranked:
             top_score = 10.0 
             
@@ -353,17 +353,31 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         else:
             top_reranked = []
             
-    # ── NEW: Facility Query Detector & Directory Injection ──
+    # [FIX 2]: Add 'top_reranked is not None' guard
+    if is_download_query and top_reranked is not None:
+        link_retriever = get_retriever(k=20)
+        link_docs = link_retriever.invoke("official curriculum PDF download link")
+        link_filtered = prefer_latest_per_source(link_docs)
+        existing_hashes = {hash(d.page_content) for d in top_reranked}
+        for doc in link_filtered:
+            if hash(doc.page_content) not in existing_hashes:
+                top_reranked.append(doc)
+                existing_hashes.add(hash(doc.page_content))
+        if top_reranked:
+            top_score = max(top_score, 5.0)
+        logger.info(f"🔗 Download query — injected {len(link_filtered)} link chunks")
+
+    # [FIX 1]: Add expanded facility keywords including 'where' variants
     is_facility_query = any(
         kw in standalone_query.lower()
         for kw in [
             'room', 'building', 'floor', 'lab', 'laboratory', 
-            'office', 'located', 'where is', 'campus', 'facility'
+            'office', 'located', 'where is', 'where are', 'nasaan', 
+            'campus', 'facility', 'location of'
         ]
     )
 
     if is_facility_query:
-        # [FIX 5]: Skip extra retrieval if directory content is already present
         already_has_directory = any(
             'directory' in doc.metadata.get('source', '').lower() or
             'campus' in doc.metadata.get('source', '').lower()
@@ -373,7 +387,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             directory_retriever = get_retriever(k=5)
             directory_docs = directory_retriever.invoke("campus building directory acronym")
             directory_filtered = prefer_latest_per_source(directory_docs)
-            # Merge into top_reranked without duplicates
             existing_hashes = {hash(d.page_content) for d in top_reranked}
             for doc in directory_filtered:
                 if hash(doc.page_content) not in existing_hashes:
@@ -390,18 +403,16 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
     
-    # 🚀 STEP 6: BUILD CONTEXT
+    # [FIX 3 & 7]: Moved Context Logging to after all injection logic
+    logger.info(f"📄 Final context sources ({len(top_reranked)} chunks): {[doc.metadata.get('source','?') for doc in top_reranked]}")
+
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
-    # Log which chunk indices are being retrieved for debugging
-    logger.info(f"📄 Context sources: {[doc.metadata.get('source','?') + ' chunk_' + str(doc.metadata.get('chunk_index','?')) for doc in top_reranked]}")
+    
     retrieval_time = time.time() - retrieval_start
-
-    # 🚀 STEP 7: THREE-TIER CONFIDENCE & GENERATION
     gen_start = time.time()
     
-    # Define the Prompt (Instruction-Heavy for formatting)
     prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
 
 Answer the question using ONLY the context below.
@@ -462,13 +473,18 @@ Answer the question using ONLY the context below.
 **Answer:**"""
 
     try:
-        # Tier 1: Retrieval is too weak — Exit early to prevent hallucination
-        if top_score < LOW_CONFIDENCE_THRESHOLD:
+        is_protected_query = (
+            is_curriculum_query or 
+            is_facility_query or 
+            is_analytical_query or
+            is_download_query
+        )
+
+        if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
             yield "I don't have enough info to answer that confidently — best to check with your department chair directly."
             return
 
-        # Tier 2 & 3: Retrieval is sufficient — Invoke LLM with Retry Logic
         llm = get_generator_llm()
         draft_response = get_llm_response(llm, prompt).content
         
@@ -479,22 +495,12 @@ Answer the question using ONLY the context below.
         )
 
         if high_confidence:
-            # Tier 3: High confidence — Trust the draft
-            logger.info(
-                f"✨ High Confidence ({top_score:.2f}, margin {score_margin:.2f}). Bypassing Critic."
-            )
+            logger.info(f"✨ High Confidence ({top_score:.2f}, margin {score_margin:.2f}). Bypassing Critic.")
             final_verified_response = draft_response
         else:
-            # Tier 2: Moderate confidence — Trigger Critic to verify against context
-            logger.info(
-                f"🔍 Moderate Confidence ({top_score:.2f}, margin {score_margin:.2f}). "
-                "Triggering Critic Persona..."
-            )
+            logger.info(f"🔍 Moderate Confidence ({top_score:.2f}, margin {score_margin:.2f}). Triggering Critic Persona...")
             final_verified_response = verify_answer(standalone_query, context, draft_response)
 
-        # 🚀 STEP 8: METRICS, CACHE & STREAMING
-        
-        # We record metrics BEFORE streaming so they are saved even if the user disconnects
         st.session_state["performance_metrics"] = {
             "retrieval_latency": retrieval_time,
             "generation_latency": time.time() - gen_start,
@@ -506,31 +512,34 @@ Answer the question using ONLY the context below.
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
 
-        # ── Clean up Markdown Tables, Lists, and Links ──
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
         
-        # ── Generate suggested follow-up questions ──
+        # [FIX 4]: Skip LLM call for suggestions if response is already slow
+        gen_time = time.time() - gen_start
         suggested_questions = generate_suggested_questions(
-            standalone_query, final_verified_response, context
+            standalone_query, final_verified_response, context,
+            skip_llm=(gen_time > 8.0)
         )
+        
         if suggested_questions:
             suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
                 "\n".join(f"- {q}" for q in suggested_questions)
             final_verified_response += suggestions_md
             
-        # [FIX 6]: Cache added here so suggestions are included in the cache
-        add_to_cache(standalone_query, final_verified_response)
+        # [FIX 5]: Cache the clean response without the suggestions text attached
+        clean_response_for_cache = re.sub(
+            r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
+            '',
+            final_verified_response
+        ).strip()
+        add_to_cache(standalone_query, clean_response_for_cache)
         
-        # Final Streaming Loop with Fallback
-        # Table-aware: yield entire response at once when a Markdown table is present
-        # so Streamlit never renders a partial/broken table mid-stream.
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                # [FIX 3]: Stream in chunks of 3 words for faster UX
                 words = final_verified_response.split(" ")
                 chunk_size = 3
                 for i in range(0, len(words), chunk_size):
@@ -538,7 +547,6 @@ Answer the question using ONLY the context below.
                     time.sleep(STREAM_DELAY) 
                     
         except GeneratorExit:
-            # User navigated away; cleanup handled by Python GC
             return
         except Exception as e:
             logger.error(f"Streaming interruption: {e}")
@@ -549,7 +557,6 @@ Answer the question using ONLY the context below.
         yield "Something went wrong on my end. Give it another try in a bit!"
 
 def fix_markdown_tables(text: str) -> str:
-    # [FIX 2]: Early return to save processing on non-table text
     if '|' not in text:
         return text
         
@@ -560,7 +567,6 @@ def fix_markdown_tables(text: str) -> str:
         line = lines[i]
         next_line = lines[i + 1] if i + 1 < len(lines) else ''
 
-        # Add blank line before a new table if previous line is non-empty, non-table
         if (line.strip().startswith('|') and
                 fixed and
                 fixed[-1].strip() and
@@ -569,26 +575,19 @@ def fix_markdown_tables(text: str) -> str:
 
         fixed.append(line)
 
-        # Only inject separator if:
-        # 1. Current line is a table row
-        # 2. Next line is also a table row
-        # 3. Next line has NO separator yet
-        # 4. The line AFTER next is also a table row (confirms header + data pattern)
-        #    OR next line is the only remaining row
         next_next_line = lines[i + 2] if i + 2 < len(lines) else ''
         is_header_candidate = (
             line.strip().startswith('|') and
             next_line.strip().startswith('|') and
             '---' not in next_line and
             '---' not in line and
-            not any('---' in f for f in fixed[-3:])  # no separator already nearby
+            not any('---' in f for f in fixed[-3:])
         )
         if is_header_candidate:
             col_count = line.count('|') - 1
             if col_count > 0:
                 fixed.append('|' + '---|' * col_count)
 
-        # Add blank line after table block ends
         if (line.strip().startswith('|') and
                 next_line.strip() and
                 not next_line.strip().startswith('|')):
@@ -598,8 +597,6 @@ def fix_markdown_tables(text: str) -> str:
     return '\n'.join(fixed)
 
 def format_raw_links(text: str) -> str:
-    """Converts any leftover raw URLs into clean markdown links."""
-    # [FIX 4]: Better lookbehind regex for URLs
     raw_url_pattern = re.compile(
         r'(?<!\()'
         r'(https?://[^\s\)\]\,\"\']+)'
@@ -608,12 +605,10 @@ def format_raw_links(text: str) -> str:
         url = match.group(1)
         full_text = text
         pos = match.start()
-        # Check if already wrapped in markdown link [label](url)
         preceding = full_text[max(0, pos-50):pos]
         if re.search(r'\[[^\]]*\]\($', preceding):
-            return url  # already formatted, leave it
+            return url 
             
-        # Generate a human-readable label from the URL
         if 'supabase' in url or 'storage' in url:
             label = 'Download here'
         elif 'form' in url or 'docs.google' in url:
@@ -627,17 +622,10 @@ def format_raw_links(text: str) -> str:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
-    """Reliable wrapper for LLM calls with exponential backoff."""
     return llm.invoke(prompt)
 
-def generate_suggested_questions(query: str, response: str, context: str) -> list[str]:
-    """
-    Generates 3 related follow-up questions that are answerable from the
-    current response + retrieved context.
-
-    We ask the LLM for candidates, then validate them so we avoid suggestions
-    that introduce topics/entities absent from retrieval evidence.
-    """
+# [FIX 4]: Added skip_llm to parameters
+def generate_suggested_questions(query: str, response: str, context: str, skip_llm: bool = False) -> list[str]:
     def _extract_tokens(text: str) -> set[str]:
         return {
             tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
@@ -656,18 +644,15 @@ def generate_suggested_questions(query: str, response: str, context: str) -> lis
         return cleaned
 
     def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
-        # Basic shape checks
         if len(q) < 12 or len(q) > 140:
             return False
 
         q_codes = _extract_course_codes(q)
-        # Reject if question introduces unseen course codes.
         if q_codes and not q_codes.issubset(source_codes):
             return False
 
         q_tokens = _extract_tokens(q)
         overlap = q_tokens.intersection(source_tokens)
-        # Require enough lexical grounding in current evidence.
         return len(overlap) >= 2
 
     def _fallback_questions(source_text: str) -> list[str]:
@@ -681,14 +666,12 @@ def generate_suggested_questions(query: str, response: str, context: str) -> lis
         if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
             fallbacks.append("Can you summarize this by semester or category?")
 
-        # Always include safe, answerable fallbacks that rely on existing output.
         fallbacks.extend([
             "Can you summarize that in 3 short bullet points?",
             "Which part of the available documents supports this answer?",
             "What is the key takeaway I should remember from this?",
         ])
 
-        # Deduplicate while preserving order, and cap at 3.
         deduped = []
         seen = set()
         for q in fallbacks:
@@ -699,6 +682,12 @@ def generate_suggested_questions(query: str, response: str, context: str) -> lis
             if len(deduped) == 3:
                 break
         return deduped
+
+    source_text = f"{response}\n{context}"
+    
+    # [FIX 4]: Bypass the LLM entirely if we're hitting slow generation limits
+    if skip_llm:
+        return _fallback_questions(source_text)
 
     try:
         llm = get_generator_llm()
@@ -721,11 +710,9 @@ Available topic context: {context[:500]}
 Output (JSON array only):"""
         
         result = llm.invoke(prompt).content.strip()
-        # Strip markdown code fences if present
         result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
         raw_questions = json.loads(result)
 
-        source_text = f"{response}\n{context}"
         source_tokens = _extract_tokens(source_text)
         source_codes = _extract_course_codes(source_text)
 
@@ -758,7 +745,6 @@ Output (JSON array only):"""
         return validated[:3]
     except Exception as e:
         logger.warning(f"Suggested questions failed: {e}")
-    # Final fallback keeps UX stable even when suggestion generation fails.
     return [
         "Can you summarize that in 3 short bullet points?",
         "Which part of the available documents supports this answer?",
