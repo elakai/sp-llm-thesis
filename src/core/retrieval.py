@@ -41,7 +41,6 @@ def get_semantic_cache() -> list:
 
 GLOBAL_CACHE = get_semantic_cache()
 
-# [FIX 6]: Removed 'also' and 'more' to prevent unnecessary query rewrites
 _CONTEXT_TRIGGERS = re.compile(
     r'\b(it|its|they|them|their|this|that|these|those|the same|'
     r'above|previous|earlier|last|mentioned|said|again|'
@@ -353,7 +352,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         else:
             top_reranked = []
             
-    # [FIX 2]: Add 'top_reranked is not None' guard
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
         link_docs = link_retriever.invoke("official curriculum PDF download link")
@@ -367,7 +365,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             top_score = max(top_score, 5.0)
         logger.info(f"🔗 Download query — injected {len(link_filtered)} link chunks")
 
-    # [FIX 1]: Add expanded facility keywords including 'where' variants
     is_facility_query = any(
         kw in standalone_query.lower()
         for kw in [
@@ -377,6 +374,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         ]
     )
 
+    # ── FIX: DIRECTORY EXTRACTION LOGIC ──
     if is_facility_query:
         already_has_directory = any(
             'directory' in doc.metadata.get('source', '').lower() or
@@ -384,15 +382,26 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             for doc in top_reranked
         )
         if not already_has_directory:
-            directory_retriever = get_retriever(k=5)
-            directory_docs = directory_retriever.invoke("campus building directory acronym")
+            # Extract building code from query (e.g. "D412" → "D", "AL112" → "AL", "EB111" → "EB")
+            building_code_match = re.search(r'\b([A-Z]{1,3})\d{3}\b', standalone_query.upper())
+            if building_code_match:
+                building_code = building_code_match.group(1)
+                # Search specifically for that building code + "rooms" or "building"
+                directory_query = f"{building_code} building rooms directory"
+            else:
+                directory_query = "campus building directory rooms"
+
+            directory_retriever = get_retriever(k=8)  # was k=5, increase to cast wider net
+            directory_docs = directory_retriever.invoke(directory_query)
             directory_filtered = prefer_latest_per_source(directory_docs)
             existing_hashes = {hash(d.page_content) for d in top_reranked}
             for doc in directory_filtered:
                 if hash(doc.page_content) not in existing_hashes:
                     top_reranked.append(doc)
                     existing_hashes.add(hash(doc.page_content))
-            logger.info(f"🏢 Facility query — appended {len(directory_filtered)} campus directory chunks")
+            if top_reranked:
+                top_score = max(top_score, 5.0)  # prevent Tier 1 kill
+            logger.info(f"🏢 Facility query — building code: '{building_code_match.group(1) if building_code_match else 'generic'}', injected {len(directory_filtered)} chunks")
     
     logger.info(f"📊 Query: '{standalone_query}'")
     logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
@@ -403,7 +412,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         f"margin: {HIGH_CONFIDENCE_MARGIN})"
     )
     
-    # [FIX 3 & 7]: Moved Context Logging to after all injection logic
     logger.info(f"📄 Final context sources ({len(top_reranked)} chunks): {[doc.metadata.get('source','?') for doc in top_reranked]}")
 
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
@@ -413,6 +421,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     retrieval_time = time.time() - retrieval_start
     gen_start = time.time()
     
+    # ── FIX: UPDATED RULE 13 WITH EXPLICIT CODES ──
     prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
 
 Answer the question using ONLY the context below.
@@ -455,12 +464,15 @@ Answer the question using ONLY the context below.
     [Fill out the form here](url). The link text should describe what 
     the link does, not the URL itself.
 
-13. **ROOM CODES**: When mentioning a room code like "EB213", always 
-    break it down for the user: the letters are the building acronym 
-    (e.g. EB = Engineering Building), the first digit is the floor 
-    number, and the remaining digits are the room number. So EB213 
-    means Engineering Building, 2nd floor, Room 13. Only do this if 
-    the building name is available in the context — never guess.
+13. **ROOM CODES**: When the user asks about a room like "D412", "AL112", 
+    or "EB111", look up the building prefix in the campus directory in 
+    the context. "D" = Fr. Francis Dolan SJ Building, "AL" = Godofredo 
+    Alingal SJ Building, "EB" = Engineering Building, "AR" = Fr. Pedro 
+    Arrupe SJ Building, "P" = Fr. John Phelan SJ Building, "S" = Fr. 
+    Pedro Santos SJ Building, "B" = Fr. Francis Burns SJ Building, 
+    "CC" = Covered Courts, "RB" = Fr. Raul Bonoan SJ Building.
+    Always decode the building name, floor number, and room number for 
+    the user. Only use acronyms confirmed in the context.
 
 **Context:**
 {context}
@@ -516,7 +528,6 @@ Answer the question using ONLY the context below.
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
         
-        # [FIX 4]: Skip LLM call for suggestions if response is already slow
         gen_time = time.time() - gen_start
         suggested_questions = generate_suggested_questions(
             standalone_query, final_verified_response, context,
@@ -528,7 +539,6 @@ Answer the question using ONLY the context below.
                 "\n".join(f"- {q}" for q in suggested_questions)
             final_verified_response += suggestions_md
             
-        # [FIX 5]: Cache the clean response without the suggestions text attached
         clean_response_for_cache = re.sub(
             r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
             '',
@@ -624,7 +634,6 @@ def format_raw_links(text: str) -> str:
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
 
-# [FIX 4]: Added skip_llm to parameters
 def generate_suggested_questions(query: str, response: str, context: str, skip_llm: bool = False) -> list[str]:
     def _extract_tokens(text: str) -> set[str]:
         return {
@@ -685,7 +694,6 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
 
     source_text = f"{response}\n{context}"
     
-    # [FIX 4]: Bypass the LLM entirely if we're hitting slow generation limits
     if skip_llm:
         return _fallback_questions(source_text)
 
