@@ -40,8 +40,22 @@ def get_dynamic_k(query: str) -> int:
         "dean", "chairperson", "chair", "faculty", "professor",
         "department", "who is", "who are", "staff", "organizational",
         "org structure", "instructor", "engr", "lab technician",
+        "full-time", "part-time", "is he", "is she", "is the"
     ]):
         return 15
+
+    # Facility/location queries
+    if any(kw in q for kw in [
+        'room', 'building', 'floor', 'where is', 'where',
+        'location', 'located', 'lab', 'office', 'campus', 'facility'
+    ]):
+        return 20
+
+    # Download/link queries
+    if any(kw in q for kw in [
+        'download', 'link', 'pdf', 'get the', 'access', 'where can i'
+    ]):
+        return 20
 
     # Default for simple factual questions
     return 12
