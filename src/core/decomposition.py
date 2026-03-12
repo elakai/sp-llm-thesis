@@ -24,20 +24,29 @@ def decompose_query(query: str) -> List[str]:
     Breaks a complex query into simple sub-queries.
     If the query is simple, it returns a list containing just the original query.
     """
+    
+    # Short-query guard: don't waste LLM calls on inherently simple strings
+    if len(query.split()) < 8:
+        return [query]
+        
     llm = get_generator_llm()
     
     try:
         # invoke the chain
         response = (_DECOMPOSE_PROMPT | llm).invoke({"query": query}).content
         
-        # Split by newlines and clean up
-        sub_queries = [line.strip() for line in response.split('\n') if line.strip()]
+        # Split by newlines, clean up, and filter out LLM preambles (like "Here are the queries:")
+        sub_queries = [
+            line.strip() for line in response.split('\n')
+            if line.strip() and not line.strip().endswith(':') and len(line.strip()) > 10
+        ]
         
         # Fallback: If LLM fails or returns nothing, just use original
         if not sub_queries:
             return [query]
             
-        return sub_queries
+        # Hard cap to prevent rate limiting / cascading DB calls
+        return sub_queries[:3]
         
     except Exception as e:
         logger.warning(f"Decomposition error, falling back to original query: {e}")

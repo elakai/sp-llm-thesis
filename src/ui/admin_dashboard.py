@@ -300,6 +300,7 @@ def render_indexed_documents_view():
                 
                 get_manifest_cached.clear()
                 get_vector_count_cached.clear()
+                fetch_eval_metrics.clear()
 
                 for fname, success, message in results:
                     if success:
@@ -447,6 +448,7 @@ def render_indexed_documents_view():
                                     
                                     get_manifest_cached.clear()
                                     get_vector_count_cached.clear()
+                                    fetch_eval_metrics.clear()
 
                                     st.session_state["selected_docs"] = set()
                                     st.session_state["confirm_bulk_delete"] = False
@@ -546,6 +548,7 @@ def render_indexed_documents_view():
                             st.success(msg)
                             get_manifest_cached.clear()
                             get_vector_count_cached.clear()
+                            fetch_eval_metrics.clear()
                         else:
                             st.error(msg)
                         st.session_state["confirm_purge_all"] = False

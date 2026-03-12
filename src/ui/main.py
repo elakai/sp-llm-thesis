@@ -80,13 +80,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Pre-load heavy ML resources on first cold start
+# ── FIX: REPLACED SPINNER BLOCK WITH FASTER COLD START ──
 if "app_loaded" not in st.session_state:
-    with st.spinner("Starting AXIstant… please wait"):
-        from src.config.settings import get_embeddings, get_generator_llm
-        get_embeddings()    # triggers model download/cache on first run
-        get_generator_llm()
-        st.session_state["app_loaded"] = True
+    from src.config.settings import get_embeddings, get_generator_llm
+    from src.core.retrieval import get_reranker
+    get_embeddings()
+    get_generator_llm()
+    get_reranker()
+    st.session_state["app_loaded"] = True
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 
 # ─────────────────────────────────────────────────────────────────────────────

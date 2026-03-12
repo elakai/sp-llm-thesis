@@ -11,14 +11,24 @@ _ID_PATTERN = re.compile(r'\b\d{4}-\d{5}\b')
 _PHONE_PATTERN = re.compile(r'\b(09\d{2}[-\s]?\d{3}[-\s]?\d{4}|09\d{9})\b')
 _EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 
+# Abuse patterns
+_ABUSE_PATTERNS = re.compile(
+    r'\b(fuck|shit|damn|bitch|asshole|putang|gago|bobo|tanga)\b',
+    re.IGNORECASE
+)
+
 def validate_query(query: str) -> tuple[bool, str]:
-    """Ensures the query is within length limits and is not empty."""
+    """Ensures the query is within length limits, is not empty, and has no profanity."""
     if not query or not query.strip():
         return False, "Please enter a question."
     
     if len(query) > MAX_QUERY_LENGTH:
         logger.warning(f"⚠️ Query rejected: Length {len(query)} exceeds limit.")
         return False, f"Your question is too long. Please limit it to {MAX_QUERY_LENGTH} characters."
+        
+    if _ABUSE_PATTERNS.search(query):
+        logger.warning(f"⚠️ Query rejected: Abuse/Profanity detected.")
+        return False, "Let's keep it respectful! Try asking something about your curriculum or school policies."
     
     return True, query.strip()
 
@@ -41,6 +51,13 @@ def trim_context(context: str, max_chars: int = CRITIC_CONTEXT_LIMIT) -> str:
     truncated = context[:max_chars]
     last_newline = truncated.rfind('\n')
     return (truncated[:last_newline] if last_newline > 0 else truncated) + "\n\n...[Context truncated for verification]"
+
+def _count_table_rows(text: str) -> int:
+    """Utility to check if the critic maliciously shortened a markdown table."""
+    return sum(
+        1 for line in text.split('\n')
+        if line.strip().startswith('|') and '---' not in line
+    )
 
 def verify_answer(query: str, context: str, draft_answer: str) -> str:
     """Critic Persona: Verifies the draft against the retrieved context."""
@@ -65,7 +82,7 @@ STRICT OUTPUT RULES:
 - If the draft accurately reflects the context: copy and output the draft exactly as written, with no additions.
 - NEVER truncate, shorten, or summarize tables. If the draft has a 15-row table, your output must also have all 15 rows.
 - If the draft contains fabricated specific details: rewrite it removing only those fabricated details.
-- If the context is completely unrelated to the question: output only this: "I'm sorry, but I cannot find that specific information in the available documents. Please consult the CSEA Department Chair."
+- If the context is completely unrelated to the question: output only this: "I couldn't find that in the available documents — your best bet is to check with your respective department chair directly!"
 - NEVER write words like SUPPORTED, PARTIALLY SUPPORTED, or NOT SUPPORTED in your output.
 - NEVER explain your decision. Just output the final answer directly.
 
@@ -94,6 +111,13 @@ Verified Answer:"""
 
         if not result:
             logger.warning("Critic returned empty response. Passing draft through.")
+            return draft_answer
+            
+        # Table row truncation guard
+        draft_rows = _count_table_rows(draft_answer)
+        result_rows = _count_table_rows(result)
+        if draft_rows > 0 and result_rows < draft_rows * 0.8:
+            logger.warning(f"Critic truncated table ({draft_rows} → {result_rows} rows). Passing draft through.")
             return draft_answer
 
         return result
