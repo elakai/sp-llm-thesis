@@ -17,6 +17,13 @@ def _get_logo_base64() -> str:
             return base64.b64encode(f.read()).decode()
     return ""
 
+
+def _get_previous_user_query(messages, assistant_idx: int) -> str:
+    for cursor in range(assistant_idx - 1, -1, -1):
+        if messages[cursor].get("role") == "user":
+            return messages[cursor].get("content", "")
+    return ""
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -158,62 +165,62 @@ def render_chat_view():
             st.markdown(message["content"])
             if "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
-            
-            # Feedback buttons - ONLY render if role is exactly "assistant"
-            if role == "assistant":
-                current_feedback = st.session_state.message_feedback.get(idx, None)
-                
-                col1, _ = st.columns([1, 4])
-                with col1:
-                    sub1, sub2 = st.columns(2)
-                    with sub1:
-                        if st.button("👍", key=f"g_{idx}", help="Helpful" if current_feedback != "helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Thanks for your feedback!", icon="✅")
-                            st.rerun()
-                    with sub2:
-                        if st.button("👎", key=f"b_{idx}", help="Not helpful" if current_feedback != "not_helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "not_helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("We'll improve this answer.", icon="📝")
-                            st.rerun()
-                
-                # Visual indicator for selected feedback
-                if current_feedback == "helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator helpful">
-                        <span>✓</span> You found this helpful
-                    </div>
-                    """, unsafe_allow_html=True)
-                elif current_feedback == "not_helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator not-helpful">
-                        <span>✗</span> Marked for improvement
-                    </div>
-                    """, unsafe_allow_html=True)
 
-                # ── RENDER SUGGESTED QUESTIONS (ONLY ON THE MOST RECENT MESSAGE) ──
-                if message.get("suggestions") and idx == len(st.session_state.messages) - 1:
-                    st.markdown("<br>**You might also want to ask:**", unsafe_allow_html=True)
-                    for q_idx, q in enumerate(message["suggestions"]):
-                        # Queue clicked suggestion and process it outside this bubble
-                        # so it appears as a brand-new user input turn.
-                        if st.button(q, key=f"sugg_{idx}_{q_idx}"):
-                            st.session_state.pending_suggested_query = q
-                            st.rerun()
+            # Keep suggested questions inside the assistant message box
+            if role == "assistant" and message.get("suggestions") and idx == len(st.session_state.messages) - 1:
+                st.markdown("<br>**You might also want to ask:**", unsafe_allow_html=True)
+                for q_idx, q in enumerate(message["suggestions"]):
+                    if st.button(q, key=f"sugg_{idx}_{q_idx}"):
+                        st.session_state.pending_suggested_query = q
+                        st.rerun()
+
+        if role == "assistant":
+            current_feedback = st.session_state.message_feedback.get(idx, None)
+            query = _get_previous_user_query(st.session_state.messages, idx)
+
+            st.markdown("<div class='eval-prompt'>Was this answer helpful?</div>", unsafe_allow_html=True)
+            feedback_col1, feedback_col2, _ = st.columns([1.1, 1.2, 4.7])
+
+            with feedback_col1:
+                if st.button(
+                    "Helpful",
+                    key=f"eval_helpful_{idx}",
+                    type="primary" if current_feedback == "helpful" else "secondary",
+                    use_container_width=True,
+                    help="Click again to remove" if current_feedback == "helpful" else None,
+                ):
+                    if current_feedback == "helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "helpful"
+                        save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Thanks for your feedback!", icon="✅")
+                    st.rerun()
+
+            with feedback_col2:
+                if st.button(
+                    "Not helpful",
+                    key=f"eval_not_helpful_{idx}",
+                    type="primary" if current_feedback == "not_helpful" else "secondary",
+                    use_container_width=True,
+                    help="Click again to remove" if current_feedback == "not_helpful" else None,
+                ):
+                    if current_feedback == "not_helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "not_helpful"
+                        save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("We'll improve this answer.", icon="📝")
+                    st.rerun()
+
+            if current_feedback == "helpful":
+                st.markdown("<div class='feedback-indicator helpful'><span>✓</span> You marked this response as helpful</div>", unsafe_allow_html=True)
+            elif current_feedback == "not_helpful":
+                st.markdown("<div class='feedback-indicator not-helpful'><span>✗</span> You marked this response as not helpful</div>", unsafe_allow_html=True)
 
     # Process queued suggestion after the history loop so it renders as
     # a separate chat turn, not inside the previous assistant message container.

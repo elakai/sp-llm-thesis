@@ -190,6 +190,173 @@ def _contains_markdown_table(text: str) -> bool:
         for line in text.strip().split('\n')
     )
 
+
+def _contains_speculation(text: str) -> bool:
+    return bool(re.search(r"\b(likely|possibly|probably|maybe|might|could be|appears to be|seems to be)\b", text, re.IGNORECASE))
+
+
+def _remove_speculative_sentences(text: str) -> str:
+    if not text or not text.strip():
+        return text
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    kept = []
+    for sentence in parts:
+        if not sentence.strip():
+            continue
+        if _contains_speculation(sentence):
+            continue
+        kept.append(sentence.strip())
+    return " ".join(kept).strip()
+
+
+def _build_source_certainty_note(top_score: float, score_margin: float, sources: list[str]) -> str:
+    unique_sources = []
+    seen = set()
+    for source in sources:
+        s = (source or "Unknown").strip()
+        if s not in seen:
+            unique_sources.append(s)
+            seen.add(s)
+
+    if top_score >= HIGH_CONFIDENCE_THRESHOLD and score_margin >= HIGH_CONFIDENCE_MARGIN:
+        level = "High"
+    elif top_score >= LOW_CONFIDENCE_THRESHOLD:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    source_preview = ", ".join(unique_sources[:2]) if unique_sources else "retrieved documents"
+    return f"> **Source certainty:** {level} ({len(unique_sources)} source file(s); based on: {source_preview})"
+
+
+def _detect_query_intent(query: str) -> str:
+    q_lower = (query or "").lower()
+    if any(k in q_lower for k in ["where", "room", "building", "located", "floor", "lab", "office", "directory"]):
+        return "location"
+    if any(k in q_lower for k in ["curriculum", "course", "subject", "semester", "units", "prerequisite"]):
+        return "curriculum"
+    if any(k in q_lower for k in ["who", "faculty", "chair", "dean", "professor", "staff", "instructor"]):
+        return "people"
+    if any(k in q_lower for k in ["download", "link", "pdf", "form", "access"]):
+        return "download"
+    if any(k in q_lower for k in ["policy", "rule", "guideline", "dress code", "procedure", "manual"]):
+        return "policy"
+    return "general"
+
+
+def _is_no_answer_response(text: str) -> bool:
+    if not text:
+        return False
+    patterns = [
+        r"i couldn't find that in the available documents",
+        r"i don't have enough info to answer that confidently",
+        r"not explicitly stated in the retrieved documents",
+        r"best to check with your department chair",
+    ]
+    lowered = text.lower()
+    return any(re.search(p, lowered) for p in patterns)
+
+
+def _generate_recovery_questions(query: str) -> list[str]:
+    intent = _detect_query_intent(query)
+    if intent == "location":
+        return [
+            "Do you have a room code (like EB213) I can check directly?",
+            "Should I search by building name instead of lab name?",
+            "Do you want nearby rooms listed from the same directory section?",
+        ]
+    if intent == "curriculum":
+        return [
+            "Which program and year level should I focus on?",
+            "Do you want the full semester list or one specific course?",
+            "Should I check prerequisites for a specific course code?",
+        ]
+    if intent == "people":
+        return [
+            "Do you want faculty, staff, or chairperson information?",
+            "Can you share the exact person name to match in records?",
+            "Should I search by department instead of person name?",
+        ]
+    if intent == "download":
+        return [
+            "Which document are you trying to download exactly?",
+            "Do you want the official PDF link or a form link?",
+            "Should I look for the latest posted version only?",
+        ]
+    if intent == "policy":
+        return [
+            "Which specific policy area should I check first?",
+            "Do you need rule details, exceptions, or procedures?",
+            "Should I search the latest handbook section for this?",
+        ]
+    return [
+        "Can you share a more specific keyword or term to search?",
+        "Do you want me to narrow this by department or document type?",
+        "Should I check the latest handbook entries for this topic?",
+    ]
+
+
+def _is_incomplete_query(query: str) -> bool:
+    q_lower = (query or "").strip().lower()
+    tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
+    if len(tokens) <= 2:
+        return True
+
+    question_starters = {"what", "where", "who", "when", "why", "how", "which"}
+    helper_verbs = {"is", "are", "can", "do", "does", "did", "show", "list", "find", "tell", "explain"}
+    has_structure = any(t in question_starters or t in helper_verbs for t in tokens)
+
+    return len(tokens) <= 4 and not has_structure
+
+
+def _get_previous_user_query(chat_history_list: List[Dict[str, str]], current_query: str) -> str:
+    if not chat_history_list:
+        return ""
+    current_norm = (current_query or "").strip().lower()
+    for msg in reversed(chat_history_list):
+        if msg.get("role") != "user":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if content.lower() == current_norm:
+            continue
+        return content
+    return ""
+
+
+def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[str, str]]) -> List[str]:
+    base = (query or "").strip()
+    if not base:
+        return []
+
+    intent = _detect_query_intent(base)
+    variants: List[str] = [base]
+
+    if intent == "location":
+        variants.append(f"{base} location building room directory")
+    elif intent == "curriculum":
+        variants.append(f"{base} curriculum course semester prerequisite")
+    elif intent == "people":
+        variants.append(f"{base} faculty staff role department")
+    elif intent == "download":
+        variants.append(f"{base} official link pdf form")
+    elif intent == "policy":
+        variants.append(f"{base} policy guideline rule procedure")
+
+    previous_user_query = _get_previous_user_query(chat_history_list, base)
+    if previous_user_query:
+        variants.append(f"{previous_user_query} {base}")
+
+    deduped = []
+    seen = set()
+    for variant in variants:
+        norm = variant.strip().lower()
+        if norm and norm not in seen:
+            deduped.append(variant.strip())
+            seen.add(norm)
+    return deduped[:5]
+
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
     if not docs: return []
     grouped: Dict[str, List[Document]] = {}
@@ -220,15 +387,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
+    is_incomplete_input = _is_incomplete_query(standalone_query)
     
-    cached_answer = check_semantic_cache(standalone_query)
-    if cached_answer:
-        words = cached_answer.split(" ")
-        chunk_size = 3
-        for i in range(0, len(words), chunk_size):
-            yield " ".join(words[i:i+chunk_size]) + " "
-            time.sleep(0.01)
-        return
+    if not is_incomplete_input:
+        cached_answer = check_semantic_cache(standalone_query)
+        if cached_answer:
+            words = cached_answer.split(" ")
+            chunk_size = 3
+            for i in range(0, len(words), chunk_size):
+                yield " ".join(words[i:i+chunk_size]) + " "
+                time.sleep(0.01)
+            return
+    else:
+        logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
     retrieval_start = time.time()
     
@@ -254,7 +425,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             time.sleep(0.02)
         return
 
-    is_complex = any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
+    is_complex = (not is_incomplete_input) and any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
     sub_queries = [standalone_query]
     if is_complex:
         try:
@@ -262,7 +433,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         except:
             pass
 
+    if is_incomplete_input:
+        for variant in _build_incomplete_query_variants(standalone_query, chat_history_list):
+            if variant not in sub_queries:
+                sub_queries.append(variant)
+
     dynamic_k = get_dynamic_k(standalone_query)
+    if is_incomplete_input:
+        dynamic_k = max(dynamic_k, 20)
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
@@ -276,7 +454,22 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             all_docs.extend(res)
 
     if not all_docs:
+        if is_incomplete_input:
+            broad_queries = _build_incomplete_query_variants(standalone_query, chat_history_list)
+            broad_retriever = get_retriever(k=max(dynamic_k, 30))
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                fallback_results = list(executor.map(broad_retriever.invoke, broad_queries))
+            for res in fallback_results:
+                all_docs.extend(res)
+
         logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
+        if all_docs:
+            logger.info(f"🔎 Incomplete-query fallback recovered {len(all_docs)} chunks using broad closest-match retrieval.")
+        else:
+            yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
+            return
+
+    if not all_docs:
         yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
         return
 
@@ -476,6 +669,8 @@ Answer the question using ONLY the context below.
     Always decode the building name, floor number, and room number for 
     the user. Only use acronyms confirmed in the context.
 
+14. **NO SPECULATION**: Never guess or infer missing details. Do not use speculative words like "likely", "possibly", "probably", "might", or "could be". If the context does not explicitly state a detail, clearly say it is not explicitly stated in the retrieved documents.
+
 **Context:**
 {context}
 
@@ -491,7 +686,8 @@ Answer the question using ONLY the context below.
             is_curriculum_query or 
             is_facility_query or 
             is_analytical_query or
-            is_download_query
+            is_download_query or
+            is_incomplete_input
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -526,15 +722,31 @@ Answer the question using ONLY the context below.
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
 
+        # Hard block speculative language that can mislead users.
+        if _contains_speculation(final_verified_response):
+            cleaned_non_speculative = _remove_speculative_sentences(final_verified_response)
+            if cleaned_non_speculative:
+                final_verified_response = cleaned_non_speculative
+            else:
+                final_verified_response = "I couldn't find an explicit answer for that detail in the retrieved documents."
+
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
+
+        source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
+        score_margin = top_score - second_score if second_score != float("-inf") else top_score
+        certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
+        final_verified_response = f"{final_verified_response}\n\n{certainty_note}"
         
         gen_time = time.time() - gen_start
-        suggested_questions = generate_suggested_questions(
-            standalone_query, final_verified_response, context,
-            skip_llm=(gen_time > 8.0)
-        )
+        if _is_no_answer_response(final_verified_response):
+            suggested_questions = _generate_recovery_questions(standalone_query)
+        else:
+            suggested_questions = generate_suggested_questions(
+                standalone_query, final_verified_response, context,
+                skip_llm=(gen_time > 8.0)
+            )
         
         if suggested_questions:
             suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
@@ -637,6 +849,235 @@ def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
 
 def generate_suggested_questions(query: str, response: str, context: str, skip_llm: bool = False) -> list[str]:
+    STRONG_STOPWORDS = {
+        "what", "which", "where", "when", "why", "how", "this", "that", "those", "these",
+        "from", "with", "about", "into", "within", "there", "their", "your", "have", "has",
+        "does", "doing", "can", "could", "would", "should", "will", "just", "same", "topic",
+        "context", "specific", "say", "says", "details", "detail", "entry", "source", "document",
+    }
+
+    def _token_set(text: str) -> set[str]:
+        return {
+            tok for tok in re.findall(r"[a-zA-Z0-9']+", (text or "").lower())
+            if len(tok) >= 3
+        }
+
+    def _detect_followup_intent(q: str) -> str:
+        return _detect_query_intent(q)
+
+    def _extract_query_focus(original_query: str) -> str:
+        q = (original_query or "").strip()
+        tokens = re.findall(r"[A-Za-z0-9']+", q)
+        if not tokens:
+            return "this topic"
+
+        ignore = {
+            "what", "where", "when", "why", "how", "which", "who",
+            "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should",
+            "the", "a", "an", "about", "for", "to", "of", "in", "on", "at",
+        }
+        kept = [t for t in tokens if t.lower() not in ignore]
+        if not kept:
+            kept = tokens
+        focus = " ".join(kept[:3]).strip()
+        return focus if focus else "this topic"
+
+    def _intent_fallback_templates(intent: str, anchors: list[str], source_codes: set[str], query_focus: str) -> list[str]:
+        anchor = query_focus if query_focus and query_focus != "this topic" else (anchors[0] if anchors else "this topic")
+        code = sorted(source_codes)[0] if source_codes else None
+
+        if intent == "location":
+            qs = [
+                f"Which source entry explicitly mentions {anchor}?",
+                f"What building and room details are explicitly listed for {anchor}?",
+                "What nearby room or lab entries appear in the same building section?",
+            ]
+        elif intent == "curriculum":
+            qs = [
+                f"What prerequisite details are explicitly listed for {code or anchor}?",
+                f"Where does {code or anchor} appear across semesters?",
+                "What related courses are listed in the same curriculum section?",
+            ]
+        elif intent == "people":
+            qs = [
+                f"What exact role is listed for {anchor} in the source?",
+                f"What other people are listed with {anchor} in the same section?",
+                "Which source line provides this personnel detail?",
+            ]
+        elif intent == "download":
+            qs = [
+                "Which exact source contains the official download link?",
+                f"What document is the link for in the same source as {anchor}?",
+                "Are there related forms or files listed in that source section?",
+            ]
+        elif intent == "policy":
+            qs = [
+                f"What condition or exception is explicitly stated for {anchor}?",
+                "What exact procedure steps are listed in the same source section?",
+                "Which source line should be followed for this rule?",
+            ]
+        else:
+            qs = [
+                f"Which exact source line supports the detail about {anchor}?",
+                f"What related detail is listed with {anchor} in the same section?",
+                "What condition or exception is explicitly stated in this source?",
+            ]
+
+        return qs
+
+    def _meaningful_tokens(text: str) -> set[str]:
+        return {t for t in _token_set(text) if t not in STRONG_STOPWORDS}
+
+    def _is_query_aligned(q: str, original_query: str) -> bool:
+        q_tokens = _meaningful_tokens(q)
+        query_tokens = _meaningful_tokens(original_query)
+        if not query_tokens:
+            return True
+        return len(q_tokens.intersection(query_tokens)) >= 1
+
+    def _is_intent_aligned(q: str, intent: str) -> bool:
+        q_lower = (q or "").lower()
+        if intent == "location":
+            if any(x in q_lower for x in ["chapter", "handbook", "manual"]):
+                return False
+            return any(x in q_lower for x in ["where", "room", "building", "floor", "location", "located", "directory", "nearby"])
+        if intent == "curriculum":
+            return any(x in q_lower for x in ["course", "subject", "semester", "units", "prerequisite", "curriculum"])
+        if intent == "people":
+            return any(x in q_lower for x in ["who", "faculty", "staff", "role", "instructor", "chair", "dean", "professor"])
+        if intent == "download":
+            return any(x in q_lower for x in ["link", "download", "pdf", "file", "form", "access"])
+        if intent == "policy":
+            return any(x in q_lower for x in ["rule", "policy", "guideline", "procedure", "exception", "condition"])
+        return True
+
+    def _jaccard(a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        return len(a.intersection(b)) / max(1, len(a.union(b)))
+
+    def _normalize_question(q: str) -> str:
+        cleaned = re.sub(r"\b(fr|mr|ms|mrs|dr)\.\s+", "", q or "", flags=re.IGNORECASE)
+        cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", cleaned.lower())
+        cleaned = re.sub(r"\b(is|are|was|were|in|the|a|an|to|of|for|on|at|about|directory|campus|adnu)\b", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    def _is_redundant_candidate(q: str, existing: list[str]) -> bool:
+        q_norm = _normalize_question(q)
+        q_tokens = _token_set(q_norm)
+        if not q_norm or len(q_tokens) < 2:
+            return True
+        for prev in existing:
+            prev_norm = _normalize_question(prev)
+            if q_norm == prev_norm:
+                return True
+            if _jaccard(q_tokens, _token_set(prev_norm)) >= 0.62:
+                return True
+        return False
+
+    def _is_shallow_rephrase(q: str, original_query: str) -> bool:
+        q_lower = (q or "").strip().lower()
+        yes_no_starters = (
+            "is ", "are ", "was ", "were ", "do ", "does ", "did ",
+            "can ", "could ", "will ", "would ", "has ", "have ", "had "
+        )
+        if not q_lower.startswith(yes_no_starters):
+            return False
+        return _jaccard(_token_set(q_lower), _token_set(original_query)) >= 0.45
+
+    def _remove_question_lead(q: str) -> str:
+        q_clean = (q or "").strip().lower()
+        q_clean = q_clean.rstrip("? ")
+        q_clean = re.sub(
+            r"^(what|which|who|where|when|why|how)\s+(is|are|was|were|does|do|did|can|could|will|would|has|have|had)\s+",
+            "",
+            q_clean,
+        )
+        q_clean = re.sub(r"^(what|which|who|where|when|why|how)\s+", "", q_clean)
+        q_clean = re.sub(r"^(tell me|explain|describe|list)\s+", "", q_clean)
+        return re.sub(r"\s+", " ", q_clean).strip()
+
+    def _already_answered_by_response(q: str, response_text: str) -> bool:
+        if not response_text.strip():
+            return False
+
+        q_core = _remove_question_lead(q)
+        q_tokens = _token_set(q_core)
+        resp_tokens = _token_set(response_text)
+
+        if len(q_tokens) < 2:
+            return True
+
+        coverage = len(q_tokens.intersection(resp_tokens)) / max(1, len(q_tokens))
+        if coverage >= 0.8:
+            return True
+
+        response_lines = [line.strip() for line in response_text.splitlines() if line.strip()]
+        q_norm_tokens = _token_set(_normalize_question(q_core))
+        if not q_norm_tokens:
+            return False
+
+        for line in response_lines:
+            line_tokens = _token_set(_normalize_question(line))
+            if not line_tokens:
+                continue
+            if _jaccard(q_norm_tokens, line_tokens) >= 0.62:
+                return True
+
+        return False
+
+    def _adds_related_context_value(q: str, response_text: str, context_text: str) -> bool:
+        q_tokens = _meaningful_tokens(q)
+        if len(q_tokens) < 2:
+            return False
+
+        resp_tokens = _meaningful_tokens(response_text)
+        ctx_tokens = _meaningful_tokens(context_text)
+        ctx_extra = ctx_tokens - resp_tokens
+
+        # Must stay within current message topic
+        topic_overlap = len(q_tokens.intersection(resp_tokens))
+        if topic_overlap < 1:
+            return False
+
+        # Must add at least one related detail from retrieved context not already explicit in response
+        if ctx_extra:
+            return len(q_tokens.intersection(ctx_extra)) >= 1
+
+        # If no extra context terms exist, require stronger overlap with response for strict relevance
+        return len(q_tokens.intersection(resp_tokens)) >= 2
+
+    def _extract_anchor_phrases(source_text: str) -> list[str]:
+        anchors = []
+
+        source_names = re.findall(r"\[\[Source:\s*([^\]]+)\]", source_text)
+        for src in source_names:
+            name = re.sub(r"\.(pdf|md|txt|docx?)$", "", src.strip(), flags=re.IGNORECASE)
+            name = re.sub(r"[_-]+", " ", name).strip()
+            if 4 <= len(name) <= 70:
+                anchors.append(name)
+
+        for code in re.findall(r"\b[A-Z]{2,5}\d{3}\b", source_text.upper()):
+            anchors.append(code)
+
+        title_like = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}\b", source_text)
+        for phrase in title_like:
+            cleaned = phrase.strip()
+            if 6 <= len(cleaned) <= 50:
+                anchors.append(cleaned)
+
+        deduped = []
+        seen = set()
+        for item in anchors:
+            key = item.lower()
+            if key not in seen:
+                deduped.append(item)
+                seen.add(key)
+            if len(deduped) == 15:
+                break
+        return deduped
+
     def _extract_tokens(text: str) -> set[str]:
         return {
             tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
@@ -654,34 +1095,52 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
             cleaned += "?"
         return cleaned
 
-    def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
+    def _contains_anchor(q: str, anchors: list[str]) -> bool:
+        q_lower = q.lower()
+        return any(anchor.lower() in q_lower for anchor in anchors)
+
+    def _is_answerable_question(
+        q: str,
+        source_tokens: set[str],
+        source_codes: set[str],
+        anchors: list[str],
+        original_query: str,
+        response_text: str,
+        context_text: str,
+        intent: str,
+    ) -> bool:
         if len(q) < 12 or len(q) > 140:
+            return False
+
+        if _is_shallow_rephrase(q, original_query):
+            return False
+
+        if not _is_query_aligned(q, original_query):
+            return False
+
+        if not _is_intent_aligned(q, intent):
             return False
 
         q_codes = _extract_course_codes(q)
         if q_codes and not q_codes.issubset(source_codes):
             return False
 
+        if anchors and not _contains_anchor(q, anchors):
+            return False
+
+        if not _adds_related_context_value(q, response_text, context_text):
+            return False
+
         q_tokens = _extract_tokens(q)
         overlap = q_tokens.intersection(source_tokens)
-        return len(overlap) >= 2
+        return len(overlap) >= 3
 
-    def _fallback_questions(source_text: str) -> list[str]:
-        source_lower = source_text.lower()
-        fallbacks: list[str] = []
+    def _fallback_questions(source_text: str, anchors: list[str], source_codes: set[str], query_focus: str) -> list[str]:
+        intent = _detect_followup_intent(query)
+        fallbacks = _intent_fallback_templates(intent, anchors, source_codes, query_focus)
 
-        if "prereq" in source_lower or "pre-requisite" in source_lower or "prerequisite" in source_lower:
-            fallbacks.append("What are the exact prerequisites mentioned here?")
-        if _extract_course_codes(source_text):
-            fallbacks.append("Can you list all course codes mentioned in this answer?")
-        if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
-            fallbacks.append("Can you summarize this by semester or category?")
-
-        fallbacks.extend([
-            "Can you summarize that in 3 short bullet points?",
-            "Which part of the available documents supports this answer?",
-            "What is the key takeaway I should remember from this?",
-        ])
+        if not fallbacks and source_text.strip():
+            fallbacks = _intent_fallback_templates("general", anchors, source_codes, query_focus)
 
         deduped = []
         seen = set()
@@ -694,19 +1153,66 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
                 break
         return deduped
 
-    source_text = f"{response}\n{context}"
+    source_text = context if context.strip() else f"{response}\n{context}"
+    strict_context = f"{response}\n{context}" if context.strip() else response
+    anchors = _extract_anchor_phrases(source_text)
+    source_tokens = _extract_tokens(source_text)
+    source_codes = _extract_course_codes(source_text)
+    followup_intent = _detect_followup_intent(query)
+    query_focus = _extract_query_focus(query)
     
     if skip_llm:
-        return _fallback_questions(source_text)
+        quick_candidates = _fallback_questions(source_text, anchors, source_codes, query_focus)
+        quick_validated: list[str] = []
+        for q in quick_candidates:
+            q_clean = _cleanup_question(q)
+            if not q_clean:
+                continue
+            if _is_redundant_candidate(q_clean, quick_validated):
+                continue
+            if not _is_query_aligned(q_clean, query):
+                continue
+            if not _is_intent_aligned(q_clean, followup_intent):
+                continue
+            quick_validated.append(q_clean)
+
+        if len(quick_validated) < 2:
+            for q in _generate_recovery_questions(query):
+                q_clean = _cleanup_question(q)
+                if not q_clean:
+                    continue
+                if _is_redundant_candidate(q_clean, quick_validated):
+                    continue
+                if not _is_intent_aligned(q_clean, followup_intent):
+                    continue
+                quick_validated.append(q_clean)
+                if len(quick_validated) >= 3:
+                    break
+
+        return quick_validated[:3]
 
     try:
         llm = get_generator_llm()
+        anchor_text = ", ".join(anchors[:10]) if anchors else "(none)"
+        intent_rules = {
+            "location": "Ask about explicit room/building/floor entries, neighboring entries, or source line evidence.",
+            "curriculum": "Ask about prerequisites, semester placement, or closely related courses in the same section.",
+            "people": "Ask about exact roles, associated personnel, or source evidence lines.",
+            "download": "Ask about exact file/link target and related source-listed documents.",
+            "policy": "Ask about explicit conditions, exceptions, steps, or enforcement details in the same source.",
+            "general": "Ask for source-backed supporting detail, conditions, and related details from the same section.",
+        }
         prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
 USING ONLY the provided response and context.
 
 Hard constraints:
 - Do not introduce new facts, entities, course codes, policies, or assumptions.
 - Keep each question specific to details already present.
+- Each question must include at least one exact anchor term from this list: {anchor_text}
+    - Make each question go one level deeper (details, conditions, comparisons, or source evidence).
+    - Do NOT produce yes/no rephrasings of the same fact from the answer.
+    - Make all 3 questions clearly different from each other.
+- Follow this intent policy for this query: {intent_rules.get(followup_intent, intent_rules['general'])}
 - Keep each question under 16 words.
 - Return ONLY a JSON array of 3 strings.
 - No markdown, no numbering, no extra text.
@@ -723,9 +1229,6 @@ Output (JSON array only):"""
         result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
         raw_questions = json.loads(result)
 
-        source_tokens = _extract_tokens(source_text)
-        source_codes = _extract_course_codes(source_text)
-
         validated: list[str] = []
         seen = set()
 
@@ -737,26 +1240,69 @@ Output (JSON array only):"""
                 key = cleaned.lower()
                 if key in seen:
                     continue
-                if _is_answerable_question(cleaned, source_tokens, source_codes):
+                if _is_redundant_candidate(cleaned, validated):
+                    continue
+                if _already_answered_by_response(cleaned, response):
+                    continue
+                if _is_answerable_question(
+                    cleaned,
+                    source_tokens,
+                    source_codes,
+                    anchors,
+                    query,
+                    response,
+                    strict_context,
+                    followup_intent,
+                ):
                     validated.append(cleaned)
                     seen.add(key)
                 if len(validated) == 3:
                     break
 
         if len(validated) < 3:
-            for q in _fallback_questions(source_text):
+            for q in _fallback_questions(source_text, anchors, source_codes, query_focus):
                 key = q.lower()
                 if key not in seen:
+                    if _is_redundant_candidate(q, validated):
+                        continue
+                    if _already_answered_by_response(q, response):
+                        continue
+                    if not _adds_related_context_value(q, response, strict_context):
+                        continue
+                    if not _is_query_aligned(q, query):
+                        continue
+                    if not _is_intent_aligned(q, followup_intent):
+                        continue
                     validated.append(q)
                     seen.add(key)
                 if len(validated) == 3:
                     break
 
+        if len(validated) < 2:
+            rescue_candidates = _fallback_questions(source_text, anchors, source_codes, query_focus)
+            rescue_candidates.extend(_generate_recovery_questions(query))
+            for q in rescue_candidates:
+                cleaned = _cleanup_question(q)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                if _is_redundant_candidate(cleaned, validated):
+                    continue
+                if not _is_intent_aligned(cleaned, followup_intent):
+                    continue
+                if not _is_query_aligned(cleaned, query):
+                    continue
+                validated.append(cleaned)
+                seen.add(key)
+                if len(validated) >= 3:
+                    break
+
         return validated[:3]
     except Exception as e:
         logger.warning(f"Suggested questions failed: {e}")
-    return [
-        "Can you summarize that in 3 short bullet points?",
-        "Which part of the available documents supports this answer?",
-        "What is the key takeaway I should remember from this?",
-    ]
+    safe_fallback = _fallback_questions(source_text, anchors, source_codes, query_focus)
+    if len(safe_fallback) < 2:
+        safe_fallback.extend(_generate_recovery_questions(query))
+    return safe_fallback[:3]
