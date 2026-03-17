@@ -90,9 +90,9 @@ def render_history_view():
                         st.rerun()
                 with col2:
                     if st.button("Delete", key=f"delete_{i}", type="secondary"):
-                        # Delete from database first
-                        user_email = st.session_state.get("user_id")
-                        delete_conversation(session_id, user_email)
+                        # Delete from database first (chat_logs are keyed by user_email)
+                        history_owner = st.session_state.get("email") or st.session_state.get("user_id")
+                        db_deleted = delete_conversation(session_id, history_owner)
                         
                         # Then remove from session state
                         st.session_state["chat_history"].pop(actual_idx)
@@ -103,6 +103,8 @@ def render_history_view():
                                 st.session_state["messages"] = []
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
+                        if not db_deleted:
+                            st.toast("Conversation removed from this view, but database delete could not be confirmed.", icon="⚠️")
                         st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────

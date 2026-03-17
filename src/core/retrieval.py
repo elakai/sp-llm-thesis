@@ -231,15 +231,23 @@ def _build_source_certainty_note(top_score: float, score_margin: float, sources:
 
 def _detect_query_intent(query: str) -> str:
     q_lower = (query or "").lower()
-    if any(k in q_lower for k in ["where", "room", "building", "located", "floor", "lab", "office", "directory"]):
+    tokens = set(re.findall(r"[a-z0-9']+", q_lower))
+
+    def has_any_words(words: set[str]) -> bool:
+        return any(word in tokens for word in words)
+
+    def has_any_phrases(phrases: list[str]) -> bool:
+        return any(phrase in q_lower for phrase in phrases)
+
+    if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
         return "location"
-    if any(k in q_lower for k in ["curriculum", "course", "subject", "semester", "units", "prerequisite"]):
+    if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
         return "curriculum"
-    if any(k in q_lower for k in ["who", "faculty", "chair", "dean", "professor", "staff", "instructor"]):
+    if has_any_words({"who", "faculty", "chair", "dean", "professor", "staff", "instructor"}):
         return "people"
-    if any(k in q_lower for k in ["download", "link", "pdf", "form", "access"]):
+    if has_any_words({"download", "link", "pdf", "form", "access"}) or has_any_phrases(["google form", "download link"]):
         return "download"
-    if any(k in q_lower for k in ["policy", "rule", "guideline", "dress code", "procedure", "manual"]):
+    if has_any_words({"policy", "rule", "guideline", "procedure", "manual"}) or has_any_phrases(["dress code"]):
         return "policy"
     return "general"
 
@@ -261,38 +269,38 @@ def _generate_recovery_questions(query: str) -> list[str]:
     intent = _detect_query_intent(query)
     if intent == "location":
         return [
-            "Do you have a room code (like EB213) I can check directly?",
-            "Should I search by building name instead of lab name?",
-            "Do you want nearby rooms listed from the same directory section?",
+            "Can I share a room code (like EB213) so you can check it directly?",
+            "Can you search by building name instead of the lab name?",
+            "Can you list nearby rooms from the same directory section?",
         ]
     if intent == "curriculum":
         return [
-            "Which program and year level should I focus on?",
-            "Do you want the full semester list or one specific course?",
-            "Should I check prerequisites for a specific course code?",
+            "Can you focus on one program and year level first?",
+            "Can you show the full semester list or just one course?",
+            "Can you check prerequisites for a specific course code?",
         ]
     if intent == "people":
         return [
-            "Do you want faculty, staff, or chairperson information?",
-            "Can you share the exact person name to match in records?",
-            "Should I search by department instead of person name?",
+            "Can you check faculty, staff, or chairperson information?",
+            "Can you match the exact person name in the records?",
+            "Can you search by department instead of person name?",
         ]
     if intent == "download":
         return [
-            "Which document are you trying to download exactly?",
-            "Do you want the official PDF link or a form link?",
-            "Should I look for the latest posted version only?",
+            "Can you check which document this download link is for?",
+            "Can you share the official PDF link or form link?",
+            "Can you look for the latest posted version only?",
         ]
     if intent == "policy":
         return [
-            "Which specific policy area should I check first?",
-            "Do you need rule details, exceptions, or procedures?",
-            "Should I search the latest handbook section for this?",
+            "Can you check a specific policy area first?",
+            "Can you show the rule details, exceptions, or procedures?",
+            "Can you point me to the exact policy line and section title?",
         ]
     return [
-        "Can you share a more specific keyword or term to search?",
-        "Do you want me to narrow this by department or document type?",
-        "Should I check the latest handbook entries for this topic?",
+        "Can you narrow this using a more specific keyword?",
+        "Can you filter this by department or document type?",
+        "Can you point me to the exact source line and section for this?",
     ]
 
 
@@ -873,57 +881,137 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
 
         ignore = {
             "what", "where", "when", "why", "how", "which", "who",
+            "this", "that", "these", "those",
             "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should",
             "the", "a", "an", "about", "for", "to", "of", "in", "on", "at",
+            "i", "me", "my", "we", "us", "our", "you", "your", "please",
+            "explain", "show", "tell", "share", "check", "find", "list",
+            "check", "latest", "entry", "entries", "topic", "exact", "line", "source", "section",
         }
+
+        generic_focus_terms = {
+            "handbook", "chapter", "manual", "document", "documents", "info", "information", "details",
+            "detail", "record", "records", "update", "updates", "requirement", "requirements",
+        }
+
         kept = [t for t in tokens if t.lower() not in ignore]
+        meaningful = [t for t in kept if t.lower() not in generic_focus_terms]
+        if meaningful:
+            kept = meaningful
+
         if not kept:
             kept = tokens
+
+        if all(t.lower() in ignore or t.lower() in generic_focus_terms for t in kept):
+            return "this topic"
+
         focus = " ".join(kept[:3]).strip()
         return focus if focus else "this topic"
 
+    def _choose_best_anchor(query_focus: str, anchors: list[str]) -> str:
+        if query_focus and query_focus != "this topic":
+            return query_focus
+
+        preferred = []
+        for anchor in anchors:
+            a = (anchor or "").strip()
+            lower = a.lower()
+            if not a:
+                continue
+            if len(a.split()) < 2:
+                continue
+            if len(a) > 45:
+                continue
+            if any(x in lower for x in ["chapter", "handbook", ".pdf", "source"]):
+                continue
+            preferred.append(a)
+
+        if preferred:
+            return preferred[0]
+        if anchors:
+            return anchors[0]
+        return "this topic"
+
     def _intent_fallback_templates(intent: str, anchors: list[str], source_codes: set[str], query_focus: str) -> list[str]:
-        anchor = query_focus if query_focus and query_focus != "this topic" else (anchors[0] if anchors else "this topic")
+        anchor = _choose_best_anchor(query_focus, anchors)
         code = sorted(source_codes)[0] if source_codes else None
 
         if intent == "location":
             qs = [
-                f"Which source entry explicitly mentions {anchor}?",
-                f"What building and room details are explicitly listed for {anchor}?",
-                "What nearby room or lab entries appear in the same building section?",
+                f"Can you point me to the source entry that mentions {anchor}?",
+                f"Where is {anchor} located (building and room)?",
+                "Can you list nearby room or lab entries in the same building section?",
             ]
         elif intent == "curriculum":
             qs = [
-                f"What prerequisite details are explicitly listed for {code or anchor}?",
-                f"Where does {code or anchor} appear across semesters?",
-                "What related courses are listed in the same curriculum section?",
+                f"Can you check the prerequisite details for {code or anchor}?",
+                f"Where can I find {code or anchor} across semesters?",
+                "Can you list related courses in the same curriculum section?",
             ]
         elif intent == "people":
             qs = [
-                f"What exact role is listed for {anchor} in the source?",
-                f"What other people are listed with {anchor} in the same section?",
-                "Which source line provides this personnel detail?",
+                f"Who is listed for {anchor} and what role do they have?",
+                f"Who else is listed with {anchor} in the same section?",
+                "Can you point me to the source line for this personnel detail?",
             ]
         elif intent == "download":
             qs = [
-                "Which exact source contains the official download link?",
-                f"What document is the link for in the same source as {anchor}?",
-                "Are there related forms or files listed in that source section?",
+                "Can you point me to the exact source with the official download link?",
+                f"What document is that link for in the same source as {anchor}?",
+                "Are there related forms or files in that same source section?",
             ]
         elif intent == "policy":
             qs = [
-                f"What condition or exception is explicitly stated for {anchor}?",
-                "What exact procedure steps are listed in the same source section?",
-                "Which source line should be followed for this rule?",
+                f"What condition or exception is stated for {anchor}?",
+                "Can you show the exact procedure steps in the same source section?",
+                "Can you point me to the source line for this rule?",
             ]
         else:
             qs = [
-                f"Which exact source line supports the detail about {anchor}?",
-                f"What related detail is listed with {anchor} in the same section?",
-                "What condition or exception is explicitly stated in this source?",
+                f"Can you point me to the exact source line about {anchor}?",
+                f"Can you show me related details listed with {anchor} in the same section?",
+                f"Where can I find the latest handbook update for {anchor}?",
             ]
 
         return qs
+
+    def _context_fill_templates(intent: str, anchor: str, source_codes: set[str]) -> list[str]:
+        code = sorted(source_codes)[0] if source_codes else None
+        if intent == "location":
+            return [
+                f"What nearby entry is listed closest to {anchor} in the same section?",
+                f"Is there a floor or landmark detail listed with {anchor}?",
+                f"Can you point me to the source line for {anchor}'s location details?",
+            ]
+        if intent == "curriculum":
+            return [
+                f"Which semester entry is closest to {code or anchor} in the same table?",
+                f"What prerequisite note is listed alongside {code or anchor}?",
+                f"Can you point me to the source line for {code or anchor}'s curriculum detail?",
+            ]
+        if intent == "people":
+            return [
+                f"Which section lists {anchor} with role details?",
+                f"What related personnel detail appears near {anchor}?",
+                f"Can you point me to the exact source line for {anchor}'s role?",
+            ]
+        if intent == "download":
+            return [
+                f"Which section lists the official file linked with {anchor}?",
+                f"Is there a newer version note for the {anchor} document?",
+                "Can you point me to the exact source line with the active download link?",
+            ]
+        if intent == "policy":
+            return [
+                f"Which section title contains the rule related to {anchor}?",
+                f"What exception note is listed with {anchor} in the same section?",
+                f"Can you point me to the source line for {anchor}'s procedure detail?",
+            ]
+        return [
+            f"Where in the handbook is {anchor} mentioned?",
+            f"Can you show me the update note listed with {anchor} in that section?",
+            f"Which chapter should I check first for the latest {anchor} details?",
+        ]
 
     def _meaningful_tokens(text: str) -> set[str]:
         return {t for t in _token_set(text) if t not in STRONG_STOPWORDS}
@@ -982,9 +1070,16 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
             "is ", "are ", "was ", "were ", "do ", "does ", "did ",
             "can ", "could ", "will ", "would ", "has ", "have ", "had "
         )
+        if _normalize_question(q_lower) == _normalize_question(original_query):
+            return True
+
+        similarity = _jaccard(_token_set(q_lower), _token_set(original_query))
+        if similarity >= 0.70:
+            return True
+
         if not q_lower.startswith(yes_no_starters):
             return False
-        return _jaccard(_token_set(q_lower), _token_set(original_query)) >= 0.45
+        return similarity >= 0.45
 
     def _remove_question_lead(q: str) -> str:
         q_clean = (q or "").strip().lower()
@@ -1051,6 +1146,12 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
     def _extract_anchor_phrases(source_text: str) -> list[str]:
         anchors = []
 
+        def _normalize_anchor_phrase(value: str) -> str:
+            cleaned = re.sub(r"\s+", " ", (value or "")).strip()
+            cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s+(the|a|an)$", "", cleaned, flags=re.IGNORECASE)
+            return cleaned.strip()
+
         source_names = re.findall(r"\[\[Source:\s*([^\]]+)\]", source_text)
         for src in source_names:
             name = re.sub(r"\.(pdf|md|txt|docx?)$", "", src.strip(), flags=re.IGNORECASE)
@@ -1063,7 +1164,7 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
 
         title_like = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}\b", source_text)
         for phrase in title_like:
-            cleaned = phrase.strip()
+            cleaned = _normalize_anchor_phrase(phrase)
             if 6 <= len(cleaned) <= 50:
                 anchors.append(cleaned)
 
@@ -1160,6 +1261,7 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
     source_codes = _extract_course_codes(source_text)
     followup_intent = _detect_followup_intent(query)
     query_focus = _extract_query_focus(query)
+    best_anchor = _choose_best_anchor(query_focus, anchors)
     
     if skip_llm:
         quick_candidates = _fallback_questions(source_text, anchors, source_codes, query_focus)
@@ -1169,6 +1271,8 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
             if not q_clean:
                 continue
             if _is_redundant_candidate(q_clean, quick_validated):
+                continue
+            if _is_shallow_rephrase(q_clean, query):
                 continue
             if not _is_query_aligned(q_clean, query):
                 continue
@@ -1182,6 +1286,25 @@ def generate_suggested_questions(query: str, response: str, context: str, skip_l
                 if not q_clean:
                     continue
                 if _is_redundant_candidate(q_clean, quick_validated):
+                    continue
+                if _is_shallow_rephrase(q_clean, query):
+                    continue
+                if not _is_intent_aligned(q_clean, followup_intent):
+                    continue
+                quick_validated.append(q_clean)
+                if len(quick_validated) >= 3:
+                    break
+
+        if len(quick_validated) < 3:
+            for q in _context_fill_templates(followup_intent, best_anchor, source_codes):
+                q_clean = _cleanup_question(q)
+                if not q_clean:
+                    continue
+                if _is_redundant_candidate(q_clean, quick_validated):
+                    continue
+                if _is_shallow_rephrase(q_clean, query):
+                    continue
+                if _already_answered_by_response(q_clean, response):
                     continue
                 if not _is_intent_aligned(q_clean, followup_intent):
                     continue
@@ -1265,6 +1388,8 @@ Output (JSON array only):"""
                 if key not in seen:
                     if _is_redundant_candidate(q, validated):
                         continue
+                    if _is_shallow_rephrase(q, query):
+                        continue
                     if _already_answered_by_response(q, response):
                         continue
                     if not _adds_related_context_value(q, response, strict_context):
@@ -1290,9 +1415,32 @@ Output (JSON array only):"""
                     continue
                 if _is_redundant_candidate(cleaned, validated):
                     continue
+                if _is_shallow_rephrase(cleaned, query):
+                    continue
                 if not _is_intent_aligned(cleaned, followup_intent):
                     continue
                 if not _is_query_aligned(cleaned, query):
+                    continue
+                validated.append(cleaned)
+                seen.add(key)
+                if len(validated) >= 3:
+                    break
+
+        if len(validated) < 3:
+            for q in _context_fill_templates(followup_intent, best_anchor, source_codes):
+                cleaned = _cleanup_question(q)
+                if not cleaned:
+                    continue
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                if _is_redundant_candidate(cleaned, validated):
+                    continue
+                if _is_shallow_rephrase(cleaned, query):
+                    continue
+                if _already_answered_by_response(cleaned, response):
+                    continue
+                if not _is_intent_aligned(cleaned, followup_intent):
                     continue
                 validated.append(cleaned)
                 seen.add(key)
