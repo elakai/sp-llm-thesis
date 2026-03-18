@@ -26,7 +26,8 @@ if str(project_root) not in sys.path:
 # 3. IMPORTS (Local modules must be imported AFTER set_page_config)
 # ─────────────────────────────────────────────────────────────────────────────
 from src.ui.components import render_login, render_sidebar, render_main_styles
-from src.ui.admin_dashboard import render_admin_view, render_indexed_documents_view
+from src.ui.admin_dashboard import render_admin_view
+from src.ui.document_management import render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
 from src.core.auth import supabase as _sb
