@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.core.retrieval import generate_response
+from src.ui.suggested_questions import generate_suggested_questions, render_suggested_questions
 from src.core.feedback import save_feedback, log_conversation, delete_conversation
 
 
@@ -16,6 +17,22 @@ def _get_logo_base64() -> str:
         with open(logo_path, "rb") as f:
             return base64.b64encode(f.read()).decode()
     return ""
+
+
+def _get_previous_user_query(messages, assistant_idx: int) -> str:
+    for cursor in range(assistant_idx - 1, -1, -1):
+        if messages[cursor].get("role") == "user":
+            return messages[cursor].get("content", "")
+    return ""
+
+def _strip_suggestions(text: str) -> str:
+    if not text:
+        return text
+    return re.sub(
+        r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
+        '',
+        text
+    ).strip()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
@@ -40,11 +57,85 @@ def render_history_view():
         [class*="st-key-delete_"] button:focus {
             box-shadow: 0 0 0 0.2rem rgba(220, 38, 38, 0.35) !important;
         }
+        [class*="st-key-delete_all_history"] button {
+            background-color: #b91c1c !important;
+            color: #ffffff !important;
+            border: 1px solid #991b1b !important;
+        }
+        [class*="st-key-delete_all_history"] button:hover {
+            background-color: #991b1b !important;
+            border-color: #7f1d1d !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-confirm_delete_all_btn"] button {
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            border: 1px solid #b91c1c !important;
+        }
+        [class*="st-key-confirm_delete_all_btn"] button:hover {
+            background-color: #b91c1c !important;
+            border-color: #991b1b !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-cancel_delete_all"] button {
+            background-color: #16a34a !important;
+            color: #ffffff !important;
+            border: 1px solid #15803d !important;
+        }
+        [class*="st-key-cancel_delete_all"] button:hover {
+            background-color: #15803d !important;
+            border-color: #166534 !important;
+            color: #ffffff !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
     st.markdown("---")
+
+    history_owner = st.session_state.get("email") or st.session_state.get("user_id")
+    if "confirm_delete_all_pending" not in st.session_state:
+        st.session_state["confirm_delete_all_pending"] = False
+
+    if st.session_state.get("chat_history"):
+        if st.button("Delete all conversations", key="delete_all_history", type="secondary"):
+            st.session_state["confirm_delete_all_pending"] = True
+            st.rerun()
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            st.warning("This will permanently delete all saved conversations for your account.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Confirm delete", key="confirm_delete_all_btn", type="secondary"):
+                    delete_failed = False
+                    for conv in st.session_state["chat_history"]:
+                        if isinstance(conv, dict):
+                            session_id = conv.get("session_id")
+                        else:
+                            session_id = None
+                        if session_id:
+                            if not delete_conversation(session_id, history_owner):
+                                delete_failed = True
+
+                    st.session_state["chat_history"] = []
+                    st.session_state["active_convo_idx"] = None
+                    st.session_state["messages"] = []
+                    st.session_state["confirm_delete_all_pending"] = False
+                    if delete_failed:
+                        st.toast("Some conversations could not be deleted from the database.", icon="⚠️")
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="cancel_delete_all"):
+                    st.session_state["confirm_delete_all_pending"] = False
+                    st.rerun()
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            st.markdown("---")
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            return
+
+
     
     if not st.session_state.get("chat_history"):
         st.info("📭 No saved conversations yet.")
@@ -83,9 +174,8 @@ def render_history_view():
                         st.rerun()
                 with col2:
                     if st.button("Delete", key=f"delete_{i}", type="secondary"):
-                        # Delete from database first
-                        user_email = st.session_state.get("user_id")
-                        delete_conversation(session_id, user_email)
+                        # Delete from database first (chat_logs are keyed by user_email)
+                        db_deleted = delete_conversation(session_id, history_owner)
                         
                         # Then remove from session state
                         st.session_state["chat_history"].pop(actual_idx)
@@ -96,6 +186,8 @@ def render_history_view():
                                 st.session_state["messages"] = []
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
+                        if not db_deleted:
+                            st.toast("Conversation removed from this view, but database delete could not be confirmed.", icon="⚠️")
                         st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,8 +237,6 @@ def render_chat_view():
     # Initialize feedback tracking if not exists
     if "message_feedback" not in st.session_state:
         st.session_state.message_feedback = {}
-    if "pending_suggested_query" not in st.session_state:
-        st.session_state.pending_suggested_query = None
 
     # Display existing messages
     for idx, message in enumerate(st.session_state.messages):
@@ -155,71 +245,67 @@ def render_chat_view():
         avatar = "assets/logo.png" if is_assistant else None
         
         with st.chat_message(role, avatar=avatar):
-            st.markdown(message["content"])
+            content = _strip_suggestions(message["content"])
+            st.markdown(content)
             if "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
-            
-            # Feedback buttons - ONLY render if role is exactly "assistant"
-            if role == "assistant":
-                current_feedback = st.session_state.message_feedback.get(idx, None)
-                
-                col1, _ = st.columns([1, 4])
-                with col1:
-                    sub1, sub2 = st.columns(2)
-                    with sub1:
-                        if st.button("👍", key=f"g_{idx}", help="Helpful" if current_feedback != "helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Thanks for your feedback!", icon="✅")
-                            st.rerun()
-                    with sub2:
-                        if st.button("👎", key=f"b_{idx}", help="Not helpful" if current_feedback != "not_helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "not_helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
-                                st.toast("We'll improve this answer.", icon="📝")
-                            st.rerun()
-                
-                # Visual indicator for selected feedback
-                if current_feedback == "helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator helpful">
-                        <span>✓</span> You found this helpful
-                    </div>
-                    """, unsafe_allow_html=True)
-                elif current_feedback == "not_helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator not-helpful">
-                        <span>✗</span> Marked for improvement
-                    </div>
-                    """, unsafe_allow_html=True)
 
-                # ── RENDER SUGGESTED QUESTIONS (ONLY ON THE MOST RECENT MESSAGE) ──
-                if message.get("suggestions") and idx == len(st.session_state.messages) - 1:
-                    st.markdown("<br>**You might also want to ask:**", unsafe_allow_html=True)
-                    for q_idx, q in enumerate(message["suggestions"]):
-                        # Queue clicked suggestion and process it outside this bubble
-                        # so it appears as a brand-new user input turn.
-                        if st.button(q, key=f"sugg_{idx}_{q_idx}"):
-                            st.session_state.pending_suggested_query = q
-                            st.rerun()
+            if is_assistant and message.get("suggestions"):
+                render_suggested_questions(message["suggestions"], key_prefix=f"suggest_{idx}")
+
+
+        if role == "assistant":
+            current_feedback = st.session_state.message_feedback.get(idx, None)
+            query = _get_previous_user_query(st.session_state.messages, idx)
+
+            st.markdown("<div class='eval-prompt'>Was this answer helpful?</div>", unsafe_allow_html=True)
+            feedback_col1, feedback_col2, _ = st.columns([1.1, 1.2, 4.7])
+
+            with feedback_col1:
+                if st.button(
+                    "Helpful",
+                    key=f"eval_helpful_{idx}",
+                    type="primary" if current_feedback == "helpful" else "secondary",
+                    use_container_width=True,
+                    help="Click again to remove" if current_feedback == "helpful" else None,
+                ):
+                    if current_feedback == "helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "helpful"
+                        save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Thanks for your feedback!", icon="✅")
+                    st.rerun()
+
+            with feedback_col2:
+                if st.button(
+                    "Not helpful",
+                    key=f"eval_not_helpful_{idx}",
+                    type="primary" if current_feedback == "not_helpful" else "secondary",
+                    use_container_width=True,
+                    help="Click again to remove" if current_feedback == "not_helpful" else None,
+                ):
+                    if current_feedback == "not_helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "not_helpful"
+                        save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("We'll improve this answer.", icon="📝")
+                    st.rerun()
+
+            if current_feedback == "helpful":
+                st.markdown("<div class='feedback-indicator helpful'><span>✓</span> You marked this response as helpful</div>", unsafe_allow_html=True)
+            elif current_feedback == "not_helpful":
+                st.markdown("<div class='feedback-indicator not-helpful'><span>✗</span> You marked this response as not helpful</div>", unsafe_allow_html=True)
 
     # Process queued suggestion after the history loop so it renders as
     # a separate chat turn, not inside the previous assistant message container.
-    queued_query = st.session_state.get("pending_suggested_query")
+    queued_query = st.session_state.pop("queued_query", None)
     if queued_query:
-        st.session_state.pending_suggested_query = None
         _process_user_query(queued_query)
         return
 
@@ -254,23 +340,12 @@ def _process_user_query(query: str):
                         response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
                 response_placeholder.markdown(full_response, unsafe_allow_html=True)
                 
-            # ── EXTRACT & STRIP SUGGESTED QUESTIONS FROM RAW TEXT ──
-            suggested_q_match = re.search(
-                r'\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
-                full_response
-            )
-            
-            extracted_questions = []
-            clean_response = full_response
-            
-            if suggested_q_match:
-                # Get the questions
-                extracted_questions = re.findall(r'- (.+)', suggested_q_match.group(1))
-                # Remove the raw markdown from the text so it doesn't print as a bulleted list
-                clean_response = full_response.replace(suggested_q_match.group(0), "").strip()
+            clean_response = _strip_suggestions(full_response)
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
+
+            suggestions = generate_suggested_questions(query, current_context, max_questions=3)
             
             log_conversation(
                 query=query,
@@ -283,16 +358,16 @@ def _process_user_query(query: str):
 
         except Exception as e:
             clean_response = f"⚠️ Backend Error: {str(e)}"
-            extracted_questions = []
             st.error(clean_response)
+            suggestions = []
         
         asst_ts = datetime.now().strftime("%I:%M %p")
-        # Save the Clean text and the Suggestions array into the dictionary
+        # Save the clean assistant response into session state
         st.session_state.messages.append({
             "role": "assistant", 
             "content": clean_response, 
             "timestamp": asst_ts,
-            "suggestions": extracted_questions  # <--- Added to state here!
+            "suggestions": suggestions,
         })
         
         # Update chat history - handle both new and continued conversations

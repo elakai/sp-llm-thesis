@@ -124,7 +124,7 @@ def render_sidebar():
             st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
         st.markdown("---")
         
-        # Hide Chat and History navigation from Admin users
+        # User Specific Navigation
         if st.session_state.get("role") != "admin":
             
             # New Chat button
@@ -142,7 +142,7 @@ def render_sidebar():
                 st.session_state["view"] = "history"
                 st.rerun()
             
-        # Admin specific navigation
+        # Admin Specific Navigation
         if st.session_state.get("role") == "admin":
             
             # Main Dashboard Button
@@ -150,7 +150,16 @@ def render_sidebar():
             if st.button(admin_label, use_container_width=True):
                 st.session_state["view"] = "admin"
                 st.rerun()
-                
+
+            # Chat Console Button
+            admin_chat_label = "**Chat Console**" if sidebar_open and st.session_state.get("view") == "chat" else ("Chat Console" if sidebar_open else "💬")
+            if st.button(admin_chat_label, use_container_width=True):
+                st.session_state["messages"] = [] 
+                st.session_state["active_convo_idx"] = None 
+                st.session_state["session_id"] = str(uuid.uuid4())
+                st.session_state["view"] = "chat"
+                st.rerun()  
+
             # Indexed Documents Button
             docs_label = "**Document Management**" if sidebar_open and st.session_state.get("view") == "indexed_docs" else ("Document Management" if sidebar_open else "📚")
             if st.button(docs_label, use_container_width=True):
@@ -174,7 +183,7 @@ def render_sidebar():
             st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXPORT HELPERS (Used in main.py)
+# EXPORT HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def render_main_styles():
     load_css("main.css")

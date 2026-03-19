@@ -184,11 +184,174 @@ def filter_to_program(docs: List[Document], query: str) -> List[Document]:
         if matched_program in d.metadata.get("source", "").lower()
     ]
 
+def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
+    if not docs:
+        return []
+
+    q = (query or "").lower()
+    people_triggers = [
+        "professor", "faculty", "instructor", "teacher", "staff", "chair", "dean",
+        "department chair", "chairperson"
+    ]
+    if not any(trigger in q for trigger in people_triggers):
+        return docs
+
+    content_keywords = [
+        "faculty", "professor", "instructor", "teacher", "staff", "chair",
+        "department", "office", "personnel", "full-time", "part-time"
+    ]
+    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel"]
+
+    filtered = []
+    for doc in docs:
+        content = (doc.page_content or "").lower()
+        source = (doc.metadata.get("source") or "").lower()
+        if any(k in content for k in content_keywords) or any(k in source for k in source_keywords):
+            filtered.append(doc)
+
+    return filtered if filtered else docs
+
 def _contains_markdown_table(text: str) -> bool:
     return any(
         '|' in line and line.strip().startswith('|')
         for line in text.strip().split('\n')
     )
+
+
+def _contains_speculation(text: str) -> bool:
+    return bool(re.search(r"\b(likely|possibly|probably|maybe|might|could be|appears to be|seems to be)\b", text, re.IGNORECASE))
+
+
+def _remove_speculative_sentences(text: str) -> str:
+    if not text or not text.strip():
+        return text
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    kept = []
+    for sentence in parts:
+        if not sentence.strip():
+            continue
+        if _contains_speculation(sentence):
+            continue
+        kept.append(sentence.strip())
+    return " ".join(kept).strip()
+
+
+def _build_source_certainty_note(top_score: float, score_margin: float, sources: list[str]) -> str:
+    unique_sources = []
+    seen = set()
+    for source in sources:
+        s = (source or "Unknown").strip()
+        if s not in seen:
+            unique_sources.append(s)
+            seen.add(s)
+
+    if top_score >= HIGH_CONFIDENCE_THRESHOLD and score_margin >= HIGH_CONFIDENCE_MARGIN:
+        level = "High"
+    elif top_score >= LOW_CONFIDENCE_THRESHOLD:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    source_preview = ", ".join(unique_sources[:2]) if unique_sources else "retrieved documents"
+    return f"> **Source certainty:** {level} ({len(unique_sources)} source file(s); based on: {source_preview})"
+
+
+def _detect_query_intent(query: str) -> str:
+    q_lower = (query or "").lower()
+    tokens = set(re.findall(r"[a-z0-9']+", q_lower))
+
+    def has_any_words(words: set[str]) -> bool:
+        return any(word in tokens for word in words)
+
+    def has_any_phrases(phrases: list[str]) -> bool:
+        return any(phrase in q_lower for phrase in phrases)
+
+    if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
+        return "location"
+    if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
+        return "curriculum"
+    if has_any_words({"who", "faculty", "chair", "dean", "professor", "staff", "instructor"}):
+        return "people"
+    if has_any_words({"download", "link", "pdf", "form", "access"}) or has_any_phrases(["google form", "download link"]):
+        return "download"
+    if has_any_words({"policy", "rule", "guideline", "procedure", "manual"}) or has_any_phrases(["dress code"]):
+        return "policy"
+    return "general"
+
+
+def _is_no_answer_response(text: str) -> bool:
+    if not text:
+        return False
+    patterns = [
+        r"i couldn't find that in the available documents",
+        r"i don't have enough info to answer that confidently",
+        r"not explicitly stated in the retrieved documents",
+        r"best to check with your department chair",
+    ]
+    lowered = text.lower()
+    return any(re.search(p, lowered) for p in patterns)
+
+
+def _is_incomplete_query(query: str) -> bool:
+    q_lower = (query or "").strip().lower()
+    tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
+    if len(tokens) <= 2:
+        return True
+
+    question_starters = {"what", "where", "who", "when", "why", "how", "which"}
+    helper_verbs = {"is", "are", "can", "do", "does", "did", "show", "list", "find", "tell", "explain"}
+    has_structure = any(t in question_starters or t in helper_verbs for t in tokens)
+
+    return len(tokens) <= 4 and not has_structure
+
+
+def _get_previous_user_query(chat_history_list: List[Dict[str, str]], current_query: str) -> str:
+    if not chat_history_list:
+        return ""
+    current_norm = (current_query or "").strip().lower()
+    for msg in reversed(chat_history_list):
+        if msg.get("role") != "user":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if content.lower() == current_norm:
+            continue
+        return content
+    return ""
+
+
+def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[str, str]]) -> List[str]:
+    base = (query or "").strip()
+    if not base:
+        return []
+
+    intent = _detect_query_intent(base)
+    variants: List[str] = [base]
+
+    if intent == "location":
+        variants.append(f"{base} location building room directory")
+    elif intent == "curriculum":
+        variants.append(f"{base} curriculum course semester prerequisite")
+    elif intent == "people":
+        variants.append(f"{base} faculty staff role department professor instructor teacher")
+    elif intent == "download":
+        variants.append(f"{base} official link pdf form")
+    elif intent == "policy":
+        variants.append(f"{base} policy guideline rule procedure")
+
+    previous_user_query = _get_previous_user_query(chat_history_list, base)
+    if previous_user_query:
+        variants.append(f"{previous_user_query} {base}")
+
+    deduped = []
+    seen = set()
+    for variant in variants:
+        norm = variant.strip().lower()
+        if norm and norm not in seen:
+            deduped.append(variant.strip())
+            seen.add(norm)
+    return deduped[:5]
 
 def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
     if not docs: return []
@@ -220,15 +383,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
+    is_incomplete_input = _is_incomplete_query(standalone_query)
     
-    cached_answer = check_semantic_cache(standalone_query)
-    if cached_answer:
-        words = cached_answer.split(" ")
-        chunk_size = 3
-        for i in range(0, len(words), chunk_size):
-            yield " ".join(words[i:i+chunk_size]) + " "
-            time.sleep(0.01)
-        return
+    if not is_incomplete_input:
+        cached_answer = check_semantic_cache(standalone_query)
+        if cached_answer:
+            words = cached_answer.split(" ")
+            chunk_size = 3
+            for i in range(0, len(words), chunk_size):
+                yield " ".join(words[i:i+chunk_size]) + " "
+                time.sleep(0.01)
+            return
+    else:
+        logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
     retrieval_start = time.time()
     
@@ -254,7 +421,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             time.sleep(0.02)
         return
 
-    is_complex = any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
+    is_complex = (not is_incomplete_input) and any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
     sub_queries = [standalone_query]
     if is_complex:
         try:
@@ -262,7 +429,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         except:
             pass
 
+    if is_incomplete_input:
+        for variant in _build_incomplete_query_variants(standalone_query, chat_history_list):
+            if variant not in sub_queries:
+                sub_queries.append(variant)
+
     dynamic_k = get_dynamic_k(standalone_query)
+    if is_incomplete_input:
+        dynamic_k = max(dynamic_k, 20)
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
@@ -276,7 +450,22 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             all_docs.extend(res)
 
     if not all_docs:
+        if is_incomplete_input:
+            broad_queries = _build_incomplete_query_variants(standalone_query, chat_history_list)
+            broad_retriever = get_retriever(k=max(dynamic_k, 30))
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                fallback_results = list(executor.map(broad_retriever.invoke, broad_queries))
+            for res in fallback_results:
+                all_docs.extend(res)
+
         logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
+        if all_docs:
+            logger.info(f"🔎 Incomplete-query fallback recovered {len(all_docs)} chunks using broad closest-match retrieval.")
+        else:
+            yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
+            return
+
+    if not all_docs:
         yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
         return
 
@@ -286,6 +475,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
+    if _detect_query_intent(standalone_query) == "people":
+        hybrid_results = filter_to_people_docs(hybrid_results, standalone_query)
     
     is_curriculum_query = any(
         kw in standalone_query.lower()
@@ -433,7 +624,7 @@ Answer the question using ONLY the context below.
    language. Contractions are fine ("you'll", "it's", "here's"). 
    Never sound like a formal document or a customer service bot.
    Do NOT start with "Great question!", "Good question!", or any 
-   sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "So here's", "So to answer", or any 
+   sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "Kuya", "So here's", "So to answer", or any 
    sentence that begins with the word "So". Start directly with 
    a greeting, and the answer.
 
@@ -476,6 +667,8 @@ Answer the question using ONLY the context below.
     Always decode the building name, floor number, and room number for 
     the user. Only use acronyms confirmed in the context.
 
+14. **NO SPECULATION**: Never guess or infer missing details. Do not use speculative words like "likely", "possibly", "probably", "might", or "could be". If the context does not explicitly state a detail, clearly say it is not explicitly stated in the retrieved documents.
+
 **Context:**
 {context}
 
@@ -491,7 +684,8 @@ Answer the question using ONLY the context below.
             is_curriculum_query or 
             is_facility_query or 
             is_analytical_query or
-            is_download_query
+            is_download_query or
+            is_incomplete_input
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -526,26 +720,24 @@ Answer the question using ONLY the context below.
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
 
+        # Hard block speculative language that can mislead users.
+        if _contains_speculation(final_verified_response):
+            cleaned_non_speculative = _remove_speculative_sentences(final_verified_response)
+            if cleaned_non_speculative:
+                final_verified_response = cleaned_non_speculative
+            else:
+                final_verified_response = "I couldn't find an explicit answer for that detail in the retrieved documents."
+
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
+
+        source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
+        score_margin = top_score - second_score if second_score != float("-inf") else top_score
+        certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
+        final_verified_response = f"{final_verified_response}\n\n{certainty_note}"
         
-        gen_time = time.time() - gen_start
-        suggested_questions = generate_suggested_questions(
-            standalone_query, final_verified_response, context,
-            skip_llm=(gen_time > 8.0)
-        )
-        
-        if suggested_questions:
-            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
-                "\n".join(f"- {q}" for q in suggested_questions)
-            final_verified_response += suggestions_md
-            
-        clean_response_for_cache = re.sub(
-            r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
-            '',
-            final_verified_response
-        ).strip()
+        clean_response_for_cache = final_verified_response
         add_to_cache(standalone_query, clean_response_for_cache)
         
         try:
@@ -635,128 +827,3 @@ def format_raw_links(text: str) -> str:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
-
-def generate_suggested_questions(query: str, response: str, context: str, skip_llm: bool = False) -> list[str]:
-    def _extract_tokens(text: str) -> set[str]:
-        return {
-            tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
-            if len(tok) >= 4
-        }
-
-    def _extract_course_codes(text: str) -> set[str]:
-        return set(re.findall(r"\b[A-Z]{2,5}\d{3}\b", text.upper()))
-
-    def _cleanup_question(q: str) -> str:
-        cleaned = re.sub(r"\s+", " ", str(q or "")).strip()
-        if not cleaned:
-            return ""
-        if not cleaned.endswith("?"):
-            cleaned += "?"
-        return cleaned
-
-    def _is_answerable_question(q: str, source_tokens: set[str], source_codes: set[str]) -> bool:
-        if len(q) < 12 or len(q) > 140:
-            return False
-
-        q_codes = _extract_course_codes(q)
-        if q_codes and not q_codes.issubset(source_codes):
-            return False
-
-        q_tokens = _extract_tokens(q)
-        overlap = q_tokens.intersection(source_tokens)
-        return len(overlap) >= 2
-
-    def _fallback_questions(source_text: str) -> list[str]:
-        source_lower = source_text.lower()
-        fallbacks: list[str] = []
-
-        if "prereq" in source_lower or "pre-requisite" in source_lower or "prerequisite" in source_lower:
-            fallbacks.append("What are the exact prerequisites mentioned here?")
-        if _extract_course_codes(source_text):
-            fallbacks.append("Can you list all course codes mentioned in this answer?")
-        if "semester" in source_lower or "curriculum" in source_lower or "course" in source_lower:
-            fallbacks.append("Can you summarize this by semester or category?")
-
-        fallbacks.extend([
-            "Can you summarize that in 3 short bullet points?",
-            "Which part of the available documents supports this answer?",
-            "What is the key takeaway I should remember from this?",
-        ])
-
-        deduped = []
-        seen = set()
-        for q in fallbacks:
-            normalized = q.lower().strip()
-            if normalized not in seen:
-                deduped.append(q)
-                seen.add(normalized)
-            if len(deduped) == 3:
-                break
-        return deduped
-
-    source_text = f"{response}\n{context}"
-    
-    if skip_llm:
-        return _fallback_questions(source_text)
-
-    try:
-        llm = get_generator_llm()
-        prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
-USING ONLY the provided response and context.
-
-Hard constraints:
-- Do not introduce new facts, entities, course codes, policies, or assumptions.
-- Keep each question specific to details already present.
-- Keep each question under 16 words.
-- Return ONLY a JSON array of 3 strings.
-- No markdown, no numbering, no extra text.
-
-Example output: ["Question 1?", "Question 2?", "Question 3?"]
-
-User asked: {query}
-Assistant answered: {response[:300]}
-Available topic context: {context[:500]}
-
-Output (JSON array only):"""
-        
-        result = llm.invoke(prompt).content.strip()
-        result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
-        raw_questions = json.loads(result)
-
-        source_tokens = _extract_tokens(source_text)
-        source_codes = _extract_course_codes(source_text)
-
-        validated: list[str] = []
-        seen = set()
-
-        if isinstance(raw_questions, list):
-            for q in raw_questions:
-                cleaned = _cleanup_question(q)
-                if not cleaned:
-                    continue
-                key = cleaned.lower()
-                if key in seen:
-                    continue
-                if _is_answerable_question(cleaned, source_tokens, source_codes):
-                    validated.append(cleaned)
-                    seen.add(key)
-                if len(validated) == 3:
-                    break
-
-        if len(validated) < 3:
-            for q in _fallback_questions(source_text):
-                key = q.lower()
-                if key not in seen:
-                    validated.append(q)
-                    seen.add(key)
-                if len(validated) == 3:
-                    break
-
-        return validated[:3]
-    except Exception as e:
-        logger.warning(f"Suggested questions failed: {e}")
-    return [
-        "Can you summarize that in 3 short bullet points?",
-        "Which part of the available documents supports this answer?",
-        "What is the key takeaway I should remember from this?",
-    ]

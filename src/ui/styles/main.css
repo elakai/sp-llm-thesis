@@ -219,6 +219,35 @@ button[kind="header"],
     line-height: 1.6 !important;
 }
 
+/* Suggested questions */
+.suggested-title {
+    margin-top: 12px;
+    margin-bottom: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #FFFBAD;
+}
+
+[class*="st-key-suggest_"] button {
+    background: linear-gradient(135deg, #FFD24A 0%, #FFB631 100%) !important;
+    border: 1px solid rgba(255, 166, 31, 0.7) !important;
+    color: #2A1B00 !important;
+    font-size: 0.95rem !important;
+    padding: 6px 10px !important;
+    border-radius: 999px !important;
+    white-space: nowrap !important;
+    box-shadow: 0 0 10px rgba(255, 143, 31, 0.55),
+                0 0 22px rgba(255, 143, 31, 0.35) !important;
+}
+
+[class*="st-key-suggest_"] button:hover {
+    background: linear-gradient(135deg, #FFE36F 0%, #FFC04D 100%) !important;
+    border-color: rgba(255, 166, 31, 0.9) !important;
+    color: #241500 !important;
+    box-shadow: 0 0 14px rgba(255, 143, 31, 0.7),
+                0 0 28px rgba(255, 143, 31, 0.45) !important;
+}
+
 /* Floating Chat Input Box */
 [data-testid="stChatInput"] { padding: 1.5rem 0; background-color: transparent !important; }
 [data-testid="stBottomBlockContainer"],
@@ -594,4 +623,61 @@ button[kind="header"],
 [data-testid="stAlert"] svg {
     width: 1.3em !important;
     height: 1.3em !important;
+}
+
+.eval-prompt {
+    margin: -4px 0 8px 74px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #fff2d6;
+    letter-spacing: 0.2px;
+}
+
+[class*="st-key-eval_helpful_"] button,
+[class*="st-key-eval_not_helpful_"] button {
+    min-height: 2.6rem !important;
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    font-size: 0.98rem !important;
+    border-width: 2px !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25) !important;
+}
+
+[class*="st-key-eval_helpful_"] button {
+    border-color: rgba(16, 185, 129, 0.7) !important;
+}
+
+[class*="st-key-eval_not_helpful_"] button {
+    border-color: rgba(239, 68, 68, 0.7) !important;
+}
+
+[class*="st-key-eval_helpful_"] button[kind="primary"] {
+    background: #10b981 !important;
+    color: #052e1b !important;
+    border-color: #10b981 !important;
+}
+
+[class*="st-key-eval_not_helpful_"] button[kind="primary"] {
+    background: #ef4444 !important;
+    color: #fff5f5 !important;
+    border-color: #ef4444 !important;
+}
+
+[class*="st-key-eval_helpful_"] button:hover,
+[class*="st-key-eval_not_helpful_"] button:hover {
+    transform: translateY(-1px);
+}
+
+.feedback-indicator {
+    margin: 6px 0 14px 74px;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.feedback-indicator.helpful {
+    color: #86efac;
+}
+
+.feedback-indicator.not-helpful {
+    color: #fca5a5;
 }
