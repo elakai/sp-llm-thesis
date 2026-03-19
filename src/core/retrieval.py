@@ -184,6 +184,33 @@ def filter_to_program(docs: List[Document], query: str) -> List[Document]:
         if matched_program in d.metadata.get("source", "").lower()
     ]
 
+def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
+    if not docs:
+        return []
+
+    q = (query or "").lower()
+    people_triggers = [
+        "professor", "faculty", "instructor", "teacher", "staff", "chair", "dean",
+        "department chair", "chairperson"
+    ]
+    if not any(trigger in q for trigger in people_triggers):
+        return docs
+
+    content_keywords = [
+        "faculty", "professor", "instructor", "teacher", "staff", "chair",
+        "department", "office", "personnel", "full-time", "part-time"
+    ]
+    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel"]
+
+    filtered = []
+    for doc in docs:
+        content = (doc.page_content or "").lower()
+        source = (doc.metadata.get("source") or "").lower()
+        if any(k in content for k in content_keywords) or any(k in source for k in source_keywords):
+            filtered.append(doc)
+
+    return filtered if filtered else docs
+
 def _contains_markdown_table(text: str) -> bool:
     return any(
         '|' in line and line.strip().startswith('|')
@@ -265,45 +292,6 @@ def _is_no_answer_response(text: str) -> bool:
     return any(re.search(p, lowered) for p in patterns)
 
 
-def _generate_recovery_questions(query: str) -> list[str]:
-    intent = _detect_query_intent(query)
-    if intent == "location":
-        return [
-            "Can I share a room code (like EB213) so you can check it directly?",
-            "Can you search by building name instead of the lab name?",
-            "Can you list nearby rooms from the same directory section?",
-        ]
-    if intent == "curriculum":
-        return [
-            "Can you focus on one program and year level first?",
-            "Can you show the full semester list or just one course?",
-            "Can you check prerequisites for a specific course code?",
-        ]
-    if intent == "people":
-        return [
-            "Can you check faculty, staff, or chairperson information?",
-            "Can you match the exact person name in the records?",
-            "Can you search by department instead of person name?",
-        ]
-    if intent == "download":
-        return [
-            "Can you check which document this download link is for?",
-            "Can you share the official PDF link or form link?",
-            "Can you look for the latest posted version only?",
-        ]
-    if intent == "policy":
-        return [
-            "Can you check a specific policy area first?",
-            "Can you show the rule details, exceptions, or procedures?",
-            "Can you point me to the exact policy line and section title?",
-        ]
-    return [
-        "Can you narrow this using a more specific keyword?",
-        "Can you filter this by department or document type?",
-        "Can you point me to the exact source line and section for this?",
-    ]
-
-
 def _is_incomplete_query(query: str) -> bool:
     q_lower = (query or "").strip().lower()
     tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
@@ -346,7 +334,7 @@ def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[st
     elif intent == "curriculum":
         variants.append(f"{base} curriculum course semester prerequisite")
     elif intent == "people":
-        variants.append(f"{base} faculty staff role department")
+        variants.append(f"{base} faculty staff role department professor instructor teacher")
     elif intent == "download":
         variants.append(f"{base} official link pdf form")
     elif intent == "policy":
@@ -487,6 +475,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
+    if _detect_query_intent(standalone_query) == "people":
+        hybrid_results = filter_to_people_docs(hybrid_results, standalone_query)
     
     is_curriculum_query = any(
         kw in standalone_query.lower()
@@ -634,7 +624,7 @@ Answer the question using ONLY the context below.
    language. Contractions are fine ("you'll", "it's", "here's"). 
    Never sound like a formal document or a customer service bot.
    Do NOT start with "Great question!", "Good question!", or any 
-   sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "So here's", "So to answer", or any 
+   sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "Kuya", "So here's", "So to answer", or any 
    sentence that begins with the word "So". Start directly with 
    a greeting, and the answer.
 
@@ -747,25 +737,7 @@ Answer the question using ONLY the context below.
         certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
         final_verified_response = f"{final_verified_response}\n\n{certainty_note}"
         
-        gen_time = time.time() - gen_start
-        if _is_no_answer_response(final_verified_response):
-            suggested_questions = _generate_recovery_questions(standalone_query)
-        else:
-            suggested_questions = generate_suggested_questions(
-                standalone_query, final_verified_response, context,
-                skip_llm=(gen_time > 8.0)
-            )
-        
-        if suggested_questions:
-            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
-                "\n".join(f"- {q}" for q in suggested_questions)
-            final_verified_response += suggestions_md
-            
-        clean_response_for_cache = re.sub(
-            r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
-            '',
-            final_verified_response
-        ).strip()
+        clean_response_for_cache = final_verified_response
         add_to_cache(standalone_query, clean_response_for_cache)
         
         try:
@@ -855,602 +827,3 @@ def format_raw_links(text: str) -> str:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
-
-def generate_suggested_questions(query: str, response: str, context: str, skip_llm: bool = False) -> list[str]:
-    STRONG_STOPWORDS = {
-        "what", "which", "where", "when", "why", "how", "this", "that", "those", "these",
-        "from", "with", "about", "into", "within", "there", "their", "your", "have", "has",
-        "does", "doing", "can", "could", "would", "should", "will", "just", "same", "topic",
-        "context", "specific", "say", "says", "details", "detail", "entry", "source", "document",
-    }
-
-    def _token_set(text: str) -> set[str]:
-        return {
-            tok for tok in re.findall(r"[a-zA-Z0-9']+", (text or "").lower())
-            if len(tok) >= 3
-        }
-
-    def _detect_followup_intent(q: str) -> str:
-        return _detect_query_intent(q)
-
-    def _extract_query_focus(original_query: str) -> str:
-        q = (original_query or "").strip()
-        tokens = re.findall(r"[A-Za-z0-9']+", q)
-        if not tokens:
-            return "this topic"
-
-        ignore = {
-            "what", "where", "when", "why", "how", "which", "who",
-            "this", "that", "these", "those",
-            "is", "are", "was", "were", "do", "does", "did", "can", "could", "would", "should",
-            "the", "a", "an", "about", "for", "to", "of", "in", "on", "at",
-            "i", "me", "my", "we", "us", "our", "you", "your", "please",
-            "explain", "show", "tell", "share", "check", "find", "list",
-            "check", "latest", "entry", "entries", "topic", "exact", "line", "source", "section",
-        }
-
-        generic_focus_terms = {
-            "handbook", "chapter", "manual", "document", "documents", "info", "information", "details",
-            "detail", "record", "records", "update", "updates", "requirement", "requirements",
-        }
-
-        kept = [t for t in tokens if t.lower() not in ignore]
-        meaningful = [t for t in kept if t.lower() not in generic_focus_terms]
-        if meaningful:
-            kept = meaningful
-
-        if not kept:
-            kept = tokens
-
-        if all(t.lower() in ignore or t.lower() in generic_focus_terms for t in kept):
-            return "this topic"
-
-        focus = " ".join(kept[:3]).strip()
-        return focus if focus else "this topic"
-
-    def _choose_best_anchor(query_focus: str, anchors: list[str]) -> str:
-        if query_focus and query_focus != "this topic":
-            return query_focus
-
-        preferred = []
-        for anchor in anchors:
-            a = (anchor or "").strip()
-            lower = a.lower()
-            if not a:
-                continue
-            if len(a.split()) < 2:
-                continue
-            if len(a) > 45:
-                continue
-            if any(x in lower for x in ["chapter", "handbook", ".pdf", "source"]):
-                continue
-            preferred.append(a)
-
-        if preferred:
-            return preferred[0]
-        if anchors:
-            return anchors[0]
-        return "this topic"
-
-    def _intent_fallback_templates(intent: str, anchors: list[str], source_codes: set[str], query_focus: str) -> list[str]:
-        anchor = _choose_best_anchor(query_focus, anchors)
-        code = sorted(source_codes)[0] if source_codes else None
-
-        if intent == "location":
-            qs = [
-                f"Can you point me to the source entry that mentions {anchor}?",
-                f"Where is {anchor} located (building and room)?",
-                "Can you list nearby room or lab entries in the same building section?",
-            ]
-        elif intent == "curriculum":
-            qs = [
-                f"Can you check the prerequisite details for {code or anchor}?",
-                f"Where can I find {code or anchor} across semesters?",
-                "Can you list related courses in the same curriculum section?",
-            ]
-        elif intent == "people":
-            qs = [
-                f"Who is listed for {anchor} and what role do they have?",
-                f"Who else is listed with {anchor} in the same section?",
-                "Can you point me to the source line for this personnel detail?",
-            ]
-        elif intent == "download":
-            qs = [
-                "Can you point me to the exact source with the official download link?",
-                f"What document is that link for in the same source as {anchor}?",
-                "Are there related forms or files in that same source section?",
-            ]
-        elif intent == "policy":
-            qs = [
-                f"What condition or exception is stated for {anchor}?",
-                "Can you show the exact procedure steps in the same source section?",
-                "Can you point me to the source line for this rule?",
-            ]
-        else:
-            qs = [
-                f"Can you point me to the exact source line about {anchor}?",
-                f"Can you show me related details listed with {anchor} in the same section?",
-                f"Where can I find the latest handbook update for {anchor}?",
-            ]
-
-        return qs
-
-    def _context_fill_templates(intent: str, anchor: str, source_codes: set[str]) -> list[str]:
-        code = sorted(source_codes)[0] if source_codes else None
-        if intent == "location":
-            return [
-                f"What nearby entry is listed closest to {anchor} in the same section?",
-                f"Is there a floor or landmark detail listed with {anchor}?",
-                f"Can you point me to the source line for {anchor}'s location details?",
-            ]
-        if intent == "curriculum":
-            return [
-                f"Which semester entry is closest to {code or anchor} in the same table?",
-                f"What prerequisite note is listed alongside {code or anchor}?",
-                f"Can you point me to the source line for {code or anchor}'s curriculum detail?",
-            ]
-        if intent == "people":
-            return [
-                f"Which section lists {anchor} with role details?",
-                f"What related personnel detail appears near {anchor}?",
-                f"Can you point me to the exact source line for {anchor}'s role?",
-            ]
-        if intent == "download":
-            return [
-                f"Which section lists the official file linked with {anchor}?",
-                f"Is there a newer version note for the {anchor} document?",
-                "Can you point me to the exact source line with the active download link?",
-            ]
-        if intent == "policy":
-            return [
-                f"Which section title contains the rule related to {anchor}?",
-                f"What exception note is listed with {anchor} in the same section?",
-                f"Can you point me to the source line for {anchor}'s procedure detail?",
-            ]
-        return [
-            f"Where in the handbook is {anchor} mentioned?",
-            f"Can you show me the update note listed with {anchor} in that section?",
-            f"Which chapter should I check first for the latest {anchor} details?",
-        ]
-
-    def _meaningful_tokens(text: str) -> set[str]:
-        return {t for t in _token_set(text) if t not in STRONG_STOPWORDS}
-
-    def _is_query_aligned(q: str, original_query: str) -> bool:
-        q_tokens = _meaningful_tokens(q)
-        query_tokens = _meaningful_tokens(original_query)
-        if not query_tokens:
-            return True
-        return len(q_tokens.intersection(query_tokens)) >= 1
-
-    def _is_intent_aligned(q: str, intent: str) -> bool:
-        q_lower = (q or "").lower()
-        if intent == "location":
-            if any(x in q_lower for x in ["chapter", "handbook", "manual"]):
-                return False
-            return any(x in q_lower for x in ["where", "room", "building", "floor", "location", "located", "directory", "nearby"])
-        if intent == "curriculum":
-            return any(x in q_lower for x in ["course", "subject", "semester", "units", "prerequisite", "curriculum"])
-        if intent == "people":
-            return any(x in q_lower for x in ["who", "faculty", "staff", "role", "instructor", "chair", "dean", "professor"])
-        if intent == "download":
-            return any(x in q_lower for x in ["link", "download", "pdf", "file", "form", "access"])
-        if intent == "policy":
-            return any(x in q_lower for x in ["rule", "policy", "guideline", "procedure", "exception", "condition"])
-        return True
-
-    def _jaccard(a: set[str], b: set[str]) -> float:
-        if not a or not b:
-            return 0.0
-        return len(a.intersection(b)) / max(1, len(a.union(b)))
-
-    def _normalize_question(q: str) -> str:
-        cleaned = re.sub(r"\b(fr|mr|ms|mrs|dr)\.\s+", "", q or "", flags=re.IGNORECASE)
-        cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", cleaned.lower())
-        cleaned = re.sub(r"\b(is|are|was|were|in|the|a|an|to|of|for|on|at|about|directory|campus|adnu)\b", " ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned
-
-    def _is_redundant_candidate(q: str, existing: list[str]) -> bool:
-        q_norm = _normalize_question(q)
-        q_tokens = _token_set(q_norm)
-        if not q_norm or len(q_tokens) < 2:
-            return True
-        for prev in existing:
-            prev_norm = _normalize_question(prev)
-            if q_norm == prev_norm:
-                return True
-            if _jaccard(q_tokens, _token_set(prev_norm)) >= 0.62:
-                return True
-        return False
-
-    def _is_shallow_rephrase(q: str, original_query: str) -> bool:
-        q_lower = (q or "").strip().lower()
-        yes_no_starters = (
-            "is ", "are ", "was ", "were ", "do ", "does ", "did ",
-            "can ", "could ", "will ", "would ", "has ", "have ", "had "
-        )
-        if _normalize_question(q_lower) == _normalize_question(original_query):
-            return True
-
-        similarity = _jaccard(_token_set(q_lower), _token_set(original_query))
-        if similarity >= 0.70:
-            return True
-
-        if not q_lower.startswith(yes_no_starters):
-            return False
-        return similarity >= 0.45
-
-    def _remove_question_lead(q: str) -> str:
-        q_clean = (q or "").strip().lower()
-        q_clean = q_clean.rstrip("? ")
-        q_clean = re.sub(
-            r"^(what|which|who|where|when|why|how)\s+(is|are|was|were|does|do|did|can|could|will|would|has|have|had)\s+",
-            "",
-            q_clean,
-        )
-        q_clean = re.sub(r"^(what|which|who|where|when|why|how)\s+", "", q_clean)
-        q_clean = re.sub(r"^(tell me|explain|describe|list)\s+", "", q_clean)
-        return re.sub(r"\s+", " ", q_clean).strip()
-
-    def _already_answered_by_response(q: str, response_text: str) -> bool:
-        if not response_text.strip():
-            return False
-
-        q_core = _remove_question_lead(q)
-        q_tokens = _token_set(q_core)
-        resp_tokens = _token_set(response_text)
-
-        if len(q_tokens) < 2:
-            return True
-
-        coverage = len(q_tokens.intersection(resp_tokens)) / max(1, len(q_tokens))
-        if coverage >= 0.8:
-            return True
-
-        response_lines = [line.strip() for line in response_text.splitlines() if line.strip()]
-        q_norm_tokens = _token_set(_normalize_question(q_core))
-        if not q_norm_tokens:
-            return False
-
-        for line in response_lines:
-            line_tokens = _token_set(_normalize_question(line))
-            if not line_tokens:
-                continue
-            if _jaccard(q_norm_tokens, line_tokens) >= 0.62:
-                return True
-
-        return False
-
-    def _adds_related_context_value(q: str, response_text: str, context_text: str) -> bool:
-        q_tokens = _meaningful_tokens(q)
-        if len(q_tokens) < 2:
-            return False
-
-        resp_tokens = _meaningful_tokens(response_text)
-        ctx_tokens = _meaningful_tokens(context_text)
-        ctx_extra = ctx_tokens - resp_tokens
-
-        # Must stay within current message topic
-        topic_overlap = len(q_tokens.intersection(resp_tokens))
-        if topic_overlap < 1:
-            return False
-
-        # Must add at least one related detail from retrieved context not already explicit in response
-        if ctx_extra:
-            return len(q_tokens.intersection(ctx_extra)) >= 1
-
-        # If no extra context terms exist, require stronger overlap with response for strict relevance
-        return len(q_tokens.intersection(resp_tokens)) >= 2
-
-    def _extract_anchor_phrases(source_text: str) -> list[str]:
-        anchors = []
-
-        def _normalize_anchor_phrase(value: str) -> str:
-            cleaned = re.sub(r"\s+", " ", (value or "")).strip()
-            cleaned = re.sub(r"^(the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r"\s+(the|a|an)$", "", cleaned, flags=re.IGNORECASE)
-            return cleaned.strip()
-
-        source_names = re.findall(r"\[\[Source:\s*([^\]]+)\]", source_text)
-        for src in source_names:
-            name = re.sub(r"\.(pdf|md|txt|docx?)$", "", src.strip(), flags=re.IGNORECASE)
-            name = re.sub(r"[_-]+", " ", name).strip()
-            if 4 <= len(name) <= 70:
-                anchors.append(name)
-
-        for code in re.findall(r"\b[A-Z]{2,5}\d{3}\b", source_text.upper()):
-            anchors.append(code)
-
-        title_like = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}\b", source_text)
-        for phrase in title_like:
-            cleaned = _normalize_anchor_phrase(phrase)
-            if 6 <= len(cleaned) <= 50:
-                anchors.append(cleaned)
-
-        deduped = []
-        seen = set()
-        for item in anchors:
-            key = item.lower()
-            if key not in seen:
-                deduped.append(item)
-                seen.add(key)
-            if len(deduped) == 15:
-                break
-        return deduped
-
-    def _extract_tokens(text: str) -> set[str]:
-        return {
-            tok for tok in re.findall(r"[a-zA-Z0-9']+", text.lower())
-            if len(tok) >= 4
-        }
-
-    def _extract_course_codes(text: str) -> set[str]:
-        return set(re.findall(r"\b[A-Z]{2,5}\d{3}\b", text.upper()))
-
-    def _cleanup_question(q: str) -> str:
-        cleaned = re.sub(r"\s+", " ", str(q or "")).strip()
-        if not cleaned:
-            return ""
-        if not cleaned.endswith("?"):
-            cleaned += "?"
-        return cleaned
-
-    def _contains_anchor(q: str, anchors: list[str]) -> bool:
-        q_lower = q.lower()
-        return any(anchor.lower() in q_lower for anchor in anchors)
-
-    def _is_answerable_question(
-        q: str,
-        source_tokens: set[str],
-        source_codes: set[str],
-        anchors: list[str],
-        original_query: str,
-        response_text: str,
-        context_text: str,
-        intent: str,
-    ) -> bool:
-        if len(q) < 12 or len(q) > 140:
-            return False
-
-        if _is_shallow_rephrase(q, original_query):
-            return False
-
-        if not _is_query_aligned(q, original_query):
-            return False
-
-        if not _is_intent_aligned(q, intent):
-            return False
-
-        q_codes = _extract_course_codes(q)
-        if q_codes and not q_codes.issubset(source_codes):
-            return False
-
-        if anchors and not _contains_anchor(q, anchors):
-            return False
-
-        if not _adds_related_context_value(q, response_text, context_text):
-            return False
-
-        q_tokens = _extract_tokens(q)
-        overlap = q_tokens.intersection(source_tokens)
-        return len(overlap) >= 3
-
-    def _fallback_questions(source_text: str, anchors: list[str], source_codes: set[str], query_focus: str) -> list[str]:
-        intent = _detect_followup_intent(query)
-        fallbacks = _intent_fallback_templates(intent, anchors, source_codes, query_focus)
-
-        if not fallbacks and source_text.strip():
-            fallbacks = _intent_fallback_templates("general", anchors, source_codes, query_focus)
-
-        deduped = []
-        seen = set()
-        for q in fallbacks:
-            normalized = q.lower().strip()
-            if normalized not in seen:
-                deduped.append(q)
-                seen.add(normalized)
-            if len(deduped) == 3:
-                break
-        return deduped
-
-    source_text = context if context.strip() else f"{response}\n{context}"
-    strict_context = f"{response}\n{context}" if context.strip() else response
-    anchors = _extract_anchor_phrases(source_text)
-    source_tokens = _extract_tokens(source_text)
-    source_codes = _extract_course_codes(source_text)
-    followup_intent = _detect_followup_intent(query)
-    query_focus = _extract_query_focus(query)
-    best_anchor = _choose_best_anchor(query_focus, anchors)
-    
-    if skip_llm:
-        quick_candidates = _fallback_questions(source_text, anchors, source_codes, query_focus)
-        quick_validated: list[str] = []
-        for q in quick_candidates:
-            q_clean = _cleanup_question(q)
-            if not q_clean:
-                continue
-            if _is_redundant_candidate(q_clean, quick_validated):
-                continue
-            if _is_shallow_rephrase(q_clean, query):
-                continue
-            if not _is_query_aligned(q_clean, query):
-                continue
-            if not _is_intent_aligned(q_clean, followup_intent):
-                continue
-            quick_validated.append(q_clean)
-
-        if len(quick_validated) < 2:
-            for q in _generate_recovery_questions(query):
-                q_clean = _cleanup_question(q)
-                if not q_clean:
-                    continue
-                if _is_redundant_candidate(q_clean, quick_validated):
-                    continue
-                if _is_shallow_rephrase(q_clean, query):
-                    continue
-                if not _is_intent_aligned(q_clean, followup_intent):
-                    continue
-                quick_validated.append(q_clean)
-                if len(quick_validated) >= 3:
-                    break
-
-        if len(quick_validated) < 3:
-            for q in _context_fill_templates(followup_intent, best_anchor, source_codes):
-                q_clean = _cleanup_question(q)
-                if not q_clean:
-                    continue
-                if _is_redundant_candidate(q_clean, quick_validated):
-                    continue
-                if _is_shallow_rephrase(q_clean, query):
-                    continue
-                if _already_answered_by_response(q_clean, response):
-                    continue
-                if not _is_intent_aligned(q_clean, followup_intent):
-                    continue
-                quick_validated.append(q_clean)
-                if len(quick_validated) >= 3:
-                    break
-
-        return quick_validated[:3]
-
-    try:
-        llm = get_generator_llm()
-        anchor_text = ", ".join(anchors[:10]) if anchors else "(none)"
-        intent_rules = {
-            "location": "Ask about explicit room/building/floor entries, neighboring entries, or source line evidence.",
-            "curriculum": "Ask about prerequisites, semester placement, or closely related courses in the same section.",
-            "people": "Ask about exact roles, associated personnel, or source evidence lines.",
-            "download": "Ask about exact file/link target and related source-listed documents.",
-            "policy": "Ask about explicit conditions, exceptions, steps, or enforcement details in the same source.",
-            "general": "Ask for source-backed supporting detail, conditions, and related details from the same section.",
-        }
-        prompt = f"""Create exactly 3 short follow-up questions the assistant can answer
-USING ONLY the provided response and context.
-
-Hard constraints:
-- Do not introduce new facts, entities, course codes, policies, or assumptions.
-- Keep each question specific to details already present.
-- Each question must include at least one exact anchor term from this list: {anchor_text}
-    - Make each question go one level deeper (details, conditions, comparisons, or source evidence).
-    - Do NOT produce yes/no rephrasings of the same fact from the answer.
-    - Make all 3 questions clearly different from each other.
-- Follow this intent policy for this query: {intent_rules.get(followup_intent, intent_rules['general'])}
-- Keep each question under 16 words.
-- Return ONLY a JSON array of 3 strings.
-- No markdown, no numbering, no extra text.
-
-Example output: ["Question 1?", "Question 2?", "Question 3?"]
-
-User asked: {query}
-Assistant answered: {response[:300]}
-Available topic context: {context[:500]}
-
-Output (JSON array only):"""
-        
-        result = llm.invoke(prompt).content.strip()
-        result = re.sub(r'^```json|^```|```$', '', result.strip(), flags=re.MULTILINE).strip()
-        raw_questions = json.loads(result)
-
-        validated: list[str] = []
-        seen = set()
-
-        if isinstance(raw_questions, list):
-            for q in raw_questions:
-                cleaned = _cleanup_question(q)
-                if not cleaned:
-                    continue
-                key = cleaned.lower()
-                if key in seen:
-                    continue
-                if _is_redundant_candidate(cleaned, validated):
-                    continue
-                if _already_answered_by_response(cleaned, response):
-                    continue
-                if _is_answerable_question(
-                    cleaned,
-                    source_tokens,
-                    source_codes,
-                    anchors,
-                    query,
-                    response,
-                    strict_context,
-                    followup_intent,
-                ):
-                    validated.append(cleaned)
-                    seen.add(key)
-                if len(validated) == 3:
-                    break
-
-        if len(validated) < 3:
-            for q in _fallback_questions(source_text, anchors, source_codes, query_focus):
-                key = q.lower()
-                if key not in seen:
-                    if _is_redundant_candidate(q, validated):
-                        continue
-                    if _is_shallow_rephrase(q, query):
-                        continue
-                    if _already_answered_by_response(q, response):
-                        continue
-                    if not _adds_related_context_value(q, response, strict_context):
-                        continue
-                    if not _is_query_aligned(q, query):
-                        continue
-                    if not _is_intent_aligned(q, followup_intent):
-                        continue
-                    validated.append(q)
-                    seen.add(key)
-                if len(validated) == 3:
-                    break
-
-        if len(validated) < 2:
-            rescue_candidates = _fallback_questions(source_text, anchors, source_codes, query_focus)
-            rescue_candidates.extend(_generate_recovery_questions(query))
-            for q in rescue_candidates:
-                cleaned = _cleanup_question(q)
-                if not cleaned:
-                    continue
-                key = cleaned.lower()
-                if key in seen:
-                    continue
-                if _is_redundant_candidate(cleaned, validated):
-                    continue
-                if _is_shallow_rephrase(cleaned, query):
-                    continue
-                if not _is_intent_aligned(cleaned, followup_intent):
-                    continue
-                if not _is_query_aligned(cleaned, query):
-                    continue
-                validated.append(cleaned)
-                seen.add(key)
-                if len(validated) >= 3:
-                    break
-
-        if len(validated) < 3:
-            for q in _context_fill_templates(followup_intent, best_anchor, source_codes):
-                cleaned = _cleanup_question(q)
-                if not cleaned:
-                    continue
-                key = cleaned.lower()
-                if key in seen:
-                    continue
-                if _is_redundant_candidate(cleaned, validated):
-                    continue
-                if _is_shallow_rephrase(cleaned, query):
-                    continue
-                if _already_answered_by_response(cleaned, response):
-                    continue
-                if not _is_intent_aligned(cleaned, followup_intent):
-                    continue
-                validated.append(cleaned)
-                seen.add(key)
-                if len(validated) >= 3:
-                    break
-
-        return validated[:3]
-    except Exception as e:
-        logger.warning(f"Suggested questions failed: {e}")
-    safe_fallback = _fallback_questions(source_text, anchors, source_codes, query_focus)
-    if len(safe_fallback) < 2:
-        safe_fallback.extend(_generate_recovery_questions(query))
-    return safe_fallback[:3]

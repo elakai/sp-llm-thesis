@@ -219,6 +219,35 @@ button[kind="header"],
     line-height: 1.6 !important;
 }
 
+/* Suggested questions */
+.suggested-title {
+    margin-top: 12px;
+    margin-bottom: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #FFFBAD;
+}
+
+[class*="st-key-suggest_"] button {
+    background: linear-gradient(135deg, #FFD24A 0%, #FFB631 100%) !important;
+    border: 1px solid rgba(255, 166, 31, 0.7) !important;
+    color: #2A1B00 !important;
+    font-size: 0.95rem !important;
+    padding: 6px 10px !important;
+    border-radius: 999px !important;
+    white-space: nowrap !important;
+    box-shadow: 0 0 10px rgba(255, 143, 31, 0.55),
+                0 0 22px rgba(255, 143, 31, 0.35) !important;
+}
+
+[class*="st-key-suggest_"] button:hover {
+    background: linear-gradient(135deg, #FFE36F 0%, #FFC04D 100%) !important;
+    border-color: rgba(255, 166, 31, 0.9) !important;
+    color: #241500 !important;
+    box-shadow: 0 0 14px rgba(255, 143, 31, 0.7),
+                0 0 28px rgba(255, 143, 31, 0.45) !important;
+}
+
 /* Floating Chat Input Box */
 [data-testid="stChatInput"] { padding: 1.5rem 0; background-color: transparent !important; }
 [data-testid="stBottomBlockContainer"],
