@@ -41,6 +41,10 @@ def get_semantic_cache() -> list:
 
 GLOBAL_CACHE = get_semantic_cache()
 
+# [FIX 7]: Simple in-memory cache to prevent redundant contextualize API calls
+_REWRITE_CACHE = {}
+
+# [FIX 6]: Removed "also" and "more" to prevent unnecessary rewrites
 _CONTEXT_TRIGGERS = re.compile(
     r'\b(it|its|they|them|their|this|that|these|those|the same|'
     r'above|previous|earlier|last|mentioned|said|again|'
@@ -60,6 +64,12 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
         return query
         
     history_text = format_chat_history(chat_history_list)
+    
+    # Use a lightweight cache to prevent identical follow-ups from hitting the LLM
+    cache_key = (query, history_text[-300:]) 
+    if cache_key in _REWRITE_CACHE:
+        return _REWRITE_CACHE[cache_key]
+        
     prompt = f"""Given the following chat history and the user's latest question, formulate a standalone question that can be understood without the chat history.
     Do NOT answer the question. Just reformulate it if needed. If it doesn't need reformulating, return it exactly as is.
 
@@ -73,6 +83,11 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
         llm = get_generator_llm()
         standalone_query = llm.invoke(prompt).content.strip()
         logger.info(f"Memory Rewrite: '{query}' -> '{standalone_query}'")
+        
+        _REWRITE_CACHE[cache_key] = standalone_query
+        if len(_REWRITE_CACHE) > 100:
+            _REWRITE_CACHE.pop(next(iter(_REWRITE_CACHE))) # Keep cache bounded
+            
         return standalone_query
     except Exception as e:
         logger.warning(f"Contextualize Error: {e}")
@@ -217,10 +232,9 @@ def _contains_markdown_table(text: str) -> bool:
         for line in text.strip().split('\n')
     )
 
-
+# [FIX 1]: Narrowed to facts, excluded recommendations like "might" or "could be"
 def _contains_speculation(text: str) -> bool:
-    return bool(re.search(r"\b(likely|possibly|probably|maybe|might|could be|appears to be|seems to be)\b", text, re.IGNORECASE))
-
+    return bool(re.search(r"\b(likely|possibly|probably|appears to be|seems to be)\b", text, re.IGNORECASE))
 
 def _remove_speculative_sentences(text: str) -> str:
     if not text or not text.strip():
@@ -235,15 +249,9 @@ def _remove_speculative_sentences(text: str) -> str:
         kept.append(sentence.strip())
     return " ".join(kept).strip()
 
-
+# [FIX 2]: Strip out messy internal extensions and underscores for public display
 def _build_source_certainty_note(top_score: float, score_margin: float, sources: list[str]) -> str:
-    unique_sources = []
-    seen = set()
-    for source in sources:
-        s = (source or "Unknown").strip()
-        if s not in seen:
-            unique_sources.append(s)
-            seen.add(s)
+    unique_sources = list({(s or "Unknown").strip() for s in sources})
 
     if top_score >= HIGH_CONFIDENCE_THRESHOLD and score_margin >= HIGH_CONFIDENCE_MARGIN:
         level = "High"
@@ -252,9 +260,14 @@ def _build_source_certainty_note(top_score: float, score_margin: float, sources:
     else:
         level = "Low"
 
-    source_preview = ", ".join(unique_sources[:2]) if unique_sources else "retrieved documents"
-    return f"> **Source certainty:** {level} ({len(unique_sources)} source file(s); based on: {source_preview})"
+    def _clean_source_name(s: str) -> str:
+        s = re.sub(r'[-_]', ' ', s)           
+        s = re.sub(r'\.(pdf|md|txt|docx|csv|xlsx)$', '', s, flags=re.IGNORECASE)  
+        return s.strip().title()
 
+    clean_names = [_clean_source_name(s) for s in unique_sources[:2]]
+    source_preview = ", ".join(clean_names) if clean_names else "retrieved documents"
+    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): *{source_preview}*"
 
 def _detect_query_intent(query: str) -> str:
     q_lower = (query or "").lower()
@@ -278,7 +291,6 @@ def _detect_query_intent(query: str) -> str:
         return "policy"
     return "general"
 
-
 def _is_no_answer_response(text: str) -> bool:
     if not text:
         return False
@@ -291,9 +303,13 @@ def _is_no_answer_response(text: str) -> bool:
     lowered = text.lower()
     return any(re.search(p, lowered) for p in patterns)
 
-
+# [FIX 4]: Room codes no longer get falsely flagged as "incomplete"
 def _is_incomplete_query(query: str) -> bool:
     q_lower = (query or "").strip().lower()
+    
+    if re.search(r'\b[A-Z]{1,3}\d{3}\b', query.upper()):
+        return False
+        
     tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
     if len(tokens) <= 2:
         return True
@@ -303,7 +319,6 @@ def _is_incomplete_query(query: str) -> bool:
     has_structure = any(t in question_starters or t in helper_verbs for t in tokens)
 
     return len(tokens) <= 4 and not has_structure
-
 
 def _get_previous_user_query(chat_history_list: List[Dict[str, str]], current_query: str) -> str:
     if not chat_history_list:
@@ -319,7 +334,6 @@ def _get_previous_user_query(chat_history_list: List[Dict[str, str]], current_qu
             continue
         return content
     return ""
-
 
 def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[str, str]]) -> List[str]:
     base = (query or "").strip()
@@ -523,7 +537,15 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
         
     else:
-        max_chunks = 8 if is_curriculum_query else 3
+        # [FIX 6]: Ensure people intents get a broader slice of the context chunks
+        query_intent = _detect_query_intent(standalone_query)
+        if query_intent == "people":
+            max_chunks = 6
+        elif is_curriculum_query:
+            max_chunks = 8
+        else:
+            max_chunks = 3
+            
         hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
 
         if hybrid_results:
@@ -565,7 +587,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         ]
     )
 
-    # ── FIX: DIRECTORY EXTRACTION LOGIC ──
     if is_facility_query:
         already_has_directory = any(
             'directory' in doc.metadata.get('source', '').lower() or
@@ -573,16 +594,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             for doc in top_reranked
         )
         if not already_has_directory:
-            # Extract building code from query (e.g. "D412" → "D", "AL112" → "AL", "EB111" → "EB")
             building_code_match = re.search(r'\b([A-Z]{1,3})\d{3}\b', standalone_query.upper())
             if building_code_match:
                 building_code = building_code_match.group(1)
-                # Search specifically for that building code + "rooms" or "building"
                 directory_query = f"{building_code} building rooms directory"
             else:
                 directory_query = "campus building directory rooms"
 
-            directory_retriever = get_retriever(k=8)  # was k=5, increase to cast wider net
+            directory_retriever = get_retriever(k=8)
             directory_docs = directory_retriever.invoke(directory_query)
             directory_filtered = prefer_latest_per_source(directory_docs)
             existing_hashes = {hash(d.page_content) for d in top_reranked}
@@ -591,7 +610,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                     top_reranked.append(doc)
                     existing_hashes.add(hash(doc.page_content))
             if top_reranked:
-                top_score = max(top_score, 5.0)  # prevent Tier 1 kill
+                top_score = max(top_score, 5.0)
             logger.info(f"🏢 Facility query — building code: '{building_code_match.group(1) if building_code_match else 'generic'}', injected {len(directory_filtered)} chunks")
     
     logger.info(f"📊 Query: '{standalone_query}'")
@@ -612,7 +631,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     retrieval_time = time.time() - retrieval_start
     gen_start = time.time()
     
-    # ── FIX: UPDATED RULE 13 WITH EXPLICIT CODES ──
+    # ── FIX: SINGLE-SHOT SUGGESTIONS IN PROMPT ──
     prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
 
 Answer the question using ONLY the context below.
@@ -625,14 +644,16 @@ Answer the question using ONLY the context below.
    Never sound like a formal document or a customer service bot.
    Do NOT start with "Great question!", "Good question!", or any 
    sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "Kuya", "So here's", "So to answer", or any 
-   sentence that begins with the word "So". Start directly with 
-   a greeting, and the answer.
+   sentence that begins with the word "So". Make every response different — do NOT use a template. Avoid repeating sentence starters across different responses. 
+   Do NOT use the same opening phrase more than once in a 5-response span.
 
 2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or "Let me check the handbook for you..." or any variation.
 
 3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino. 
 
-4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. Include specific course codes, titles, units, and prerequisites. **SHOW EVERY ROW** — never truncate or skip rows.
+4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. Include specific course codes, titles, units, and prerequisites. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where 
+   every cell contains only dashes (---). These are decorative 
+   separators in the source — omit them entirely from your markdown table.
 
 5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 
@@ -677,7 +698,20 @@ Answer the question using ONLY the context below.
 
 **Question:** {standalone_query}
 
-**Answer:**"""
+**Answer:**
+Provide your answer above, then on a new line add exactly this block:
+
+SUGGESTED_QUESTIONS:
+1. [first follow-up question, under 12 words, answerable from the context above]
+2. [second follow-up question, under 12 words, answerable from the context above]
+3. [third follow-up question, under 12 words, answerable from the context above]
+
+Hard rules for suggested questions:
+- Only ask about things explicitly present in the context above
+- Do not introduce new course codes, names, or policies not mentioned
+- Do not repeat the user's original question
+- Questions must be different topics from each other
+"""
 
     try:
         is_protected_query = (
@@ -694,8 +728,29 @@ Answer the question using ONLY the context below.
             return
 
         llm = get_generator_llm()
-        draft_response = get_llm_response(llm, prompt).content
+        draft_raw = get_llm_response(llm, prompt).content
         
+        # ── EXTRACT SUGGESTIONS (BEFORE CRITIC SEES IT) ──
+        SUGGESTION_SPLIT = re.compile(
+            r'\n+SUGGESTED_QUESTIONS:\s*\n((?:\d+\..+\n?){1,3})',
+            re.IGNORECASE
+        )
+        suggestion_match = SUGGESTION_SPLIT.search(draft_raw)
+        suggested_questions = []
+
+        if suggestion_match:
+            draft_response = draft_raw[:suggestion_match.start()].strip()
+            raw_lines = suggestion_match.group(1).strip().split('\n')
+            for line in raw_lines:
+                q = re.sub(r'^\d+\.\s*', '', line).strip()
+                if q and len(q) > 8:
+                    if not q.endswith('?'):
+                        q += '?'
+                    suggested_questions.append(q)
+        else:
+            draft_response = draft_raw.strip()
+
+        # ── CRITIC / CONFIDENCE GATE ──
         score_margin = top_score - second_score if second_score != float("-inf") else top_score
         high_confidence = (
             top_score >= HIGH_CONFIDENCE_THRESHOLD
@@ -720,7 +775,6 @@ Answer the question using ONLY the context below.
             logger.error("final_verified_response is None. Falling back to draft.")
             final_verified_response = draft_response
 
-        # Hard block speculative language that can mislead users.
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = _remove_speculative_sentences(final_verified_response)
             if cleaned_non_speculative:
@@ -732,14 +786,21 @@ Answer the question using ONLY the context below.
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
 
-        source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
-        score_margin = top_score - second_score if second_score != float("-inf") else top_score
-        certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
-        final_verified_response = f"{final_verified_response}\n\n{certainty_note}"
-        
+        # ── CACHING (FIX 3): Cache the clean response before metadata/suggestions ──
         clean_response_for_cache = final_verified_response
         add_to_cache(standalone_query, clean_response_for_cache)
+
+        # ── APPEND METADATA & SUGGESTIONS FOR STREAMING ──
+        source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
+        certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
+        final_verified_response += f"\n\n{certainty_note}"
         
+        if suggested_questions:
+            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
+                "\n".join(f"- {q}" for q in suggested_questions[:3])
+            final_verified_response += suggestions_md
+        
+        # ── STREAMING ──
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
@@ -760,9 +821,27 @@ Answer the question using ONLY the context below.
         logger.error(f"❌ Generation Pipeline Failed: {e}")
         yield "Something went wrong on my end. Give it another try in a bit!"
 
+
 def fix_markdown_tables(text: str) -> str:
     if '|' not in text:
         return text
+    
+    # [FIX 5]: Removed the stray indent before the comment
+    # ── NEW: Remove decorative dash-only rows from LLM output ──
+    # These come from source documents that use --- as visual dividers.
+    # In markdown tables they render as broken separator rows.
+    def _strip_decorative_dash_rows(t: str) -> str:
+        cleaned = []
+        for line in t.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith('|') and stripped.endswith('|'):
+                cells = [c.strip() for c in stripped.strip('|').split('|')]
+                if all(re.fullmatch(r'-*', cell) for cell in cells):
+                    continue  
+            cleaned.append(line)
+        return '\n'.join(cleaned)
+
+    text = _strip_decorative_dash_rows(text)
         
     lines = text.split('\n')
     fixed = []
@@ -800,6 +879,7 @@ def fix_markdown_tables(text: str) -> str:
         i += 1
     return '\n'.join(fixed)
 
+
 def format_raw_links(text: str) -> str:
     raw_url_pattern = re.compile(
         r'(?<!\()'
@@ -823,6 +903,7 @@ def format_raw_links(text: str) -> str:
             label = 'View link here'
         return f'[{label}]({url})'
     return raw_url_pattern.sub(replace_url, text)
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
