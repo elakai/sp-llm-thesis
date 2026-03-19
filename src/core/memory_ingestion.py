@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import List
 
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 
 from src.core.ingestion import (
     normalize_source_key,
@@ -89,11 +89,18 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
 
     elif ext in ('txt', 'md'):
         try:
-            text = clean_text(file_bytes.decode('utf-8', errors='ignore'))
+            raw_text = file_bytes.decode('utf-8', errors='ignore')
+            # Don't clean_text md files — it can collapse table whitespace
+            text = raw_text.strip() if ext == 'md' else clean_text(raw_text)
             if text:
                 docs.append(Document(
                     page_content=text,
-                    metadata={"source": norm_filename, "page": 1, "type": "text"}
+                    metadata={
+                        "source": norm_filename,
+                        "page": 1,
+                        # ── KEY FIX: tag as markdown so splitter preserves tables ──
+                        "type": "markdown" if ext == "md" else "text"
+                    }
                 ))
         except Exception as e:
             logger.error(f"{ext.upper()} processing error: {e}")
@@ -164,27 +171,54 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
 
     # Two-phase atomic chunking
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
+    text_docs = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
 
     split_table_docs = []
     for doc in table_docs:
         split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
     curriculum_chunks = []
+    markdown_docs = []
     regular_text_docs = []
+
     for doc in text_docs:
         src = doc.metadata.get("source", "")
         if is_curriculum_file(src):
             sections = split_curriculum_by_section(doc)
             logger.info(f"📚 Curriculum split: {src} → {len(sections)} sections")
             curriculum_chunks.extend(sections)
+        elif doc.metadata.get("type") == "markdown":
+            markdown_docs.append(doc)
         else:
             regular_text_docs.append(doc)
+
+    # Markdown files: split by headers first to keep tables intact
+    md_header_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
+        strip_headers=False
+    )
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
+    )
+
+    split_markdown_docs = []
+    for doc in markdown_docs:
+        header_chunks = md_header_splitter.split_text(doc.page_content)
+        for hchunk in header_chunks:
+            text = hchunk.page_content
+            meta = {**doc.metadata, **hchunk.metadata}
+            if len(text) <= CHUNK_SIZE:
+                # Keep whole — table rows stay together
+                split_markdown_docs.append(Document(page_content=text, metadata=meta))
+            else:
+                # Only re-split if section is genuinely too large
+                for subchunk in char_splitter.split_text(text):
+                    split_markdown_docs.append(Document(page_content=subchunk, metadata=meta))
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     split_regular_docs = text_splitter.split_documents(regular_text_docs)
 
-    final_chunks = split_table_docs + curriculum_chunks + split_regular_docs
+    final_chunks = split_table_docs + curriculum_chunks + split_markdown_docs + split_regular_docs
 
     # ── Context Header Injection ───────────────────────────────────────────
     # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is
