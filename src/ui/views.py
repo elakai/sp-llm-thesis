@@ -3,12 +3,17 @@ import streamlit as st
 import uuid
 import copy
 import base64
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from src.core.retrieval import generate_response
-from src.ui.suggested_questions import generate_suggested_questions, render_suggested_questions
+from src.ui.suggested_questions import render_suggested_questions
 from src.core.feedback import save_feedback, log_conversation, delete_conversation
+
+_PHT = timezone(timedelta(hours=8))
+
+def _now_pht() -> str:
+    return datetime.now(_PHT).strftime("%I:%M %p")
 
 
 def _get_logo_base64() -> str:
@@ -316,7 +321,7 @@ def render_chat_view():
 
 def _process_user_query(query: str):
     """Process user query, generate response, and update chat state."""
-    user_ts = datetime.now().strftime("%I:%M %p")
+    user_ts = _now_pht()
     st.session_state.messages.append({"role": "user", "content": query, "timestamp": user_ts})
     
     with st.chat_message("user"):
@@ -345,7 +350,19 @@ def _process_user_query(query: str):
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
 
-            suggestions = generate_suggested_questions(query, current_context, max_questions=3)
+            SUGGESTION_PATTERN = re.compile(
+                r'\n+---\n\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
+                re.IGNORECASE
+            )
+            suggestion_match = SUGGESTION_PATTERN.search(full_response)
+            if suggestion_match:
+                suggestions = [
+                    re.sub(r'^- ', '', line).strip()
+                    for line in suggestion_match.group(1).strip().split('\n')
+                    if line.strip().startswith('- ')
+                ]
+            else:
+                suggestions = []
             
             log_conversation(
                 query=query,
@@ -361,7 +378,7 @@ def _process_user_query(query: str):
             st.error(clean_response)
             suggestions = []
         
-        asst_ts = datetime.now().strftime("%I:%M %p")
+        asst_ts = _now_pht()
         # Save the clean assistant response into session state
         st.session_state.messages.append({
             "role": "assistant", 
