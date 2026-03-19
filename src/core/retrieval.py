@@ -651,9 +651,13 @@ Answer the question using ONLY the context below.
 
 3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino. 
 
-4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. Include specific course codes, titles, units, and prerequisites. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where 
-   every cell contains only dashes (---). These are decorative 
-   separators in the source — omit them entirely from your markdown table.
+4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum 
+   subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL 
+   data in a Markdown table. Include specific course codes, titles, units, and 
+   prerequisites. **SHOW EVERY ROW** — never truncate or skip rows. 
+   If the source data has rows where every cell is "---", skip those rows 
+   entirely — they are visual dividers in the original document and must NOT 
+   appear in your markdown table output.
 
 5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 
@@ -831,15 +835,19 @@ def fix_markdown_tables(text: str) -> str:
     # These come from source documents that use --- as visual dividers.
     # In markdown tables they render as broken separator rows.
     def _strip_decorative_dash_rows(t: str) -> str:
-        cleaned = []
-        for line in t.split('\n'):
-            stripped = line.strip()
-            if stripped.startswith('|') and stripped.endswith('|'):
-                cells = [c.strip() for c in stripped.strip('|').split('|')]
-                if all(re.fullmatch(r'-*', cell) for cell in cells):
-                    continue  
-            cleaned.append(line)
-        return '\n'.join(cleaned)
+    cleaned = []
+    for line in t.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('|') and stripped.endswith('|'):
+            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            # Skip rows where every cell is ONLY dashes (1 or more) or empty
+            # But preserve real separator rows (those between header and data)
+            all_dashes = all(re.fullmatch(r'-+', cell) for cell in cells if cell)
+            has_empty = any(cell == '' for cell in cells)
+            if all_dashes and not has_empty:
+                continue  # decorative row — skip it
+        cleaned.append(line)
+    return '\n'.join(cleaned)
 
     text = _strip_decorative_dash_rows(text)
         
