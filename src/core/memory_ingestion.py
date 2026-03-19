@@ -171,7 +171,7 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
 
     # Two-phase atomic chunking
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs  = [d for d in all_docs if d.metadata.get("type") == "text"]
+    text_docs = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
 
     split_table_docs = []
     for doc in table_docs:
