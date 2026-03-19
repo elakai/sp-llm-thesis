@@ -88,17 +88,18 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
             logger.error(f"DOCX processing error: {e}")
 
     elif ext in ('txt', 'md'):
-        try:
-            raw_text = file_bytes.decode('utf-8', errors='ignore')
-            text = clean_text(raw_text)
-            if text:
-                doc_type = "markdown" if ext == "md" else "text"
-                docs.append(Document(
-                    page_content=text,
-                    metadata={"source": norm_filename, "page": 1, "type": doc_type}
-                ))
-        except Exception as e:
-            logger.error(f"{ext.upper()} processing error: {e}")
+    try:
+        raw_text = file_bytes.decode('utf-8', errors='ignore')
+        # ── FIX: Don't run clean_text on markdown — it strips | and newlines ──
+        text = raw_text.strip() if ext == 'md' else clean_text(raw_text)
+        if text:
+            doc_type = "markdown" if ext == "md" else "text"
+            docs.append(Document(
+                page_content=text,
+                metadata={"source": norm_filename, "page": 1, "type": doc_type}
+            ))
+    except Exception as e:
+        logger.error(f"{ext.upper()} processing error: {e}")
 
     elif ext in ('png', 'jpg', 'jpeg', 'tiff', 'bmp'):
         # OCR: extract text from images using Tesseract
