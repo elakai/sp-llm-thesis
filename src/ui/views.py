@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from src.core.retrieval import generate_response
-from src.ui.suggested_questions import generate_suggested_questions, render_suggested_questions
+from src.ui.suggested_questions import render_suggested_questions
 from src.core.feedback import save_feedback, log_conversation, delete_conversation
 
 _PHT = timezone(timedelta(hours=8))
@@ -350,7 +350,19 @@ def _process_user_query(query: str):
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
 
-            suggestions = generate_suggested_questions(query, current_context, max_questions=3)
+            SUGGESTION_PATTERN = re.compile(
+                r'\n+---\n\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
+                re.IGNORECASE
+            )
+            suggestion_match = SUGGESTION_PATTERN.search(full_response)
+            if suggestion_match:
+                suggestions = [
+                    re.sub(r'^- ', '', line).strip()
+                    for line in suggestion_match.group(1).strip().split('\n')
+                    if line.strip().startswith('- ')
+                ]
+            else:
+                suggestions = []
             
             log_conversation(
                 query=query,

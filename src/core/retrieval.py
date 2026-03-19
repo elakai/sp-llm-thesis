@@ -826,28 +826,23 @@ Hard rules for suggested questions:
         yield "Something went wrong on my end. Give it another try in a bit!"
 
 
-def fix_markdown_tables(text: str) -> str:
-    if '|' not in text:
-        return text
-    
-    # [FIX 5]: Removed the stray indent before the comment
-    # ── NEW: Remove decorative dash-only rows from LLM output ──
-    # These come from source documents that use --- as visual dividers.
-    # In markdown tables they render as broken separator rows.
-    def _strip_decorative_dash_rows(t: str) -> str:
+def _strip_decorative_dash_rows(t: str) -> str:
     cleaned = []
     for line in t.split('\n'):
         stripped = line.strip()
         if stripped.startswith('|') and stripped.endswith('|'):
             cells = [c.strip() for c in stripped.strip('|').split('|')]
-            # Skip rows where every cell is ONLY dashes (1 or more) or empty
-            # But preserve real separator rows (those between header and data)
             all_dashes = all(re.fullmatch(r'-+', cell) for cell in cells if cell)
             has_empty = any(cell == '' for cell in cells)
             if all_dashes and not has_empty:
-                continue  # decorative row — skip it
+                continue
         cleaned.append(line)
-    return '\n'.join(cleaned)
+    return '\n'.join(cleaned)   # ← this line was broken before
+
+
+def fix_markdown_tables(text: str) -> str:
+    if '|' not in text:
+        return text
 
     text = _strip_decorative_dash_rows(text)
         
