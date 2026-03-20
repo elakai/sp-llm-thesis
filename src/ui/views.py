@@ -264,14 +264,13 @@ def render_chat_view():
             query = _get_previous_user_query(st.session_state.messages, idx)
 
             st.markdown("<div class='eval-prompt'>Was this answer helpful?</div>", unsafe_allow_html=True)
-            feedback_col1, feedback_col2, _ = st.columns([1.1, 1.2, 4.7])
+            feedback_col1, feedback_col2 = st.columns(2)
 
             with feedback_col1:
                 if st.button(
                     "Helpful",
                     key=f"eval_helpful_{idx}",
                     type="primary" if current_feedback == "helpful" else "secondary",
-                    use_container_width=True,
                     help="Click again to remove" if current_feedback == "helpful" else None,
                 ):
                     if current_feedback == "helpful":
@@ -289,7 +288,6 @@ def render_chat_view():
                     "Not helpful",
                     key=f"eval_not_helpful_{idx}",
                     type="primary" if current_feedback == "not_helpful" else "secondary",
-                    use_container_width=True,
                     help="Click again to remove" if current_feedback == "not_helpful" else None,
                 ):
                     if current_feedback == "not_helpful":

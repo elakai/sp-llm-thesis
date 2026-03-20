@@ -136,6 +136,113 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
 def _tokenize(text: str) -> list:
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
 
+
+_SUGGESTION_STOPWORDS = {
+    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+    "is", "are", "was", "were", "be", "being", "been", "do", "does", "did",
+    "to", "for", "of", "in", "on", "at", "by", "from", "with", "about", "and",
+    "or", "the", "a", "an", "this", "that", "these", "those", "can", "could",
+    "should", "would", "will", "my", "your", "their", "our", "i", "you", "we",
+    "they", "it", "me", "us", "them"
+}
+
+
+def _filter_grounded_suggestions(
+    suggestions: List[str],
+    context: str,
+    original_query: str,
+    max_items: int = 3
+) -> List[str]:
+    if not suggestions:
+        return []
+
+    context_tokens = set(_tokenize(context))
+    query_tokens = set(_tokenize(original_query))
+    seen = set()
+    grounded = []
+
+    for question in suggestions:
+        normalized = re.sub(r'\s+', ' ', question).strip()
+        if not normalized:
+            continue
+
+        key = normalized.lower().rstrip(' ?')
+        if key in seen:
+            continue
+
+        content_tokens = [
+            token for token in _tokenize(normalized)
+            if len(token) > 2 and token not in _SUGGESTION_STOPWORDS
+        ]
+        if not content_tokens:
+            continue
+
+        overlap = [token for token in content_tokens if token in context_tokens]
+        minimum_overlap = 1 if len(content_tokens) <= 2 else 2
+        if len(overlap) < minimum_overlap:
+            continue
+
+        if query_tokens and set(content_tokens).issubset(query_tokens):
+            continue
+
+        seen.add(key)
+        grounded.append(normalized if normalized.endswith('?') else f"{normalized}?")
+
+        if len(grounded) >= max_items:
+            break
+
+    return grounded
+
+
+def _build_source_fallback_suggestions(
+    source_list: List[str],
+    original_query: str,
+    max_items: int = 3,
+) -> List[str]:
+    if not source_list:
+        return []
+
+    query_tokens = set(_tokenize(original_query))
+    fallbacks = []
+    seen = set()
+
+    for source in source_list:
+        cleaned_source = re.sub(r'\.[A-Za-z0-9]+$', '', source).strip()
+        cleaned_source = re.sub(r'[_-]+', ' ', cleaned_source)
+        cleaned_source = re.sub(r'\s+', ' ', cleaned_source).strip()
+        if not cleaned_source:
+            continue
+
+        topic_tokens = [tok for tok in _tokenize(cleaned_source) if len(tok) > 2]
+        if not topic_tokens:
+            continue
+
+        title = " ".join(cleaned_source.split()[:6])
+        candidate_set = [
+            f"What are the key points in {title}?",
+            f"Can you summarize {title}?",
+            f"What important policies are in {title}?",
+        ]
+
+        for candidate in candidate_set:
+            key = candidate.lower().rstrip(' ?')
+            if key in seen:
+                continue
+
+            candidate_tokens = {
+                tok for tok in _tokenize(candidate)
+                if len(tok) > 2 and tok not in _SUGGESTION_STOPWORDS
+            }
+            if candidate_tokens and candidate_tokens.issubset(query_tokens):
+                continue
+
+            seen.add(key)
+            fallbacks.append(candidate)
+            if len(fallbacks) >= max_items:
+                return fallbacks
+
+    return fallbacks
+
 def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
     if not docs: return []
     try:
@@ -751,6 +858,12 @@ Hard rules for suggested questions:
                     if not q.endswith('?'):
                         q += '?'
                     suggested_questions.append(q)
+            suggested_questions = _filter_grounded_suggestions(
+                suggested_questions,
+                context,
+                standalone_query,
+                max_items=3,
+            )
         else:
             draft_response = draft_raw.strip()
 
@@ -798,6 +911,13 @@ Hard rules for suggested questions:
         source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
         certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
         final_verified_response += f"\n\n{certainty_note}"
+
+        if not suggested_questions:
+            suggested_questions = _build_source_fallback_suggestions(
+                source_list,
+                standalone_query,
+                max_items=3,
+            )
         
         if suggested_questions:
             suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \

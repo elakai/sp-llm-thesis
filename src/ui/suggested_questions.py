@@ -9,9 +9,7 @@ def render_suggested_questions(questions: List[str], key_prefix: str) -> None:
     if not questions:
         return
     st.markdown("<div class='suggested-title'>You might also ask</div>", unsafe_allow_html=True)
-    cols = st.columns(len(questions))
     for idx, question in enumerate(questions):
-        with cols[idx]:
-            if st.button(question, key=f"{key_prefix}_{idx}"):
-                st.session_state["queued_query"] = question
-                st.rerun()
+        if st.button(question, key=f"{key_prefix}_{idx}"):
+            st.session_state["queued_query"] = question
+            st.rerun()
