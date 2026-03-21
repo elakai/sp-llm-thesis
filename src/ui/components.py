@@ -97,6 +97,10 @@ def render_login():
 def render_sidebar():
     load_css("main.css")
 
+    if st.button("☰", key="mobile_sidebar_toggle", use_container_width=False):
+        st.session_state["sidebar_open"] = not st.session_state.get("sidebar_open", True)
+        st.rerun()
+
     with st.sidebar:
         sidebar_open = st.session_state.get("sidebar_open", True)
 

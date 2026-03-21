@@ -71,11 +71,12 @@ if "db_online" not in st.session_state:
     st.session_state["db_online"] = check_pinecone_health()
 
 sidebar_width = "280px" if st.session_state["sidebar_open"] else "92px"
+mobile_sidebar_width = "280px" if st.session_state["sidebar_open"] else "0px"
 content_gutter = "3.5rem"
 st.markdown(
     f"""
     <style>
-    :root {{ --axi-sidebar-width: {sidebar_width}; --axi-content-gutter: {content_gutter}; }}
+    :root {{ --axi-sidebar-width: {sidebar_width}; --axi-mobile-sidebar-width: {mobile_sidebar_width}; --axi-content-gutter: {content_gutter}; }}
     </style>
     """,
     unsafe_allow_html=True,

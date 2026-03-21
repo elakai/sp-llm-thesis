@@ -76,6 +76,28 @@ button[kind="header"],
     border-color: rgba(0, 0, 0, 0.08) !important;
 }
 
+[class*="st-key-mobile_sidebar_toggle"] {
+    display: none !important;
+}
+
+[class*="st-key-mobile_sidebar_toggle"] button {
+    position: fixed !important;
+    top: calc(0.85rem + env(safe-area-inset-top, 0px)) !important;
+    left: 0.85rem !important;
+    z-index: 1002 !important;
+    width: 40px !important;
+    min-width: 40px !important;
+    height: 40px !important;
+    padding: 0 !important;
+    border-radius: 10px !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    background: rgba(0, 0, 0, 0.78) !important;
+    color: #ffffff !important;
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+}
+
 /* Main content and bottom input adapt to sidebar state */
 [data-testid="stMainBlockContainer"] {
     width: calc(100vw - var(--axi-sidebar-width, 280px) - var(--axi-content-gutter, 3.5rem)) !important;
@@ -407,8 +429,24 @@ button[kind="header"],
 
 @media (max-width: 768px) {
     :root {
-        --axi-sidebar-width: 0px;
         --axi-content-gutter: 1.25rem;
+    }
+
+    [class*="st-key-mobile_sidebar_toggle"] {
+        display: block !important;
+    }
+
+    [data-testid="stSidebar"] [class*="st-key-sidebar_toggle"] {
+        display: block !important;
+    }
+
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    [data-testid="sidebar-button"] {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
     }
 
     [data-testid="stMainBlockContainer"] h1 {
@@ -419,12 +457,12 @@ button[kind="header"],
     }
 
     [data-testid="stSidebar"] {
-        min-width: 0 !important;
-        max-width: 0 !important;
-        width: 0 !important;
-        opacity: 0 !important;
-        transform: translateX(-100%) !important;
-        pointer-events: none !important;
+        min-width: var(--axi-mobile-sidebar-width, 0px) !important;
+        max-width: var(--axi-mobile-sidebar-width, 0px) !important;
+        width: var(--axi-mobile-sidebar-width, 0px) !important;
+        opacity: 1 !important;
+        transform: translateX(0) !important;
+        pointer-events: auto !important;
     }
 
     [data-testid="stMainBlockContainer"],
