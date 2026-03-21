@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as st_components
 import base64
 import sys
 import uuid
@@ -11,6 +12,18 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.core.auth import login_user, register_user
+
+
+def _is_mobile_client() -> bool:
+    try:
+        headers = getattr(st, "context", None)
+        if not headers:
+            return False
+        user_agent = (st.context.headers.get("user-agent", "") or "").lower()
+        mobile_tokens = ("mobile", "android", "iphone", "ipad", "ipod")
+        return any(token in user_agent for token in mobile_tokens)
+    except Exception:
+        return False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: CSS LOADER
@@ -96,6 +109,64 @@ def render_login():
 
 def render_sidebar():
     load_css("main.css")
+    st_components.html(
+        """
+        <script>
+        (function () {
+            let rootWindow = window;
+            let rootDocument = document;
+            try {
+                if (window.parent && window.parent !== window && window.parent.document) {
+                    rootWindow = window.parent;
+                    rootDocument = window.parent.document;
+                }
+            } catch (err) {
+                rootWindow = window;
+                rootDocument = document;
+            }
+
+            if (rootWindow.__axiMobileTabSidebarAutoCollapseBound) {
+                return;
+            }
+            rootWindow.__axiMobileTabSidebarAutoCollapseBound = true;
+
+            function isMobileViewport() {
+                return rootWindow.matchMedia && rootWindow.matchMedia("(max-width: 768px)").matches;
+            }
+
+            function isSidebarOpenOnMobile() {
+                const styles = rootWindow.getComputedStyle(rootDocument.documentElement);
+                const widthValue = (styles.getPropertyValue("--axi-mobile-sidebar-width") || "").trim();
+                return widthValue && widthValue !== "0" && widthValue !== "0px";
+            }
+
+            function collapseSidebarIfNeeded() {
+                if (!isMobileViewport() || !isSidebarOpenOnMobile()) {
+                    return;
+                }
+                const mobileToggle = rootDocument.querySelector('[class*="st-key-mobile_sidebar_toggle"] button');
+                if (mobileToggle) {
+                    mobileToggle.click();
+                }
+            }
+
+            rootDocument.addEventListener(
+                "click",
+                function (event) {
+                    const clickedTab = event.target && event.target.closest('[data-baseweb="tab"], [role="tab"]');
+                    const clickedSidebarNav = event.target && event.target.closest('[class*="st-key-nav_"]');
+                    if (!clickedTab && !clickedSidebarNav) {
+                        return;
+                    }
+                    setTimeout(collapseSidebarIfNeeded, 120);
+                },
+                true
+            );
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
     if st.button("☰", key="mobile_sidebar_toggle", use_container_width=False):
         st.session_state["sidebar_open"] = not st.session_state.get("sidebar_open", True)
@@ -127,13 +198,16 @@ def render_sidebar():
             fallback_text = "AXIstant" if sidebar_open else "AXI"
             st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
         st.markdown("---")
+        mobile_client = _is_mobile_client()
         
         # User Specific Navigation
         if st.session_state.get("role") != "admin":
             
             # New Chat button
             new_chat_label = "New Chat" if sidebar_open else "✏️"
-            if st.button(new_chat_label, use_container_width=True):
+            if st.button(new_chat_label, key="nav_new_chat", use_container_width=True):
+                if mobile_client and st.session_state.get("sidebar_open", True):
+                    st.session_state["sidebar_open"] = False
                 st.session_state["messages"] = []
                 st.session_state["active_convo_idx"] = None 
                 st.session_state["session_id"] = str(uuid.uuid4())
@@ -142,7 +216,9 @@ def render_sidebar():
             
             # History button
             history_label = "History" if sidebar_open else "🕘"
-            if st.button(history_label, use_container_width=True):
+            if st.button(history_label, key="nav_history", use_container_width=True):
+                if mobile_client and st.session_state.get("sidebar_open", True):
+                    st.session_state["sidebar_open"] = False
                 st.session_state["view"] = "history"
                 st.rerun()
             
@@ -151,13 +227,17 @@ def render_sidebar():
             
             # Main Dashboard Button
             admin_label = "**Admin Dashboard**" if sidebar_open and st.session_state.get("view") == "admin" else ("Admin Dashboard" if sidebar_open else "🛠️")
-            if st.button(admin_label, use_container_width=True):
+            if st.button(admin_label, key="nav_admin_dashboard", use_container_width=True):
+                if mobile_client and st.session_state.get("sidebar_open", True):
+                    st.session_state["sidebar_open"] = False
                 st.session_state["view"] = "admin"
                 st.rerun()
 
             # Chat Console Button
             admin_chat_label = "**Chat Console**" if sidebar_open and st.session_state.get("view") == "chat" else ("Chat Console" if sidebar_open else "💬")
-            if st.button(admin_chat_label, use_container_width=True):
+            if st.button(admin_chat_label, key="nav_chat_console", use_container_width=True):
+                if mobile_client and st.session_state.get("sidebar_open", True):
+                    st.session_state["sidebar_open"] = False
                 st.session_state["messages"] = [] 
                 st.session_state["active_convo_idx"] = None 
                 st.session_state["session_id"] = str(uuid.uuid4())
@@ -166,7 +246,9 @@ def render_sidebar():
 
             # Indexed Documents Button
             docs_label = "**Document Management**" if sidebar_open and st.session_state.get("view") == "indexed_docs" else ("Document Management" if sidebar_open else "📚")
-            if st.button(docs_label, use_container_width=True):
+            if st.button(docs_label, key="nav_indexed_docs", use_container_width=True):
+                if mobile_client and st.session_state.get("sidebar_open", True):
+                    st.session_state["sidebar_open"] = False
                 st.session_state["view"] = "indexed_docs"
                 st.rerun()
 
