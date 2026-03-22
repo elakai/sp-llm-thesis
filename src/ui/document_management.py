@@ -67,7 +67,7 @@ def show_knowledge_map_dialog(algo, dims):
             idx = vectorstore._index
             
             query_vec = vectorstore.embeddings.embed_query("University policies handbook computer engineering department")
-            res = idx.query(vector=query_vec, top_k=800, include_values=True, include_metadata=True)
+            res = idx.query(vector=query_vec, top_k=300, include_values=True, include_metadata=True)
             matches = res.get('matches', [])
             
             if len(matches) < 10:
@@ -117,14 +117,14 @@ def show_knowledge_map_dialog(algo, dims):
                 fig.update_layout(
                     paper_bgcolor='rgba(128,128,128,0.05)',
                     plot_bgcolor='rgba(128,128,128,0.05)',
-                    margin=dict(l=0, r=0, t=0, b=0),
+                    margin=dict(l=10, r=10, t=30, b=180),
                     legend=dict(
-                        orientation="v", yanchor="top", y=1, xanchor="left", x=1.0,
-                        title_font_family="sans-serif", font=dict(size=12),
-                        bgcolor='rgba(128,128,128,0.05)', bordercolor='rgba(128,128,128,0.2)', borderwidth=1
+                        orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title=dict(side="top"),
+                        title_font_family="sans-serif", font=dict(size=11),
+                        bgcolor='rgba(255,255,255,0.7)', bordercolor='rgba(128,128,128,0.2)', borderwidth=1
                     ),
                     hoverlabel=dict(bgcolor="white", font_size=13, font_family="sans-serif", font_color="black"),
-                    height=480 
+                    height=750 
                 )
                 
                 if dims == 2:

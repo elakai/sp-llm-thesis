@@ -64,7 +64,7 @@
     font-size: 18px !important;  
     font-weight: 500 !important; 
     text-transform: none !important;
-    color: black !important;     
+    color: rgb(255, 255, 255) !important;     
     margin: 0;
 }
 
@@ -238,7 +238,7 @@ button:has(p:contains("Inspect")):disabled {
     letter-spacing: 0.5px;
     border: 1px solid rgba(128, 128, 128, 0.3);
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    margin-top: 2px;
+    margin: 2px 0 16px 0;
 }
 .pagination-pill span {
     color: #111827;
@@ -308,7 +308,8 @@ button:has(p:contains("Select All")):hover, button:has(p:contains("Deselect All"
 .saas-table-scroll {
     width: 100%;
     max-height: 600px;
-    overflow-y: auto; 
+    overflow: auto !important; 
+    -webkit-overflow-scrolling: touch; 
     background-color: #ffffff; 
     border: 1px solid rgba(128, 128, 128, 0.2); 
     border-radius: 10px; 
@@ -323,11 +324,13 @@ button:has(p:contains("Select All")):hover, button:has(p:contains("Deselect All"
     border-radius: 10px; 
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); 
     margin: 12px 0px 12px 0px; 
-    overflow: hidden; 
+    overflow-x: auto !important; 
+    -webkit-overflow-scrolling: touch; 
 }
 
 .saas-table {
-    width: 100%;
+    width: 100%; 
+    min-width: 800px !important; 
     border-collapse: separate; 
     border-spacing: 0;
     text-align: left;
@@ -342,6 +345,7 @@ button:has(p:contains("Select All")):hover, button:has(p:contains("Deselect All"
     background-color: #F9FAFB !important; 
     z-index: 10; 
     padding: 10px 16px; 
+    white-space: nowrap !important; 
     font-size: 0.75rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -423,6 +427,16 @@ button:has(p:contains("Select All")):hover, button:has(p:contains("Deselect All"
     font-size: 0.9rem; 
     margin-bottom: 15px; 
     line-height: 1.5;
+}
+
+div[data-testid="stDialog"] div[data-testid="stVerticalBlock"] {
+    overscroll-behavior: contain !important;
+}
+div[data-testid="stDialog"] div[data-testid="stPlotlyChart"] {
+    overscroll-behavior: contain !important;
+}
+.js-plotly-plot .legend {
+    overscroll-behavior: contain !important;
 }
 
 @media (prefers-color-scheme: dark) {
