@@ -39,6 +39,25 @@ def _strip_suggestions(text: str) -> str:
         text
     ).strip()
 
+def _extract_source_certainty(text: str) -> tuple[str, str]:
+    if not text:
+        return text, ""
+
+    pattern = re.compile(
+        r'\n?>\s*\*\*Source certainty:\*\*.*?(?=\n\n---|\Z)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return text.strip(), ""
+
+    source_block = match.group(0).strip()
+    source_plain = re.sub(r'^\s*>\s?', '', source_block, flags=re.MULTILINE).strip()
+
+    cleaned = (text[:match.start()] + text[match.end():]).strip()
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned, source_plain
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -251,7 +270,11 @@ def render_chat_view():
         
         with st.chat_message(role, avatar=avatar):
             content = _strip_suggestions(message["content"])
+            source_certainty = (message.get("source_certainty") or "").strip()
+            if source_certainty and "Source certainty:" not in content:
+                content = f"{content}\n\n> {source_certainty}"
             st.markdown(content)
+
             if "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
 
@@ -341,9 +364,16 @@ def _process_user_query(query: str):
                         response_placeholder.markdown(full_response, unsafe_allow_html=True)
                     else:
                         response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
-                response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                rendered_response = _strip_suggestions(full_response)
+                rendered_response_no_source, source_certainty = _extract_source_certainty(rendered_response)
+                if source_certainty:
+                    rendered_response = f"{rendered_response_no_source}\n\n> {source_certainty}"
+                response_placeholder.markdown(rendered_response, unsafe_allow_html=True)
                 
             clean_response = _strip_suggestions(full_response)
+            clean_no_source, extracted_source_certainty = _extract_source_certainty(clean_response)
+            if extracted_source_certainty:
+                clean_response = f"{clean_no_source}\n\n> {extracted_source_certainty}"
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
@@ -383,6 +413,7 @@ def _process_user_query(query: str):
             "content": clean_response, 
             "timestamp": asst_ts,
             "suggestions": suggestions,
+            "source_certainty": extracted_source_certainty,
         })
         
         # Update chat history - handle both new and continued conversations

@@ -333,6 +333,78 @@ def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
 
     return filtered if filtered else docs
 
+def _is_people_list_query(query: str) -> bool:
+    q = (query or "").lower()
+    people_markers = [
+        "faculty", "staff", "professor", "instructor", "dean",
+        "chair", "chairperson", "chairpersons", "department chair", "department chairs"
+    ]
+    if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
+        return False
+    return _is_listing_query(q)
+
+def _boost_people_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
+    if not _is_people_list_query(query):
+        return docs
+
+    boosted_queries = [
+        f"{query} full list of faculty members",
+        f"{query} list of department chairs chairpersons",
+        "CSEA faculty list full-time part-time instructors department chair dean",
+        "Ateneo de Naga CSEA organizational structure faculty staff personnel chairpersons",
+    ]
+
+    boosted_docs = list(docs)
+    people_retriever = get_retriever(k=max(base_k, 40))
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(people_retriever.invoke, boosted_queries))
+        for res in results:
+            boosted_docs.extend(res)
+    except Exception as e:
+        logger.warning(f"People-list retrieval boost failed: {e}")
+
+    seen = set()
+    deduped = []
+    for doc in boosted_docs:
+        key = hash(doc.page_content)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(doc)
+    return deduped
+
+def _rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
+    if not docs:
+        return []
+
+    q = (query or "").lower()
+    ask_chairpersons = any(term in q for term in ["chair", "chairperson", "chairpersons", "department chair"])
+
+    def _score(doc: Document) -> float:
+        source = (doc.metadata.get("source") or "").lower()
+        content = (doc.page_content or "").lower()
+        score = 0.0
+
+        if any(key in source for key in ["organizational", "faculty", "staff"]):
+            score += 4.0
+        if "csea" in source or "csea" in content:
+            score += 2.0
+        if any(key in content for key in ["faculty", "instructor", "professor", "staff", "department", "dean"]):
+            score += 2.0
+        if ask_chairpersons and any(key in content for key in ["chairperson", "department chair", "chair"]):
+            score += 2.0
+
+        if any(key in content for key in [
+            "committee chairperson", "shall be appointed by the president", "vphe", "committee"
+        ]):
+            score -= 2.5
+
+        score += min(len(content) / 5000.0, 1.5)
+        return score
+
+    return sorted(docs, key=_score, reverse=True)
+
 def _contains_markdown_table(text: str) -> bool:
     return any(
         '|' in line and line.strip().startswith('|')
@@ -390,13 +462,24 @@ def _detect_query_intent(query: str) -> str:
         return "location"
     if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
         return "curriculum"
-    if has_any_words({"who", "faculty", "chair", "dean", "professor", "staff", "instructor"}):
+    people_word_hit = has_any_words({"who", "faculty", "chair", "chairperson", "dean", "professor", "staff", "instructor"})
+    people_phrase_hit = has_any_phrases(["chairperson", "chairpersons", "department chair", "department chairs", "faculty list"])
+    people_stem_hit = any(token.startswith("chair") for token in tokens)
+    if people_word_hit or people_phrase_hit or people_stem_hit:
         return "people"
     if has_any_words({"download", "link", "pdf", "form", "access"}) or has_any_phrases(["google form", "download link"]):
         return "download"
     if has_any_words({"policy", "rule", "guideline", "procedure", "manual"}) or has_any_phrases(["dress code"]):
         return "policy"
     return "general"
+
+def _is_listing_query(query: str) -> bool:
+    q = (query or "").lower()
+    list_triggers = [
+        "list", "enumerate", "show", "show all", "all ",
+        "who are", "names", "name", "members", "provide"
+    ]
+    return any(trigger in q for trigger in list_triggers)
 
 def _is_no_answer_response(text: str) -> bool:
     if not text:
@@ -506,7 +589,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     standalone_query = contextualize_query(safe_query, chat_history_list)
     is_incomplete_input = _is_incomplete_query(standalone_query)
     
-    if not is_incomplete_input:
+    if not is_incomplete_input and not _is_listing_query(standalone_query):
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
@@ -517,6 +600,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             return
     else:
         logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
+
+    if _is_listing_query(standalone_query):
+        logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
 
     retrieval_start = time.time()
     
@@ -592,6 +678,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
+    all_docs = _boost_people_list_docs(standalone_query, all_docs, dynamic_k)
+
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
@@ -646,7 +734,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     else:
         # [FIX 6]: Ensure people intents get a broader slice of the context chunks
         query_intent = _detect_query_intent(standalone_query)
-        if query_intent == "people":
+        if _is_people_list_query(standalone_query):
+            max_chunks = 12
+        elif query_intent == "people":
             max_chunks = 6
         elif is_curriculum_query:
             max_chunks = 8
@@ -671,6 +761,14 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 top_reranked = hybrid_results[:RERANKER_TOP_K]
         else:
             top_reranked = []
+
+    if _is_people_list_query(standalone_query):
+        people_pool = filter_to_people_docs(prefer_latest_per_source(list(unique_docs_map.values())), standalone_query)
+        people_pool = _boost_people_list_docs(standalone_query, people_pool, dynamic_k)
+        ranked_people = _rank_people_list_docs(people_pool, standalone_query)
+        if ranked_people:
+            top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
+            top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
@@ -766,7 +864,10 @@ Answer the question using ONLY the context below.
    entirely — they are visual dividers in the original document and must NOT 
    appear in your markdown table output.
 
-5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
+5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. If the user asks
+    for a list of faculty/staff, include ALL names found in the retrieved
+    context that match the request. Do not answer with just one example unless
+    only one person is present in the context.
 
 6. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
 
@@ -901,6 +1002,7 @@ Hard rules for suggested questions:
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
+        final_verified_response = re.sub(r'(?<!\n)\s{2,}-\s+\*\*', r'\n- **', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
 
         # ── CACHING (FIX 3): Cache the clean response before metadata/suggestions ──
@@ -929,10 +1031,9 @@ Hard rules for suggested questions:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
             else:
-                words = final_verified_response.split(" ")
-                chunk_size = 3
-                for i in range(0, len(words), chunk_size):
-                    yield " ".join(words[i:i+chunk_size]) + " "
+                chunk_size = 40
+                for i in range(0, len(final_verified_response), chunk_size):
+                    yield final_verified_response[i:i+chunk_size]
                     time.sleep(STREAM_DELAY) 
                     
         except GeneratorExit:

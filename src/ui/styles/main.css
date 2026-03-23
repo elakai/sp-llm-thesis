@@ -245,17 +245,21 @@ button[kind="header"],
 .suggested-title {
     margin-top: 12px;
     margin-bottom: 6px;
-    font-size: 1rem;
+    font-size: 1.11rem;
     font-weight: 600;
-    color: #FFFBAD;
+    color: rgba(255, 251, 173, 0.82);
+    opacity: 0.9;
 }
 
 [class*="st-key-suggest_"] button {
-    background: linear-gradient(135deg, #FFD24A 0%, #FFB631 100%) !important;
-    border: 1px solid rgba(255, 166, 31, 0.7) !important;
-    color: #2A1B00 !important;
-    font-size: 0.95rem !important;
-    padding: 6px 10px !important;
+    --suggest-btn-font: 0.30rem;
+    background: linear-gradient(135deg, rgba(255, 210, 74, 0.9) 0%, rgba(255, 182, 49, 0.92) 100%) !important;
+    border: 1px solid rgba(255, 166, 31, 0.62) !important;
+    color: rgba(42, 27, 0, 0.88) !important;
+    font-size: var(--suggest-btn-font) !important;
+    line-height: 1.05 !important;
+    min-height: calc(var(--suggest-btn-font) * 3.0) !important;
+    padding: calc(var(--suggest-btn-font) * 0.55) calc(var(--suggest-btn-font) * 1.0) !important;
     border-radius: 999px !important;
     width: fit-content !important;
     display: inline-flex !important;
@@ -265,16 +269,18 @@ button[kind="header"],
     overflow-wrap: anywhere !important;
     max-width: 100% !important;
     text-align: center !important;
-    box-shadow: 0 0 10px rgba(255, 143, 31, 0.55),
-                0 0 22px rgba(255, 143, 31, 0.35) !important;
+    margin-bottom: 2px !important;
+    opacity: 0.85 !important;
+    box-shadow: 0 0 8px rgba(255, 143, 31, 0.28),
+                0 0 16px rgba(255, 143, 31, 0.16) !important;
 }
 
 [class*="st-key-suggest_"] button:hover {
-    background: linear-gradient(135deg, #FFE36F 0%, #FFC04D 100%) !important;
-    border-color: rgba(255, 166, 31, 0.9) !important;
-    color: #241500 !important;
-    box-shadow: 0 0 14px rgba(255, 143, 31, 0.7),
-                0 0 28px rgba(255, 143, 31, 0.45) !important;
+    background: linear-gradient(135deg, rgba(255, 227, 111, 0.86) 0%, rgba(255, 192, 77, 0.88) 100%) !important;
+    border-color: rgba(255, 166, 31, 0.78) !important;
+    color: rgba(36, 21, 0, 0.92) !important;
+    box-shadow: 0 0 10px rgba(255, 143, 31, 0.4),
+                0 0 20px rgba(255, 143, 31, 0.22) !important;
 }
 
 /* Floating Chat Input Box */
@@ -491,6 +497,34 @@ button[kind="header"],
         word-break: break-word !important;
     }
 
+    /* Keep markdown/data tables readable on mobile: horizontal swipe instead of compressed columns */
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"]:has(table),
+    [data-testid="stChatMessage"] [data-testid="stTable"],
+    [data-testid="stChatMessage"] .stTable {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] table,
+    [data-testid="stChatMessage"] [data-testid="stTable"] table,
+    [data-testid="stChatMessage"] .stTable table {
+        width: max-content !important;
+        min-width: 640px !important;
+        table-layout: auto !important;
+    }
+
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] th,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] td,
+    [data-testid="stChatMessage"] [data-testid="stTable"] th,
+    [data-testid="stChatMessage"] [data-testid="stTable"] td,
+    [data-testid="stChatMessage"] .stTable th,
+    [data-testid="stChatMessage"] .stTable td {
+        white-space: nowrap !important;
+        overflow-wrap: normal !important;
+        word-break: normal !important;
+    }
+
     [data-testid="stChatMessage"] [data-testid="stAvatar"],
     [data-testid="stChatMessage"] img {
         width: 44px !important;
@@ -519,19 +553,39 @@ button[kind="header"],
     .suggested-title {
         margin-top: 10px !important;
         margin-bottom: 8px !important;
-        font-size: 0.95rem !important;
+        font-size: 1.04rem !important;
     }
 
     [class*="st-key-suggest_"] button {
+        --suggest-btn-font: 0.27rem;
         border-radius: 14px !important;
         width: fit-content !important;
         max-width: 100% !important;
         justify-content: center !important;
-        min-height: 2.6rem !important;
-        font-size: 0.95rem !important;
-        line-height: 1.35 !important;
-        padding: 8px 10px !important;
-        margin-bottom: 8px !important;
+        min-height: calc(var(--suggest-btn-font) * 3.0) !important;
+        font-size: var(--suggest-btn-font) !important;
+        line-height: 1.05 !important;
+        padding: calc(var(--suggest-btn-font) * 0.55) calc(var(--suggest-btn-font) * 1.0) !important;
+        margin-bottom: 2px !important;
+        opacity: 0.94 !important;
+        border: 1px solid rgba(255, 166, 31, 0.7) !important;
+        box-shadow: 0 0 9px rgba(255, 143, 31, 0.31),
+                    0 0 18px rgba(255, 143, 31, 0.18) !important;
+    }
+
+    [data-testid="stChatMessageAssistant"] blockquote {
+        opacity: 0.09 !important;
+        border-left: 1px solid rgba(171, 171, 171, 0.18) !important;
+        padding-left: 0.5rem !important;
+    }
+
+    [data-testid="stChatMessageAssistant"] blockquote,
+    [data-testid="stChatMessageAssistant"] blockquote p,
+    [data-testid="stChatMessageAssistant"] blockquote span,
+    [data-testid="stChatMessageAssistant"] blockquote strong {
+        font-size: 0.60rem !important;
+        line-height: 1.25 !important;
+        color: rgba(87, 86, 75, 0.28) !important;
     }
 
     .eval-prompt,
@@ -859,4 +913,53 @@ button[kind="header"],
 
 .feedback-indicator.not-helpful {
     color: #fca5a5;
+}
+
+/* Source certainty blockquote: keep readable but visually subtle */
+[data-testid="stChatMessageAssistant"] blockquote {
+    opacity: 0.09 !important;
+    border-left: 1px solid rgba(171, 171, 171, 0.18) !important;
+    padding-left: 0.5rem !important;
+}
+
+[data-testid="stChatMessageAssistant"] blockquote,
+[data-testid="stChatMessageAssistant"] blockquote p,
+[data-testid="stChatMessageAssistant"] blockquote span,
+[data-testid="stChatMessageAssistant"] blockquote strong {
+    font-size: 0.72rem !important;
+    line-height: 1.25 !important;
+    color: rgba(87, 86, 75, 0.28) !important;
+}
+
+[data-testid="stChatMessageAssistant"] blockquote strong {
+    font-weight: 400 !important;
+}
+
+/* Sources expander in assistant messages: intentionally subtle */
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin-top: 0.15rem !important;
+}
+
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] summary,
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] summary p,
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] summary span {
+    font-size: 0.62rem !important;
+    font-weight: 500 !important;
+    color: rgba(255, 251, 173, 0.45) !important;
+    opacity: 0.6 !important;
+    letter-spacing: 0.1px !important;
+}
+
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] summary:hover {
+    color: rgba(255, 251, 173, 0.58) !important;
+    opacity: 0.72 !important;
+}
+
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stChatMessageAssistant"] [data-testid="stExpander"] p {
+    font-size: 0.64rem !important;
+    color: rgba(255, 251, 173, 0.42) !important;
 }
