@@ -3,7 +3,15 @@ from src.config.settings import SUPABASE_URL, SUPABASE_KEY
 from src.config.logging_config import logger
 
 # Initialize Supabase Client using the centralized keys from settings.py
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def create_supabase_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def normalize_role(role) -> str:
+    return str(role).strip().lower() if role else "student"
+
+
+supabase: Client = create_supabase_client()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Authentication Functions
@@ -15,8 +23,10 @@ def login_user(email, password):
     from the 'public.users' table to ensure real-time accuracy.
     """
     try:
+        auth_client = create_supabase_client()
+
         # 1. Verify Credentials (Login)
-        response = supabase.auth.sign_in_with_password({
+        response = auth_client.auth.sign_in_with_password({
             "email": email,
             "password": password
         })
@@ -27,7 +37,7 @@ def login_user(email, password):
             # 2. 🚀 SOURCE OF TRUTH: Query public.users directly
             # We ignore metadata snapshots and go straight to the live database.
             try:
-                profile = supabase.table("users") \
+                profile = auth_client.table("users") \
                     .select("role, full_name") \
                     .eq("id", user_id) \
                     .single() \
@@ -49,7 +59,7 @@ def login_user(email, password):
             return {
                 "id": user_id,
                 "email": response.user.email,
-                "role": db_role if db_role else "student",     # Live Role
+                "role": normalize_role(db_role),                 # Live Role
                 "full_name": db_name if db_name else "Student" # Live Name
             }
             
@@ -67,7 +77,8 @@ def register_user(email, password, full_name="Student"):
     copy this user to 'public.users' with the default 'student' role.
     """
     try:
-        response = supabase.auth.sign_up({
+        auth_client = create_supabase_client()
+        response = auth_client.auth.sign_up({
             "email": email,
             "password": password,
             "options": {

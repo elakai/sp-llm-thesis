@@ -30,7 +30,7 @@ from src.ui.admin_dashboard import render_admin_view
 from src.ui.document_management import render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
-from src.core.auth import supabase as _sb
+from src.core.auth import normalize_role
 from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
@@ -100,41 +100,32 @@ if not st.session_state["db_online"]:
     st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
     st.stop()
 
-# Attempt to restore a previous Supabase session (survives page refreshes)
-if not st.session_state["authenticated"]:
-    try:
-        session = _sb.auth.get_session()
-        if session and session.user:
-            user_id = session.user.id
-            try:
-                profile = _sb.table("users") \
-                    .select("role, full_name") \
-                    .eq("id", user_id) \
-                    .single() \
-                    .execute()
-                
-                db_role = profile.data.get("role", "student")
-                db_name = profile.data.get("full_name", "Student")
-            except Exception:
-                db_role, db_name = "student", "Student"
-
-            st.session_state["authenticated"] = True
-            st.session_state["user_id"] = user_id
-            st.session_state["email"] = session.user.email
-            st.session_state["role"] = db_role
-            st.session_state["full_name"] = db_name
-            
-            # Route admin users straight to the dashboard
-            if db_role == "admin":
-                st.session_state["view"] = "admin"
-                
-            logger.info(f"Session restored for {session.user.email}")
-    except Exception:
-        pass  # No session to restore — show login page
+if st.session_state.get("authenticated"):
+    st.session_state["role"] = normalize_role(st.session_state.get("role"))
 
 if not st.session_state["authenticated"]:
     render_login()
     st.stop()
+
+role = normalize_role(st.session_state.get("role"))
+st.session_state["role"] = role
+current_view = st.session_state.get("view", "chat")
+
+# Defense-in-depth role guard for route/view state.
+if role != "admin" and current_view in {"admin", "indexed_docs"}:
+    st.session_state["view"] = "chat"
+    logger.warning(
+        "Blocked non-admin user %s from admin view '%s'; rerouted to chat.",
+        st.session_state.get("email", "unknown"),
+        current_view,
+    )
+elif role == "admin" and current_view not in {"admin", "indexed_docs", "chat"}:
+    st.session_state["view"] = "admin"
+    logger.info(
+        "Corrected admin user %s from stale view '%s' to admin dashboard.",
+        st.session_state.get("email", "unknown"),
+        current_view,
+    )
 
 if not st.session_state["chat_history_loaded"]:
     # chat_logs are stored by user_email, so load with email for refresh persistence.

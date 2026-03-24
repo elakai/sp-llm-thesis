@@ -11,7 +11,7 @@ project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.core.auth import login_user, register_user
+from src.core.auth import login_user, register_user, normalize_role, create_supabase_client
 
 
 def _is_mobile_client() -> bool:
@@ -72,17 +72,18 @@ def render_login():
                 if user == "UNVERIFIED":
                     st.error("Please verify your email before logging in. Check your inbox for the confirmation link.")
                 elif user:
+                    role = normalize_role(user.get("role"))
                     st.session_state["authenticated"] = True
                     st.session_state["user_id"] = user["id"]
                     st.session_state["email"] = user["email"]
-                    st.session_state["role"] = user["role"]
+                    st.session_state["role"] = role
                     st.session_state["full_name"] = user["full_name"]
                     st.session_state["show_welcome"] = True
                     
                     if "session_id" not in st.session_state:
                         st.session_state["session_id"] = str(uuid.uuid4())
                     
-                    st.session_state["view"] = "admin" if user["role"] == "admin" else "chat"
+                    st.session_state["view"] = "admin" if role == "admin" else "chat"
                     st.rerun()
                 else:
                     st.error("Invalid credentials.")
@@ -261,8 +262,7 @@ def render_sidebar():
         logout_label = "Logout" if sidebar_open else "🚪"
         if st.button(logout_label, use_container_width=True, type="primary"):
             try:
-                from src.core.auth import supabase as _sb
-                _sb.auth.sign_out()
+                create_supabase_client().auth.sign_out()
             except Exception:
                 pass
             st.session_state.clear()
