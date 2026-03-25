@@ -17,10 +17,30 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
         bm25 = BM25Okapi(tokenized_docs)
         bm25_scores = bm25.get_scores(_tokenize(query))
 
+        # ── EXACT MATCH BOOSTING ──
+        # Extract course codes (e.g., QCPP512, SOCS104) and normalize spaces
+        course_codes = [c.replace(" ", "") for c in re.findall(r'\b[a-zA-Z]{2,5}\s*\d{3}\b', query)]
+        # Terms that dense vectors typically fail to prioritize
+        high_value_terms = [t for t in ['intersession', 'summer', 'prerequisite'] if t in query.lower()]
+
         ranked = []
         for i, doc in enumerate(docs):
             position_score = (len(docs) - i) * POSITIONAL_SCORE_WEIGHT
-            ranked.append((bm25_scores[i] + position_score, doc))
+            boost = 0.0
+            
+            # Apply +50 points if the chunk contains the exact course code
+            content_norm = doc.page_content.lower().replace(" ", "")
+            for code in course_codes:
+                if code in content_norm:
+                    boost += 50.0  
+                    
+            # Apply +20 points if it contains highly specific curriculum terms
+            content_lower = doc.page_content.lower()
+            for term in high_value_terms:
+                if term in content_lower:
+                    boost += 20.0  
+
+            ranked.append((bm25_scores[i] + position_score + boost, doc))
 
         ranked.sort(reverse=True, key=lambda x: x[0])
         return [doc for _, doc in ranked[:RETRIEVAL_K]]

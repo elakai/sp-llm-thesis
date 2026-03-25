@@ -14,6 +14,14 @@ from src.config.logging_config import logger
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
+# ── MISSING UTILITY FUNCTIONS ADDED ──
+def normalize_source_key(filename: str) -> str:
+    return filename.strip().replace("\\", "/")
+
+def is_curriculum_file(filename: str) -> bool:
+    return bool(re.search(r'curriculum', filename, re.IGNORECASE))
+# ──────────────────────────────────────
+
 def clean_text(text: str) -> str:
     if not text: return ""
     return re.sub(r'\n\s*\n', '\n\n', text).strip()

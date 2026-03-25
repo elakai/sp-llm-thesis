@@ -67,9 +67,11 @@ def fallback_questions(source_text: str, original_query: str, max_items: int = 3
 def build_no_answer_response(query: str) -> str:
     tips = (
         "Here are some tips to get a better answer:\n\n"
-        "- **Spell out acronyms** — instead of 'OJT in CPE', try 'on-the-job training in Computer Engineering'\n"
-        "- **Include the year or semester** — e.g., 'third year first semester BS CPE'\n"
-        "- **Try rephrasing** — sometimes a different wording pulls up the right document"
+        "- **Avoid using acronyms** — spell out terms instead of abbreviations (e.g., use 'on-the-job training in Computer Engineering' instead of 'OJT in CPE').\n"
+        "- **Be as specific as possible** — include details like the year, semester, course name, or department.\n"
+        "- **Ask clear and focused questions** — break down complex queries into smaller parts if needed.\n"
+        "- **Try rephrasing your question** — sometimes a different wording pulls up the right document.\n"
+        "- **Clarify what you are looking for** — e.g., 'What are the prerequisites for BS CPE thesis?' instead of 'thesis requirements'."
     )
     return f"I couldn't find a confident answer for that in the documents I have.\n\n{tips}\n\nIf you still can't get an answer, your department chair is the best person to ask directly!"
 
