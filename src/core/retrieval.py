@@ -14,12 +14,14 @@ from src.config.settings import get_generator_llm, get_embeddings, get_retriever
 from src.core.router import route_query, get_dynamic_k
 from src.core.decomposition import decompose_query
 from src.config.constants import (
+    RETRIEVAL_K,
     RERANKER_TOP_K,
     DECOMPOSE_TRIGGERS,
     LOW_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_MARGIN,
     STREAM_DELAY,
+    POSITIONAL_SCORE_WEIGHT,
     SEMANTIC_CACHE_THRESHOLD,
     DOCS_FOLDER,
 )
@@ -504,18 +506,18 @@ def _detect_query_intent(query: str) -> str:
     def has_any(words): return any(word in tokens for word in words)
     def has_phrases(phrases): return any(phrase in q_lower for phrase in phrases)
 
-    if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
+    if has_any({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
         return "location"
-    if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
+    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
         return "curriculum"
-    people_word_hit = has_any_words({"who", "faculty", "chair", "chairperson", "dean", "professor", "staff", "instructor"})
-    people_phrase_hit = has_any_phrases(["chairperson", "chairpersons", "department chair", "department chairs", "faculty list"])
+    people_word_hit = has_any({"who", "faculty", "chair", "chairperson", "dean", "professor", "staff", "instructor"})
+    people_phrase_hit = has_phrases(["chairperson", "chairpersons", "department chair", "department chairs", "faculty list"])
     people_stem_hit = any(token.startswith("chair") for token in tokens)
     if people_word_hit or people_phrase_hit or people_stem_hit:
         return "people"
-    if has_any_words({"download", "link", "pdf", "form", "access"}) or has_any_phrases(["google form", "download link"]):
+    if has_any({"download", "link", "pdf", "form", "access"}) or has_phrases(["google form", "download link"]):
         return "download"
-    if has_any_words({"policy", "rule", "guideline", "procedure", "manual"}) or has_any_phrases(["dress code"]):
+    if has_any({"policy", "rule", "guideline", "procedure", "manual"}) or has_phrases(["dress code"]):
         return "policy"
     return "general"
 
@@ -577,6 +579,71 @@ def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[st
             deduped.append(v.strip())
             seen.add(norm)
     return deduped[:2] 
+
+def _is_custodian_lookup_query(query: str) -> bool:
+    q = (query or "").lower()
+    asks_person = any(term in q for term in ["custodian", "in charge", "responsible", "handler", "assigned"])
+    asks_place = any(term in q for term in ["lab", "laboratory", "room", "aelab", "ae lab", "commslab", "comms lab", "cisco lab"])
+    return asks_person and asks_place
+
+def _is_custodian_list_query(query: str) -> bool:
+    q = (query or "").lower()
+    asks_custodian = any(term in q for term in ["custodian", "custodians", "lab technician", "technician"])
+    asks_labs = any(term in q for term in ["lab", "labs", "laboratory", "laboratories"])
+    return asks_custodian and asks_labs and _is_listing_query(q)
+
+def _normalize_lab_aliases(query: str) -> str:
+    if not query:
+        return query
+    normalized = query
+    alias_patterns = [
+        (r"\bae\s*[-_]?\s*lab\b", "Advanced Electronics Laboratory (AE Lab)"),
+        (r"\baelab\b", "Advanced Electronics Laboratory (AE Lab)"),
+        (r"\bcomms\s*[-_]?\s*lab\b", "Communications Laboratory (Comms Lab)"),
+        (r"\bcommslab\b", "Communications Laboratory (Comms Lab)"),
+        (r"\bcisco\s*[-_]?\s*lab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
+        (r"\bciscolab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
+    ]
+    for pattern, replacement in alias_patterns:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    return normalized
+
+def _load_custodian_roster_from_markdown() -> List[tuple[str, str]]:
+    roster_path = DOCS_FOLDER / "lab_directory.md"
+    if not roster_path.exists():
+        return []
+    try:
+        text = roster_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        logger.warning(f"Failed to read custodian roster markdown: {e}")
+        return []
+
+    pattern = re.compile(
+        r"^-\s*Custodian:\s*(.*?)\s*\|\s*Laboratory:\s*(.*?)\s*(?:\|\s*Alias:\s*(.*?)\s*)?(?:\|\s*Room:\s*(.*?)\s*)?$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    roster: List[tuple[str, str]] = []
+    seen = set()
+    for name, laboratory, alias, _room in pattern.findall(text):
+        custodian = re.sub(r"\s+", " ", (name or "").strip())
+        lab = re.sub(r"\s+", " ", (laboratory or "").strip())
+        alias_clean = re.sub(r"\s+", " ", (alias or "").strip())
+        if not custodian or not lab:
+            continue
+        if alias_clean and alias_clean.lower() not in lab.lower():
+            lab = f"{lab} ({alias_clean})"
+        key = (custodian.lower(), lab.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        roster.append((custodian, lab))
+    return roster
+
+def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
+    lines = ["Here are all custodians and their assigned laboratories:", ""]
+    for custodian, laboratory in roster:
+        lines.append(f"- **{custodian}** - {laboratory}")
+    return "\n".join(lines).strip()
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
@@ -685,6 +752,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
+    has_course_code = bool(re.search(r"\b[A-Z]{2,5}\s*\d{3}[A-Z]?\b", standalone_query.upper()))
     
     is_curriculum_query = has_course_code or any(
         kw in standalone_query.lower() for kw in [

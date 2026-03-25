@@ -75,6 +75,22 @@ def build_no_answer_response(query: str) -> str:
     )
     return f"I couldn't find a confident answer for that in the documents I have.\n\n{tips}\n\nIf you still can't get an answer, your department chair is the best person to ask directly!"
 
+def is_no_answer_response(text: str) -> bool:
+    if not text:
+        return False
+    patterns = [
+        r"i\s*couldn['’]?t\s*find\s*that\s*in\s*the\s*available\s*documents",
+        r"i\s*do\s*not\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
+        r"i\s*don't\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
+        r"not explicitly stated in the retrieved documents",
+        r"best\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
+        r"your\s*best\s*bet\s*is\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
+        r"department\s*chair\s*directly",
+        r"i couldn't find an explicit answer for that detail",
+    ]
+    lowered = text.lower()
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
 def _strip_decorative_dash_rows(t: str) -> str:
     cleaned = []
     for line in t.split('\n'):
