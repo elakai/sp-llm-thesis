@@ -4,36 +4,43 @@ import numpy as np
 import streamlit as st
 import concurrent.futures
 from typing import List, Dict
-from pathlib import Path
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 import re
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.core.guardrails import verify_answer, validate_query, redact_pii
-from src.config.settings import get_generator_llm, get_vectorstore, get_embeddings, get_retriever
+from src.config.settings import get_generator_llm, get_embeddings, get_retriever
 from src.core.router import route_query, get_dynamic_k
 from src.core.decomposition import decompose_query
 from src.config.constants import (
-    RETRIEVAL_K,
     RERANKER_TOP_K,
     DECOMPOSE_TRIGGERS,
     LOW_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
     HIGH_CONFIDENCE_MARGIN,
     STREAM_DELAY,
-    POSITIONAL_SCORE_WEIGHT,
     SEMANTIC_CACHE_THRESHOLD,
     DOCS_FOLDER,
 )
 from src.config.logging_config import logger
+
+from src.core.reranking import (
+    hybrid_rerank, enforce_source_diversity, filter_to_program,
+    filter_to_people_docs, boost_people_list_docs, rank_people_list_docs,
+    prefer_latest_per_source
+)
+from src.core.response_formatting import (
+    fix_markdown_tables, format_raw_links, remove_speculative_sentences,
+    build_source_certainty_note, fallback_questions, build_no_answer_response,
+    is_no_answer_response, _contains_markdown_table, _contains_speculation
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBALS & CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading ranking model...")
 def get_reranker():
-    """CrossEncoder model lives in server RAM permanently."""
     from sentence_transformers import CrossEncoder
     return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
@@ -42,11 +49,8 @@ def get_semantic_cache() -> list:
     return []
 
 GLOBAL_CACHE = get_semantic_cache()
+_REWRITE_CACHE = {} 
 
-# [FIX 7]: Simple in-memory cache to prevent redundant contextualize API calls
-_REWRITE_CACHE = {}
-
-# [FIX 6]: Removed "also" and "more" to prevent unnecessary rewrites
 _CONTEXT_TRIGGERS = re.compile(
     r'\b(it|its|they|them|their|this|that|these|those|the same|'
     r'above|previous|earlier|last|mentioned|said|again|'
@@ -57,20 +61,24 @@ _CONTEXT_TRIGGERS = re.compile(
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONVERSATIONAL MEMORY & CACHING FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
+def format_chat_history(messages: List[Dict[str, str]]) -> str:
+    formatted_history = []
+    history_to_process = messages[1:] if len(messages) > 1 else []
+    for msg in history_to_process[-6:]: 
+        role = "User" if msg["role"] == "user" else "Assistant"
+        content = msg["content"].replace("{", "{{").replace("}", "}}")
+        formatted_history.append(f"{role}: {content}")
+    return "\n".join(formatted_history) if formatted_history else "No previous context."
+
 def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> str:
     history_to_process = chat_history_list[1:] if len(chat_history_list) > 1 else []
     if not history_to_process: return query
-    
-    if not _CONTEXT_TRIGGERS.search(query):
-        logger.info(f"Context skip: No pronouns/references detected in '{query}'")
-        return query
+    if not _CONTEXT_TRIGGERS.search(query): return query
         
     history_text = format_chat_history(chat_history_list)
-    
-    # Use a lightweight cache to prevent identical follow-ups from hitting the LLM
-    cache_key = (query, history_text[-300:]) 
-    if cache_key in _REWRITE_CACHE:
-        return _REWRITE_CACHE[cache_key]
+    session_id = st.session_state.get("session_id", "default")
+    cache_key = (session_id, query, history_text[-300:]) 
+    if cache_key in _REWRITE_CACHE: return _REWRITE_CACHE[cache_key]
         
     prompt = f"""Given the following chat history and the user's latest question, formulate a standalone question that can be understood without the chat history.
     Do NOT answer the question. Just reformulate it if needed. If it doesn't need reformulating, return it exactly as is.
@@ -84,12 +92,8 @@ def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> 
     try:
         llm = get_generator_llm()
         standalone_query = llm.invoke(prompt).content.strip()
-        logger.info(f"Memory Rewrite: '{query}' -> '{standalone_query}'")
-        
         _REWRITE_CACHE[cache_key] = standalone_query
-        if len(_REWRITE_CACHE) > 100:
-            _REWRITE_CACHE.pop(next(iter(_REWRITE_CACHE))) # Keep cache bounded
-            
+        if len(_REWRITE_CACHE) > 100: _REWRITE_CACHE.pop(next(iter(_REWRITE_CACHE))) 
         return standalone_query
     except Exception as e:
         logger.warning(f"Contextualize Error: {e}")
@@ -121,10 +125,11 @@ def add_to_cache(query: str, response: str):
 
 def invalidate_cache():
     GLOBAL_CACHE.clear() 
-    logger.info("🧹 Semantic cache invalidated. AI will now pull fresh data from Pinecone.")
+    logger.info("🧹 Semantic cache invalidated.")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. HELPER FUNCTIONS
+# 2. INTENT DETECTION & QUERY BUILDING
 # ─────────────────────────────────────────────────────────────────────────────
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
     formatted_history = []
@@ -137,33 +142,6 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
 
 def _tokenize(text: str) -> list:
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
-
-
-def _is_custodian_lookup_query(query: str) -> bool:
-    q = (query or "").lower()
-    asks_person = any(term in q for term in ["custodian", "in charge", "responsible", "handler", "assigned"])
-    asks_place = any(term in q for term in ["lab", "laboratory", "room", "aelab", "ae lab", "commslab", "comms lab", "cisco lab"])
-    return asks_person and asks_place
-
-
-def _normalize_lab_aliases(query: str) -> str:
-    if not query:
-        return query
-
-    normalized = query
-    alias_patterns = [
-        (r"\bae\s*[-_]?\s*lab\b", "Advanced Electronics Laboratory (AE Lab)"),
-        (r"\baelab\b", "Advanced Electronics Laboratory (AE Lab)"),
-        (r"\bcomms\s*[-_]?\s*lab\b", "Communications Laboratory (Comms Lab)"),
-        (r"\bcommslab\b", "Communications Laboratory (Comms Lab)"),
-        (r"\bcisco\s*[-_]?\s*lab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
-        (r"\bciscolab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
-    ]
-
-    for pattern, replacement in alias_patterns:
-        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
-
-    return normalized
 
 
 _SUGGESTION_STOPWORDS = {
@@ -342,17 +320,16 @@ def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
     q = (query or "").lower()
     people_triggers = [
         "professor", "faculty", "instructor", "teacher", "staff", "chair", "dean",
-        "department chair", "chairperson", "custodian", "lab technician", "technician"
+        "department chair", "chairperson"
     ]
     if not any(trigger in q for trigger in people_triggers):
         return docs
 
     content_keywords = [
         "faculty", "professor", "instructor", "teacher", "staff", "chair",
-        "department", "office", "personnel", "full-time", "part-time",
-        "custodian", "laboratory", "lab technician", "assigned laboratory"
+        "department", "office", "personnel", "full-time", "part-time"
     ]
-    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel", "lab", "directory", "custodian"]
+    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel"]
 
     filtered = []
     for doc in docs:
@@ -367,60 +344,11 @@ def _is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
     people_markers = [
         "faculty", "staff", "professor", "instructor", "dean",
-        "chair", "chairperson", "chairpersons", "department chair", "department chairs",
-        "custodian", "custodians", "lab technician", "technician"
+        "chair", "chairperson", "chairpersons", "department chair", "department chairs"
     ]
     if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
         return False
     return _is_listing_query(q)
-
-def _is_custodian_list_query(query: str) -> bool:
-    q = (query or "").lower()
-    asks_custodian = any(term in q for term in ["custodian", "custodians", "lab technician", "technician"])
-    asks_labs = any(term in q for term in ["lab", "labs", "laboratory", "laboratories"])
-    return asks_custodian and asks_labs and _is_listing_query(q)
-
-
-def _load_custodian_roster_from_markdown() -> List[tuple[str, str]]:
-    roster_path = Path(DOCS_FOLDER) / "lab_directory.md"
-    if not roster_path.exists():
-        return []
-
-    try:
-        text = roster_path.read_text(encoding="utf-8", errors="ignore")
-    except Exception as e:
-        logger.warning(f"Failed to read custodian roster markdown: {e}")
-        return []
-
-    pattern = re.compile(
-        r"^-\s*Custodian:\s*(.*?)\s*\|\s*Laboratory:\s*(.*?)\s*(?:\|\s*Alias:\s*(.*?)\s*)?(?:\|\s*Room:\s*(.*?)\s*)?$",
-        re.IGNORECASE | re.MULTILINE,
-    )
-
-    roster: List[tuple[str, str]] = []
-    seen = set()
-    for name, laboratory, alias, _room in pattern.findall(text):
-        custodian = re.sub(r"\s+", " ", (name or "").strip())
-        lab = re.sub(r"\s+", " ", (laboratory or "").strip())
-        alias_clean = re.sub(r"\s+", " ", (alias or "").strip())
-        if not custodian or not lab:
-            continue
-        if alias_clean and alias_clean.lower() not in lab.lower():
-            lab = f"{lab} ({alias_clean})"
-        key = (custodian.lower(), lab.lower())
-        if key in seen:
-            continue
-        seen.add(key)
-        roster.append((custodian, lab))
-
-    return roster
-
-
-def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
-    lines = ["Here are all custodians and their assigned laboratories:", ""]
-    for custodian, laboratory in roster:
-        lines.append(f"- **{custodian}** - {laboratory}")
-    return "\n".join(lines).strip()
 
 def _is_curriculum_list_query(query: str) -> bool:
     q = (query or "").lower()
@@ -474,13 +402,6 @@ def _boost_people_list_docs(query: str, docs: List[Document], base_k: int) -> Li
         "CSEA faculty list full-time part-time instructors department chair dean",
         "Ateneo de Naga CSEA organizational structure faculty staff personnel chairpersons",
     ]
-
-    if _is_custodian_list_query(query):
-        boosted_queries.extend([
-            "list all custodians and their assigned laboratories",
-            "laboratory directory custodians responsible laboratory mapping",
-            "lab directory responsible custodian role assigned laboratory",
-        ])
 
     boosted_docs = list(docs)
     people_retriever = get_retriever(k=max(base_k, 40))
@@ -574,20 +495,15 @@ def _build_source_certainty_note(top_score: float, score_margin: float, sources:
 
     clean_names = [_clean_source_name(s) for s in unique_sources[:2]]
     source_preview = ", ".join(clean_names) if clean_names else "retrieved documents"
-    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): {source_preview}"
+    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): *{source_preview}*"
 
 def _detect_query_intent(query: str) -> str:
     q_lower = (query or "").lower()
     tokens = set(re.findall(r"[a-z0-9']+", q_lower))
 
-    def has_any_words(words: set[str]) -> bool:
-        return any(word in tokens for word in words)
+    def has_any(words): return any(word in tokens for word in words)
+    def has_phrases(phrases): return any(phrase in q_lower for phrase in phrases)
 
-    def has_any_phrases(phrases: list[str]) -> bool:
-        return any(phrase in q_lower for phrase in phrases)
-
-    if has_any_words({"custodian", "custodians", "technician"}) or has_any_phrases(["lab technician", "lab custodians", "laboratory custodian"]):
-        return "people"
     if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
         return "location"
     if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
@@ -615,14 +531,10 @@ def _is_no_answer_response(text: str) -> bool:
     if not text:
         return False
     patterns = [
-        r"i\s*couldn['’]?t\s*find\s*that\s*in\s*the\s*available\s*documents",
-        r"i\s*do\s*not\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
-        r"i\s*don't\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
+        r"i couldn't find that in the available documents",
+        r"i don't have enough info to answer that confidently",
         r"not explicitly stated in the retrieved documents",
-        r"best\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
-        r"your\s*best\s*bet\s*is\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
-        r"department\s*chair\s*directly",
-        r"i couldn't find an explicit answer for that detail",
+        r"best to check with your department chair",
     ]
     lowered = text.lower()
     return any(re.search(p, lowered) for p in patterns)
@@ -631,88 +543,52 @@ def _is_no_answer_response(text: str) -> bool:
 def _is_incomplete_query(query: str) -> bool:
     q_lower = (query or "").strip().lower()
     
-    if re.search(r'\b[A-Z]{1,3}\d{3}\b', query.upper()):
-        return False
+    if re.search(r'\b[a-zA-Z]{1,5}\s*\d{3}\b', query): return False
         
     tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
-    if len(tokens) <= 2:
-        return True
+    if len(tokens) <= 2: return True
 
-    question_starters = {"what", "where", "who", "when", "why", "how", "which"}
-    helper_verbs = {"is", "are", "can", "do", "does", "did", "show", "list", "find", "tell", "explain"}
-    has_structure = any(t in question_starters or t in helper_verbs for t in tokens)
-
-    return len(tokens) <= 4 and not has_structure
-
-def _get_previous_user_query(chat_history_list: List[Dict[str, str]], current_query: str) -> str:
-    if not chat_history_list:
-        return ""
-    current_norm = (current_query or "").strip().lower()
-    for msg in reversed(chat_history_list):
-        if msg.get("role") != "user":
-            continue
-        content = (msg.get("content") or "").strip()
-        if not content:
-            continue
-        if content.lower() == current_norm:
-            continue
-        return content
-    return ""
+    starters = {"what", "where", "who", "when", "why", "how", "which"}
+    verbs = {"is", "are", "can", "do", "does", "did", "show", "list", "find", "tell"}
+    return len(tokens) <= 4 and not any(t in starters or t in verbs for t in tokens)
 
 def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[str, str]]) -> List[str]:
     base = (query or "").strip()
-    if not base:
-        return []
+    if not base: return []
 
     intent = _detect_query_intent(base)
-    variants: List[str] = [base]
+    variants = [base]
 
-    if intent == "location":
-        variants.append(f"{base} location building room directory")
-    elif intent == "curriculum":
-        variants.append(f"{base} curriculum course semester prerequisite")
-    elif intent == "people":
-        variants.append(f"{base} faculty staff role department professor instructor teacher")
-    elif intent == "download":
-        variants.append(f"{base} official link pdf form")
-    elif intent == "policy":
-        variants.append(f"{base} policy guideline rule procedure")
+    if intent == "location": variants.append(f"{base} location building room")
+    elif intent == "curriculum": variants.append(f"{base} curriculum course prerequisite")
+    elif intent == "people": variants.append(f"{base} faculty staff department chair professor")
+    elif intent == "download": variants.append(f"{base} official link pdf")
+    elif intent == "policy": variants.append(f"{base} policy guideline rule")
 
-    previous_user_query = _get_previous_user_query(chat_history_list, base)
-    if previous_user_query:
-        variants.append(f"{previous_user_query} {base}")
+    for msg in reversed(chat_history_list):
+        if msg.get("role") == "user" and (msg.get("content") or "").strip().lower() != base.lower():
+            variants.append(f"{msg.get('content').strip()} {base}")
+            break
 
-    deduped = []
-    seen = set()
-    for variant in variants:
-        norm = variant.strip().lower()
+    deduped, seen = [], set()
+    for v in variants:
+        norm = v.strip().lower()
         if norm and norm not in seen:
-            deduped.append(variant.strip())
+            deduped.append(v.strip())
             seen.add(norm)
-    return deduped[:5]
+    return deduped[:2] 
 
-def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
-    if not docs: return []
-    grouped: Dict[str, List[Document]] = {}
-    for doc in docs:
-        source = doc.metadata.get("source", "unknown")
-        grouped.setdefault(source, []).append(doc)
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_llm_response(llm, prompt):
+    return llm.invoke(prompt)
 
-    filtered_docs = []
-    for source, group in grouped.items():
-        latest_timestamp = max((d.metadata.get("uploaded_at", 0) for d in group), default=0)
-        current_version_chunks = [d for d in group if d.metadata.get("uploaded_at", 0) == latest_timestamp]
-        filtered_docs.extend(current_version_chunks)
-    return filtered_docs
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None):
-    if chat_history_list is None:
-        chat_history_list = []
+    if chat_history_list is None: chat_history_list = []
     start_time = time.time()
-    top_score = float("-inf")
     
     is_valid, clean_query = validate_query(query) 
     if not is_valid:
@@ -741,21 +617,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
-            chunk_size = 3
-            for i in range(0, len(words), chunk_size):
-                yield " ".join(words[i:i+chunk_size]) + " "
+            for i in range(0, len(words), 3):
+                yield " ".join(words[i:i+3]) + " "
                 time.sleep(0.01)
             return
     else:
-        logger.info(f"Cache bypass for query: '{standalone_query}' (incomplete/listing/custodian lookup).")
+        logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
     if _is_listing_query(standalone_query):
         logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
 
     retrieval_start = time.time()
     
-    try:
-        intent, _, _, _ = route_query(standalone_query)
+    try: intent, _, _, _ = route_query(standalone_query)
     except Exception as e:
         logger.warning(f"Router fallback triggered: {e}")
         intent = "search"
@@ -779,10 +653,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     is_complex = (not is_incomplete_input) and any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
     sub_queries = [standalone_query]
     if is_complex:
-        try:
-            sub_queries = decompose_query(standalone_query)
-        except:
-            pass
+        try: sub_queries = decompose_query(standalone_query)
+        except: pass
 
     if is_incomplete_input:
         for variant in _build_incomplete_query_variants(standalone_query, chat_history_list):
@@ -790,8 +662,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 sub_queries.append(variant)
 
     dynamic_k = get_dynamic_k(standalone_query)
-    if _is_custodian_lookup_query(standalone_query):
-        dynamic_k = max(dynamic_k, 30)
     is_curriculum_list_query = _is_curriculum_list_query(standalone_query)
     if is_curriculum_list_query:
         dynamic_k = max(dynamic_k, 40)
@@ -800,97 +670,56 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
-
     if len(sub_queries) == 1:
         all_docs = retriever.invoke(sub_queries[0])
     else:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             results = list(executor.map(retriever.invoke, sub_queries))
-        for res in results:
-            all_docs.extend(res)
+        for res in results: all_docs.extend(res)
 
     if not all_docs:
-        if is_incomplete_input:
-            broad_queries = _build_incomplete_query_variants(standalone_query, chat_history_list)
-            broad_retriever = get_retriever(k=max(dynamic_k, 30))
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                fallback_results = list(executor.map(broad_retriever.invoke, broad_queries))
-            for res in fallback_results:
-                all_docs.extend(res)
-
-        logger.warning(f"⚠️ Vector Search returned 0 results for: {standalone_query}")
-        if all_docs:
-            logger.info(f"🔎 Incomplete-query fallback recovered {len(all_docs)} chunks using broad closest-match retrieval.")
-        else:
-            yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
-            return
-
-    if not all_docs:
-        yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
+        yield build_no_answer_response(standalone_query)
         return
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
-    all_docs = _boost_people_list_docs(standalone_query, all_docs, dynamic_k)
-    all_docs = _boost_curriculum_list_docs(standalone_query, all_docs, dynamic_k)
-
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
-    hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
-    if _detect_query_intent(standalone_query) == "people":
-        hybrid_results = filter_to_people_docs(hybrid_results, standalone_query)
-    
-    is_curriculum_query = any(
-        kw in standalone_query.lower()
-        for kw in [
+    is_curriculum_query = has_course_code or any(
+        kw in standalone_query.lower() for kw in [
             'curriculum', 'subject', 'course', 'year', 'semester', 'units',
             'prerequisite', 'schedule', 'ojt', 'practicum', 'internship',
-            'immersion', 'faculty', 'full-time', 'part-time', 'instructor',
-            'professor', 'chairperson', 'chair', 'dean', 'department',
-            'operating systems', 'elective', 'track'
+            'immersion', 'operating systems', 'elective', 'track'
         ]
     )
     
-    ANALYTICAL_TRIGGERS = [
-        'most', 'least', 'highest', 'lowest', 'compare', 'which course',
-        'how many courses', 'most prerequisites', 'hardest', 'rank'
-    ]
-    is_analytical_query = any(kw in standalone_query.lower() for kw in ANALYTICAL_TRIGGERS)
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
+    is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
 
-    is_download_query = any(
-        kw in standalone_query.lower()
-        for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download']
-    )
+    top_score, second_score = float("-inf"), float("-inf")
+    
+    hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
-    top_score = float("-inf")
-    second_score = float("-inf")
+    if _detect_query_intent(standalone_query) == "people":
+        people_pool = filter_to_people_docs(latest_per_source, standalone_query)
+        people_pool = boost_people_list_docs(standalone_query, people_pool, dynamic_k)
+        ranked_people = rank_people_list_docs(people_pool, standalone_query)
+        top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
+        if top_reranked: top_score = max(top_score, 5.0)
 
-    if is_analytical_query and is_curriculum_query:
-        all_program_docs = filter_to_program(
-            prefer_latest_per_source(list(unique_docs_map.values())),
-            standalone_query
-        )
+    elif is_analytical_query and is_curriculum_query:
+        all_program_docs = filter_to_program(latest_per_source, standalone_query)
         big_retriever = get_retriever(k=50)
-        extra_docs = big_retriever.invoke(standalone_query)
-        extra_filtered = filter_to_program(
-            prefer_latest_per_source(extra_docs),
-            standalone_query
-        )
+        extra_filtered = filter_to_program(prefer_latest_per_source(big_retriever.invoke(standalone_query)), standalone_query)
         combined = {hash(d.page_content): d for d in all_program_docs + extra_filtered}
         top_reranked = list(combined.values())
-        
-        if top_reranked:
-            top_score = 10.0 
-            
-        logger.info(f"🔬 Analytical curriculum query — using {len(top_reranked)} full program chunks")
+        if top_reranked: top_score = 10.0 
         
     else:
         # [FIX 6]: Ensure people intents get a broader slice of the context chunks
         query_intent = _detect_query_intent(standalone_query)
-        if _is_custodian_list_query(standalone_query):
-            max_chunks = 20
-        elif _is_people_list_query(standalone_query):
+        if _is_people_list_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
@@ -910,15 +739,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
                 
                 top_score = float(scores[sorted_indices[0]])
-                if len(sorted_indices) > 1:
-                    second_score = float(scores[sorted_indices[1]])
+                if len(sorted_indices) > 1: second_score = float(scores[sorted_indices[1]])
                 
-                top_limit = max(RERANKER_TOP_K, 24) if is_curriculum_list_query else RERANKER_TOP_K
-                top_reranked = [hybrid_results[i] for i in sorted_indices[:top_limit]] 
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
             except Exception as e:
                 logger.error(f"Reranking failed: {e}")
-                top_limit = max(RERANKER_TOP_K, 24) if is_curriculum_list_query else RERANKER_TOP_K
-                top_reranked = hybrid_results[:top_limit]
+                top_reranked = hybrid_results[:RERANKER_TOP_K]
         else:
             top_reranked = []
 
@@ -927,69 +753,42 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         people_pool = _boost_people_list_docs(standalone_query, people_pool, dynamic_k)
         ranked_people = _rank_people_list_docs(people_pool, standalone_query)
         if ranked_people:
-            top_limit = max(RERANKER_TOP_K, 24) if _is_custodian_list_query(standalone_query) else max(RERANKER_TOP_K, 16)
-            top_reranked = ranked_people[:top_limit]
+            top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
             top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
-        link_docs = link_retriever.invoke("official curriculum PDF download link")
-        link_filtered = prefer_latest_per_source(link_docs)
+        link_filtered = prefer_latest_per_source(link_retriever.invoke("official curriculum PDF download link"))
         existing_hashes = {hash(d.page_content) for d in top_reranked}
         for doc in link_filtered:
             if hash(doc.page_content) not in existing_hashes:
                 top_reranked.append(doc)
                 existing_hashes.add(hash(doc.page_content))
-        if top_reranked:
-            top_score = max(top_score, 5.0)
-        logger.info(f"🔗 Download query — injected {len(link_filtered)} link chunks")
+        if top_reranked: top_score = max(top_score, 5.0)
 
     is_facility_query = any(
-        kw in standalone_query.lower()
-        for kw in [
-            'room', 'building', 'floor', 'lab', 'laboratory', 
-            'office', 'located', 'where is', 'where are', 'nasaan', 
-            'campus', 'facility', 'location of'
-        ]
+        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'campus', 'facility', 'location of']
     )
 
     if is_facility_query:
-        already_has_directory = any(
-            'directory' in doc.metadata.get('source', '').lower() or
-            'campus' in doc.metadata.get('source', '').lower()
-            for doc in top_reranked
-        )
+        already_has_directory = any('directory' in doc.metadata.get('source', '').lower() or 'campus' in doc.metadata.get('source', '').lower() for doc in top_reranked)
         if not already_has_directory:
-            building_code_match = re.search(r'\b([A-Z]{1,3})\d{3}\b', standalone_query.upper())
+            building_code_match = re.search(r'\b([A-Z]{1,3})\s*\d{3}\b', standalone_query.upper())
             if building_code_match:
-                building_code = building_code_match.group(1)
-                directory_query = f"{building_code} building rooms directory"
+                directory_query = f"{building_code_match.group(1)} building rooms directory"
             else:
                 directory_query = "campus building directory rooms"
 
-            directory_retriever = get_retriever(k=8)
-            directory_docs = directory_retriever.invoke(directory_query)
-            directory_filtered = prefer_latest_per_source(directory_docs)
+            directory_filtered = prefer_latest_per_source(get_retriever(k=8).invoke(directory_query))
             existing_hashes = {hash(d.page_content) for d in top_reranked}
             for doc in directory_filtered:
                 if hash(doc.page_content) not in existing_hashes:
                     top_reranked.append(doc)
                     existing_hashes.add(hash(doc.page_content))
-            if top_reranked:
-                top_score = max(top_score, 5.0)
-            logger.info(f"🏢 Facility query — building code: '{building_code_match.group(1) if building_code_match else 'generic'}', injected {len(directory_filtered)} chunks")
+            if top_reranked: top_score = max(top_score, 5.0)
     
-    logger.info(f"📊 Query: '{standalone_query}'")
-    logger.info(f"📊 Docs retrieved: {len(all_docs)} → after rerank: {len(top_reranked)}")
-    logger.info(
-        f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f} | "
-        f"Margin: {(top_score - second_score):.2f} "
-        f"(Cutoffs — low: {LOW_CONFIDENCE_THRESHOLD}, high: {HIGH_CONFIDENCE_THRESHOLD}, "
-        f"margin: {HIGH_CONFIDENCE_MARGIN})"
-    )
+    logger.info(f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f}")
     
-    logger.info(f"📄 Final context sources ({len(top_reranked)} chunks): {[doc.metadata.get('source','?') for doc in top_reranked]}")
-
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
@@ -997,71 +796,26 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     retrieval_time = time.time() - retrieval_start
     gen_start = time.time()
     
-    # ── FIX: SINGLE-SHOT SUGGESTIONS IN PROMPT ──
-    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone — like a knowledgeable kuya or ate who actually wants to help.
+    prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone.
 
 Answer the question using ONLY the context below.
 
 ### RULES (FOLLOW STRICTLY):
-
-1. **TONE**: Write like a friendly, approachable upperclassman helping a 
-   classmate — casual but still accurate. Use natural conversational 
-   language. Contractions are fine ("you'll", "it's", "here's"). 
-   Never sound like a formal document or a customer service bot.
-   Do NOT start with "Great question!", "Good question!", or any 
-   sycophantic opener. Just talk like a normal person would. Do NOT start with "So,", "Kuya", "So here's", "So to answer", or any 
-   sentence that begins with the word "So". Make every response different — do NOT use a template. Avoid repeating sentence starters across different responses. 
-   Do NOT use the same opening phrase more than once in a 5-response span.
-
-2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to..." or "Let me check the handbook for you..." or any variation.
-
-3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino. 
-
-4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum 
-   subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL 
-   data in a Markdown table. Include specific course codes, titles, units, and 
-   prerequisites. **SHOW EVERY ROW** — never truncate or skip rows. 
-   If the source data has rows where every cell is "---", skip those rows 
-   entirely — they are visual dividers in the original document and must NOT 
-   appear in your markdown table output.
-
-5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. If the user asks
-    for a list of faculty/staff, include ALL names found in the retrieved
-    context that match the request. Do not answer with just one example unless
-    only one person is present in the context.
-
-6. **STRICTLY FACTUAL**: Use ONLY what is in the context. Do NOT pad with general advice. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
-
-7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year (1st semester, 2nd semester, and intersession if applicable) together in one response.
-
-8. **BE CONCISE**: Get to the point quickly. One natural opener if it 
-   helps the flow, then the answer. No repetition, no padding, no 
-   sign-offs like "I hope this helps!" or "Feel free to ask more!".
-
-9. **LISTS**: When listing multiple items, always put each item on its own 
-   line with a blank line before the list starts. Never write list items 
-   inline like "1. Item 2. Item 3. Item".
-
-10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — go through ALL courses visible in the context, count carefully, and give a definitive answer with the course code and title. Show your reasoning as a small table if helpful.
-
-11. **MULTIPLE TABLES**: When presenting multiple tables (e.g. different class periods), give each table a clear bold label above it like **1-hour class period** and put a blank line between each table. Never run tables together without labels.
-
-12. **LINKS**: Never paste raw URLs. Always format links as descriptive 
-    markdown like [Download the official curriculum here](url) or 
-    [Fill out the form here](url). The link text should describe what 
-    the link does, not the URL itself.
-
-13. **ROOM CODES**: When the user asks about a room like "D412", "AL112", 
-    or "EB111", look up the building prefix in the campus directory in 
-    the context. "D" = Fr. Francis Dolan SJ Building, "AL" = Godofredo 
-    Alingal SJ Building, "EB" = Engineering Building, "AR" = Fr. Pedro 
-    Arrupe SJ Building, "P" = Fr. John Phelan SJ Building, "S" = Fr. 
-    Pedro Santos SJ Building, "B" = Fr. Francis Burns SJ Building, 
-    "CC" = Covered Courts, "RB" = Fr. Raul Bonoan SJ Building.
-    Always decode the building name, floor number, and room number for 
-    the user. Only use acronyms confirmed in the context.
-
-14. **NO SPECULATION**: Never guess or infer missing details. Do not use speculative words like "likely", "possibly", "probably", "might", or "could be". If the context does not explicitly state a detail, clearly say it is not explicitly stated in the retrieved documents.
+1. **TONE**: Write like a friendly, approachable upperclassman helping a classmate — casual but still accurate. Never sound like a formal document or a customer service bot. Do NOT start with "Great question!", "Good question!", "So,", "Kuya", "So here's", or "So to answer". Make every response different.
+2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to...".
+3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino.
+4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where every cell contains only dashes (---).
+5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. 
+6. **STRICTLY FACTUAL**: Use ONLY what is in the context. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
+7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
+8. **BE CONCISE**: Get to the point quickly.
+9. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
+10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — count carefully, and give a definitive answer. 
+11. **MULTIPLE TABLES**: Give each table a clear bold label above it.
+12. **LINKS**: Never paste raw URLs. Always format links as descriptive markdown like [Download the official curriculum here](url).
+13. **ROOM CODES**: When the user asks about a room like "D412", "AL112", or "EB111", look up the building prefix in the campus directory in the context. "D" = Fr. Francis Dolan SJ Building, "AL" = Godofredo Alingal SJ Building, "EB" = Engineering Building. Always decode the building name, floor number, and room number for the user. Only use acronyms confirmed in the context.
+14. **NO SPECULATION**: Never guess or infer missing details. Do not use speculative words like "likely", "possibly", "probably", "might", or "could be".
+15. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
 
 **Context:**
 {context}
@@ -1088,26 +842,18 @@ Hard rules for suggested questions:
 
     try:
         is_protected_query = (
-            is_curriculum_query or 
-            is_facility_query or 
-            is_analytical_query or
-            is_download_query or
-            is_incomplete_input
+            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield "I don't have enough info to answer that confidently — best to check with your department chair directly."
+            yield build_no_answer_response(standalone_query)
             return
 
         llm = get_generator_llm()
-        draft_raw = get_llm_response(llm, prompt).content
+        draft_raw = get_llm_response(llm, prompt).content.strip()
         
-        # ── EXTRACT SUGGESTIONS (BEFORE CRITIC SEES IT) ──
-        SUGGESTION_SPLIT = re.compile(
-            r'\n+SUGGESTED_QUESTIONS:\s*\n((?:\d+\..+\n?){1,3})',
-            re.IGNORECASE
-        )
+        SUGGESTION_SPLIT = re.compile(r'\n+SUGGESTED_QUESTIONS:\s*\n((?:\d+\..+\n?){1,3})', re.IGNORECASE)
         suggestion_match = SUGGESTION_SPLIT.search(draft_raw)
         suggested_questions = []
 
@@ -1117,24 +863,13 @@ Hard rules for suggested questions:
             for line in raw_lines:
                 q = re.sub(r'^\d+\.\s*', '', line).strip()
                 if q and len(q) > 8:
-                    if not q.endswith('?'):
-                        q += '?'
+                    if not q.endswith('?'): q += '?'
                     suggested_questions.append(q)
-            suggested_questions = _filter_grounded_suggestions(
-                suggested_questions,
-                context,
-                standalone_query,
-                max_items=3,
-            )
         else:
             draft_response = draft_raw.strip()
 
-        # ── CRITIC / CONFIDENCE GATE ──
         score_margin = top_score - second_score if second_score != float("-inf") else top_score
-        high_confidence = (
-            top_score >= HIGH_CONFIDENCE_THRESHOLD
-            and score_margin >= HIGH_CONFIDENCE_MARGIN
-        )
+        high_confidence = (top_score >= 1.5 and score_margin >= 0.4)
 
         if high_confidence:
             logger.info(f"✨ High Confidence ({top_score:.2f}, margin {score_margin:.2f}). Bypassing Critic.")
@@ -1150,44 +885,43 @@ Hard rules for suggested questions:
             "confidence_score": float(top_score)
         }
 
-        if not final_verified_response:
-            logger.error("final_verified_response is None. Falling back to draft.")
-            final_verified_response = draft_response
+        if not final_verified_response: final_verified_response = draft_response
 
         if _contains_speculation(final_verified_response):
-            cleaned_non_speculative = _remove_speculative_sentences(final_verified_response)
-            if cleaned_non_speculative:
-                final_verified_response = cleaned_non_speculative
-            else:
-                final_verified_response = "I couldn't find an explicit answer for that detail in the retrieved documents."
+            cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
+            final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
+
+        # ── UX FIX: INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
+        if is_no_answer_response(final_verified_response):
+            final_fallback = build_no_answer_response(standalone_query)
+            add_to_cache(standalone_query, final_fallback)
+            
+            chunk_size = 40
+            for i in range(0, len(final_fallback), chunk_size):
+                yield final_fallback[i:i+chunk_size]
+                time.sleep(STREAM_DELAY) 
+            return
+        # ──────────────────────────────────────────────────────────
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = re.sub(r'(?<!\n)\s{2,}-\s+\*\*', r'\n- **', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
 
-        # ── CACHING (FIX 3): Cache the clean response before metadata/suggestions ──
         clean_response_for_cache = final_verified_response
         add_to_cache(standalone_query, clean_response_for_cache)
 
-        # ── APPEND METADATA & SUGGESTIONS FOR STREAMING ──
         source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
-        certainty_note = _build_source_certainty_note(top_score, score_margin, source_list)
+        certainty_note = build_source_certainty_note(top_score, score_margin, source_list)
         final_verified_response += f"\n\n{certainty_note}"
 
         if not suggested_questions:
-            suggested_questions = _build_source_fallback_suggestions(
-                source_list,
-                standalone_query,
-                max_items=3,
-            )
-        
+            suggested_questions = fallback_questions(final_verified_response + "\n" + context, standalone_query, max_items=3)
+            
         if suggested_questions:
-            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + \
-                "\n".join(f"- {q}" for q in suggested_questions[:3])
+            suggestions_md = "\n\n---\n**You might also want to ask:**\n" + "\n".join(f"- {q}" for q in suggested_questions[:3])
             final_verified_response += suggestions_md
         
-        # ── STREAMING ──
         try:
             if _contains_markdown_table(final_verified_response):
                 yield final_verified_response
@@ -1196,7 +930,6 @@ Hard rules for suggested questions:
                 for i in range(0, len(final_verified_response), chunk_size):
                     yield final_verified_response[i:i+chunk_size]
                     time.sleep(STREAM_DELAY) 
-                    
         except GeneratorExit:
             return
         except Exception as e:
@@ -1206,90 +939,3 @@ Hard rules for suggested questions:
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
         yield "Something went wrong on my end. Give it another try in a bit!"
-
-
-def _strip_decorative_dash_rows(t: str) -> str:
-    cleaned = []
-    for line in t.split('\n'):
-        stripped = line.strip()
-        if stripped.startswith('|') and stripped.endswith('|'):
-            cells = [c.strip() for c in stripped.strip('|').split('|')]
-            all_dashes = all(re.fullmatch(r'-+', cell) for cell in cells if cell)
-            has_empty = any(cell == '' for cell in cells)
-            if all_dashes and not has_empty:
-                continue
-        cleaned.append(line)
-    return '\n'.join(cleaned)   # ← this line was broken before
-
-
-def fix_markdown_tables(text: str) -> str:
-    if '|' not in text:
-        return text
-
-    text = _strip_decorative_dash_rows(text)
-        
-    lines = text.split('\n')
-    fixed = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        next_line = lines[i + 1] if i + 1 < len(lines) else ''
-
-        if (line.strip().startswith('|') and
-                fixed and
-                fixed[-1].strip() and
-                not fixed[-1].strip().startswith('|')):
-            fixed.append('')
-
-        fixed.append(line)
-
-        next_next_line = lines[i + 2] if i + 2 < len(lines) else ''
-        is_header_candidate = (
-            line.strip().startswith('|') and
-            next_line.strip().startswith('|') and
-            '---' not in next_line and
-            '---' not in line and
-            not any('---' in f for f in fixed[-3:])
-        )
-        if is_header_candidate:
-            col_count = line.count('|') - 1
-            if col_count > 0:
-                fixed.append('|' + '---|' * col_count)
-
-        if (line.strip().startswith('|') and
-                next_line.strip() and
-                not next_line.strip().startswith('|')):
-            fixed.append('')
-
-        i += 1
-    return '\n'.join(fixed)
-
-
-def format_raw_links(text: str) -> str:
-    raw_url_pattern = re.compile(
-        r'(?<!\()'
-        r'(https?://[^\s\]\,\"\'<>]+)'
-    )
-    def replace_url(match):
-        url = match.group(1)
-        full_text = text
-        pos = match.start()
-        preceding = full_text[max(0, pos-50):pos]
-        if re.search(r'\[[^\]]*\]\($', preceding):
-            return url 
-            
-        if 'supabase' in url or 'storage' in url:
-            label = 'Download here'
-        elif 'form' in url or 'docs.google' in url:
-            label = 'Access the form here'
-        elif 'drive.google' in url:
-            label = 'View document here'
-        else:
-            label = 'View link here'
-        return f'[{label}]({url})'
-    return raw_url_pattern.sub(replace_url, text)
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def get_llm_response(llm, prompt):
-    return llm.invoke(prompt)
