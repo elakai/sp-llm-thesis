@@ -1,12 +1,20 @@
+import re
+import html
 import streamlit as st
 import uuid
 import copy
 import base64
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from src.core.retrieval import generate_response
+from src.ui.suggested_questions import render_suggested_questions
 from src.core.feedback import save_feedback, log_conversation, delete_conversation
+
+_PHT = timezone(timedelta(hours=8))
+
+def _now_pht() -> str:
+    return datetime.now(_PHT).strftime("%I:%M %p")
 
 
 def _get_logo_base64() -> str:
@@ -16,13 +24,165 @@ def _get_logo_base64() -> str:
             return base64.b64encode(f.read()).decode()
     return ""
 
+
+def _get_previous_user_query(messages, assistant_idx: int) -> str:
+    for cursor in range(assistant_idx - 1, -1, -1):
+        if messages[cursor].get("role") == "user":
+            return messages[cursor].get("content", "")
+    return ""
+
+def _strip_suggestions(text: str) -> str:
+    if not text:
+        return text
+    return re.sub(
+        r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
+        '',
+        text
+    ).strip()
+
+def _extract_source_certainty(text: str) -> tuple[str, str]:
+    if not text:
+        return text, ""
+
+    pattern = re.compile(
+        r'\n?>\s*\*\*Source certainty:\*\*.*?(?=\n\n---|\Z)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(text)
+    if not match:
+        return text.strip(), ""
+
+    source_block = match.group(0).strip()
+    source_plain = re.sub(r'^\s*>\s?', '', source_block, flags=re.MULTILINE).strip()
+
+    cleaned = (text[:match.start()] + text[match.end():]).strip()
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned, source_plain
+
+def _render_message_meta(source_certainty: str, timestamp: str = ""):
+    if not source_certainty and not timestamp:
+        return
+
+    certainty_html = ""
+    if source_certainty:
+        count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
+        badge_text = count_match.group(1) if count_match else "i"
+        tooltip = html.escape(source_certainty)
+        certainty_html = (
+            f"<div class='source-certainty-wrap'>"
+            f"<span class='source-certainty-btn'>{badge_text}</span>"
+            f"<div class='source-certainty-tooltip'>{tooltip}</div>"
+            f"</div>"
+        )
+
+    timestamp_html = ""
+    if timestamp:
+        timestamp_html = f"<span class='message-timestamp-inline'>{html.escape(timestamp)}</span>"
+
+    st.markdown(f"<div class='message-meta-row'>{certainty_html}{timestamp_html}</div>", unsafe_allow_html=True)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
 # ─────────────────────────────────────────────────────────────────────────────
 def render_history_view():
     """Renders the chat history view with conversation list and controls."""
     st.markdown("<h1 style='color: #F0A62D; font-weight: bold;'>Chat History</h1>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        /* Scope to widgets keyed like delete_0, delete_1, ... */
+        [class*="st-key-delete_"] button {
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            border: 1px solid #b91c1c !important;
+        }
+        [class*="st-key-delete_"] button:hover {
+            background-color: #b91c1c !important;
+            border-color: #991b1b !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-delete_"] button:focus {
+            box-shadow: 0 0 0 0.2rem rgba(220, 38, 38, 0.35) !important;
+        }
+        [class*="st-key-delete_all_history"] button {
+            background-color: #b91c1c !important;
+            color: #ffffff !important;
+            border: 1px solid #991b1b !important;
+        }
+        [class*="st-key-delete_all_history"] button:hover {
+            background-color: #991b1b !important;
+            border-color: #7f1d1d !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-confirm_delete_all_btn"] button {
+            background-color: #dc2626 !important;
+            color: #ffffff !important;
+            border: 1px solid #b91c1c !important;
+        }
+        [class*="st-key-confirm_delete_all_btn"] button:hover {
+            background-color: #b91c1c !important;
+            border-color: #991b1b !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-cancel_delete_all"] button {
+            background-color: #16a34a !important;
+            color: #ffffff !important;
+            border: 1px solid #15803d !important;
+        }
+        [class*="st-key-cancel_delete_all"] button:hover {
+            background-color: #15803d !important;
+            border-color: #166534 !important;
+            color: #ffffff !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
+
+    history_owner = st.session_state.get("email") or st.session_state.get("user_id")
+    if "confirm_delete_all_pending" not in st.session_state:
+        st.session_state["confirm_delete_all_pending"] = False
+
+    if st.session_state.get("chat_history"):
+        if st.button("Delete all conversations", key="delete_all_history", type="secondary"):
+            st.session_state["confirm_delete_all_pending"] = True
+            st.rerun()
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            st.warning("This will permanently delete all saved conversations for your account.")
+            confirm_col, cancel_col = st.columns(2)
+            with confirm_col:
+                if st.button("Confirm delete", key="confirm_delete_all_btn", type="secondary"):
+                    delete_failed = False
+                    for conv in st.session_state["chat_history"]:
+                        if isinstance(conv, dict):
+                            session_id = conv.get("session_id")
+                        else:
+                            session_id = None
+                        if session_id:
+                            if not delete_conversation(session_id, history_owner):
+                                delete_failed = True
+
+                    st.session_state["chat_history"] = []
+                    st.session_state["active_convo_idx"] = None
+                    st.session_state["messages"] = []
+                    st.session_state["confirm_delete_all_pending"] = False
+                    if delete_failed:
+                        st.toast("Some conversations could not be deleted from the database.", icon="⚠️")
+                    st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="cancel_delete_all"):
+                    st.session_state["confirm_delete_all_pending"] = False
+                    st.rerun()
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            st.markdown("---")
+
+        if st.session_state.get("confirm_delete_all_pending"):
+            return
+
+
     
     if not st.session_state.get("chat_history"):
         st.info("📭 No saved conversations yet.")
@@ -51,7 +211,7 @@ def render_history_view():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("📂 Continue", key=f"load_{i}"):
+                    if st.button("Continue", key=f"load_{i}"):
                         # Pass only the messages list to the chat window
                         st.session_state["messages"] = copy.deepcopy(messages)
                         st.session_state["active_convo_idx"] = actual_idx
@@ -60,10 +220,9 @@ def render_history_view():
                         st.session_state["view"] = "chat"
                         st.rerun()
                 with col2:
-                    if st.button("🗑️ Delete", key=f"delete_{i}", type="secondary"):
-                        # Delete from database first
-                        user_email = st.session_state.get("user_id")
-                        delete_conversation(session_id, user_email)
+                    if st.button("Delete", key=f"delete_{i}", type="secondary"):
+                        # Delete from database first (chat_logs are keyed by user_email)
+                        db_deleted = delete_conversation(session_id, history_owner)
                         
                         # Then remove from session state
                         st.session_state["chat_history"].pop(actual_idx)
@@ -74,7 +233,10 @@ def render_history_view():
                                 st.session_state["messages"] = []
                             elif current_idx > actual_idx:
                                 st.session_state["active_convo_idx"] = current_idx - 1
+                        if not db_deleted:
+                            st.toast("Conversation removed from this view, but database delete could not be confirmed.", icon="⚠️")
                         st.rerun()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,10 +276,10 @@ def render_chat_view():
             unsafe_allow_html=True,
         )
     
-    st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>AXIsstant</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>Your CSEA Information Assistant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
-        st.info("👋 Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code")
+        st.info("Welcome! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code.")
 
     # Initialize feedback tracking if not exists
     if "message_feedback" not in st.session_state:
@@ -130,64 +292,82 @@ def render_chat_view():
         avatar = "assets/logo.png" if is_assistant else None
         
         with st.chat_message(role, avatar=avatar):
-            st.markdown(message["content"])
-            if "timestamp" in message:
+            content = _strip_suggestions(message["content"])
+            source_certainty = (message.get("source_certainty") or "").strip()
+            content, content_source_certainty = _extract_source_certainty(content)
+            if not source_certainty and content_source_certainty:
+                source_certainty = content_source_certainty
+            st.markdown(content)
+            if is_assistant:
+                _render_message_meta(source_certainty, message.get("timestamp", ""))
+            elif "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
-            
-            # Feedback buttons - ONLY render if role is exactly "assistant"
-            if role == "assistant":
-                current_feedback = st.session_state.message_feedback.get(idx, None)
-                
-                col1, _ = st.columns([1, 4])
-                with col1:
-                    sub1, sub2 = st.columns(2)
-                    with sub1:
-                        if st.button("👍", key=f"g_{idx}", help="Helpful" if current_feedback != "helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "helpful"
-                                save_feedback(query, message["content"], "helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
-                                st.toast("Thanks for your feedback!", icon="✅")
-                            st.rerun()
-                    with sub2:
-                        if st.button("👎", key=f"b_{idx}", help="Not helpful" if current_feedback != "not_helpful" else "Click to remove"):
-                            query = st.session_state.messages[idx-1]["content"] if idx > 0 else ""
-                            if current_feedback == "not_helpful":
-                                st.session_state.message_feedback[idx] = None
-                                save_feedback(query, message["content"], "removed", st.session_state.get("user_id"), st.session_state.get("session_id"))
-                                st.toast("Feedback removed")
-                            else:
-                                st.session_state.message_feedback[idx] = "not_helpful"
-                                save_feedback(query, message["content"], "not_helpful", st.session_state.get("user_id"), st.session_state.get("session_id"))
-                                st.toast("We'll improve this answer.", icon="📝")
-                            st.rerun()
-                
-                # Visual indicator for selected feedback
-                if current_feedback == "helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator helpful">
-                        <span>✓</span> You found this helpful
-                    </div>
-                    """, unsafe_allow_html=True)
-                elif current_feedback == "not_helpful":
-                    st.markdown("""
-                    <div class="feedback-indicator not-helpful">
-                        <span>✗</span> Marked for improvement
-                    </div>
-                    """, unsafe_allow_html=True)
+
+            if is_assistant and message.get("suggestions"):
+                render_suggested_questions(message["suggestions"], key_prefix=f"suggest_{idx}")
+
+
+        if role == "assistant":
+            current_feedback = st.session_state.message_feedback.get(idx, None)
+            query = _get_previous_user_query(st.session_state.messages, idx)
+
+            st.markdown("<div class='eval-prompt'>Was this answer helpful?</div>", unsafe_allow_html=True)
+            feedback_col1, feedback_col2 = st.columns(2)
+
+            with feedback_col1:
+                if st.button(
+                    "Helpful",
+                    key=f"eval_helpful_{idx}",
+                    type="primary" if current_feedback == "helpful" else "secondary",
+                    help="Click again to remove" if current_feedback == "helpful" else None,
+                ):
+                    if current_feedback == "helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "helpful"
+                        save_feedback(query, message["content"], "helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Thanks for your feedback!", icon="✅")
+                    st.rerun()
+
+            with feedback_col2:
+                if st.button(
+                    "Not helpful",
+                    key=f"eval_not_helpful_{idx}",
+                    type="primary" if current_feedback == "not_helpful" else "secondary",
+                    help="Click again to remove" if current_feedback == "not_helpful" else None,
+                ):
+                    if current_feedback == "not_helpful":
+                        st.session_state.message_feedback[idx] = None
+                        save_feedback(query, message["content"], "removed", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("Feedback removed")
+                    else:
+                        st.session_state.message_feedback[idx] = "not_helpful"
+                        save_feedback(query, message["content"], "not_helpful", st.session_state.get("email"), st.session_state.get("session_id"))
+                        st.toast("We'll improve this answer.", icon="📝")
+                    st.rerun()
+
+            if current_feedback == "helpful":
+                st.markdown("<div class='feedback-indicator helpful'><span>✓</span> You marked this response as helpful</div>", unsafe_allow_html=True)
+            elif current_feedback == "not_helpful":
+                st.markdown("<div class='feedback-indicator not-helpful'><span>✗</span> You marked this response as not helpful</div>", unsafe_allow_html=True)
+
+    # Process queued suggestion after the history loop so it renders as
+    # a separate chat turn, not inside the previous assistant message container.
+    queued_query = st.session_state.pop("queued_query", None)
+    if queued_query:
+        _process_user_query(queued_query)
+        return
 
     # Handle new user input
-    if query := st.chat_input("Ask AXIsstant about rules, exemptions, or curriculum..."):
+    if query := st.chat_input("Ask AXIstant about rules, exemptions, or curriculum..."):
         _process_user_query(query)
 
 
 def _process_user_query(query: str):
     """Process user query, generate response, and update chat state."""
-    user_ts = datetime.now().strftime("%I:%M %p")
+    user_ts = _now_pht()
     st.session_state.messages.append({"role": "user", "content": query, "timestamp": user_ts})
     
     with st.chat_message("user"):
@@ -195,33 +375,71 @@ def _process_user_query(query: str):
         st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{user_ts}</span>", unsafe_allow_html=True)
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
+        extracted_source_certainty = ""
         try:
-            # Get the response stream
-            stream = generate_response(
-                query=query,
-                chat_history_list=st.session_state.messages
-            )
-
-            response = st.write_stream(stream)
+            with st.spinner("Thinking..."):
+                stream = generate_response(
+                    query=query,
+                    chat_history_list=st.session_state.messages
+                )
+                response_placeholder = st.empty()
+                full_response = ""
+                for chunk in stream:
+                    full_response += chunk
+                    stream_no_source, _ = _extract_source_certainty(full_response)
+                    if '|' in stream_no_source:
+                        response_placeholder.markdown(stream_no_source, unsafe_allow_html=True)
+                    else:
+                        response_placeholder.markdown(stream_no_source + "▌", unsafe_allow_html=True)
+                rendered_response = _strip_suggestions(full_response)
+                rendered_response_no_source, source_certainty = _extract_source_certainty(rendered_response)
+                response_placeholder.markdown(rendered_response_no_source, unsafe_allow_html=True)
+                _render_message_meta(source_certainty)
+                
+            clean_response = _strip_suggestions(full_response)
+            clean_no_source, extracted_source_certainty = _extract_source_certainty(clean_response)
+            clean_response = clean_no_source
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
+
+            SUGGESTION_PATTERN = re.compile(
+                r'\n+---\n\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
+                re.IGNORECASE
+            )
+            suggestion_match = SUGGESTION_PATTERN.search(full_response)
+            if suggestion_match:
+                suggestions = [
+                    re.sub(r'^- ', '', line).strip()
+                    for line in suggestion_match.group(1).strip().split('\n')
+                    if line.strip().startswith('- ')
+                ]
+            else:
+                suggestions = []
             
             log_conversation(
                 query=query,
-                response=response,
-                user_email=st.session_state.get("user_id", "Guest"),
+                response=clean_response,
+                user_email=st.session_state.get("email", "Guest"),
                 session_id=st.session_state.get("session_id"),
                 context=current_context,
                 metrics=performance_metrics
             )
 
         except Exception as e:
-            response = f"⚠️ Backend Error: {str(e)}"
-            st.error(response)
+            clean_response = f"⚠️ Backend Error: {str(e)}"
+            st.error(clean_response)
+            suggestions = []
         
-        asst_ts = datetime.now().strftime("%I:%M %p")
-        st.session_state.messages.append({"role": "assistant", "content": response, "timestamp": asst_ts})
+        asst_ts = _now_pht()
+        # Save the clean assistant response into session state
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": clean_response, 
+            "timestamp": asst_ts,
+            "suggestions": suggestions,
+            "source_certainty": extracted_source_certainty,
+        })
         
         # Update chat history - handle both new and continued conversations
         if "chat_history" not in st.session_state:
@@ -247,5 +465,5 @@ def _process_user_query(query: str):
             })
             st.session_state["active_convo_idx"] = len(chat_history) - 1
 
-        # Rerun to cleanly display from session state with feedback buttons
+        # Rerun to cleanly display from session state with feedback buttons and suggestion chips
         st.rerun()
