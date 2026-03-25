@@ -1157,7 +1157,7 @@ def fix_markdown_tables(text: str) -> str:
 def format_raw_links(text: str) -> str:
     raw_url_pattern = re.compile(
         r'(?<!\()'
-        r'(https?://[^\s\)\]\,\"\']+)'
+        r'(https?://[^\s\]\,\"\'<>]+)'
     )
     def replace_url(match):
         url = match.group(1)
