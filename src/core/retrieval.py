@@ -275,7 +275,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             'immersion', 'operating systems', 'elective', 'track'
         ]
     )
-    is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank'])
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
     is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
 
     top_score, second_score = float("-inf"), float("-inf")
