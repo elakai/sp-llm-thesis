@@ -571,6 +571,22 @@ def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
         filtered_docs.extend(current_version_chunks)
     return filtered_docs
 
+def _build_no_answer_response(query: str) -> str:
+    """Returns a helpful fallback with practical search tips."""
+    tips = (
+        "Here are some tips to get a better answer:\n\n"
+        "- **Spell out acronyms** — instead of 'OJT in CPE', try 'on-the-job training in Computer Engineering'\n"
+        "- **Be specific about the program** — mention 'BS Computer Engineering' or 'BS ECE' instead of just 'engineering'\n"
+        "- **Include the year or semester** — e.g., 'third year first semester BS CPE'\n"
+        "- **Use the full course name** — instead of 'OS', try 'Operating Systems'\n"
+        "- **Try rephrasing** — sometimes a different wording pulls up the right document"
+    )
+    return (
+        "I couldn't find a confident answer for that in the documents I have.\n\n"
+        f"{tips}\n\n"
+        "If you've tried those and still can't get an answer, your department chair is the best person to ask directly!"
+    )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -669,11 +685,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         if all_docs:
             logger.info(f"🔎 Incomplete-query fallback recovered {len(all_docs)} chunks using broad closest-match retrieval.")
         else:
-            yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
+            yield _build_no_answer_response(standalone_query)
             return
 
     if not all_docs:
-        yield "Hmm, I couldn't find anything about that in the documents I have. Try asking your department chair!"
+        yield _build_no_answer_response(standalone_query)
         return
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
@@ -936,7 +952,7 @@ Hard rules for suggested questions:
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield "I don't have enough info to answer that confidently — best to check with your department chair directly."
+            yield _build_no_answer_response(standalone_query)
             return
 
         llm = get_generator_llm()
