@@ -67,6 +67,8 @@ def _render_message_meta(source_certainty: str, timestamp: str = ""):
 
     certainty_html = ""
     if source_certainty:
+        source_certainty = re.sub(r'\*\*(.*?)\*\*', r'\1', source_certainty)
+        source_certainty = source_certainty.replace('*', '')
         count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
         badge_text = count_match.group(1) if count_match else "i"
         tooltip = html.escape(source_certainty)

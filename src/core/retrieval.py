@@ -4,6 +4,7 @@ import numpy as np
 import streamlit as st
 import concurrent.futures
 from typing import List, Dict
+from pathlib import Path
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 import re
@@ -23,6 +24,7 @@ from src.config.constants import (
     STREAM_DELAY,
     POSITIONAL_SCORE_WEIGHT,
     SEMANTIC_CACHE_THRESHOLD,
+    DOCS_FOLDER,
 )
 from src.config.logging_config import logger
 
@@ -135,6 +137,33 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
 
 def _tokenize(text: str) -> list:
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
+
+
+def _is_custodian_lookup_query(query: str) -> bool:
+    q = (query or "").lower()
+    asks_person = any(term in q for term in ["custodian", "in charge", "responsible", "handler", "assigned"])
+    asks_place = any(term in q for term in ["lab", "laboratory", "room", "aelab", "ae lab", "commslab", "comms lab", "cisco lab"])
+    return asks_person and asks_place
+
+
+def _normalize_lab_aliases(query: str) -> str:
+    if not query:
+        return query
+
+    normalized = query
+    alias_patterns = [
+        (r"\bae\s*[-_]?\s*lab\b", "Advanced Electronics Laboratory (AE Lab)"),
+        (r"\baelab\b", "Advanced Electronics Laboratory (AE Lab)"),
+        (r"\bcomms\s*[-_]?\s*lab\b", "Communications Laboratory (Comms Lab)"),
+        (r"\bcommslab\b", "Communications Laboratory (Comms Lab)"),
+        (r"\bcisco\s*[-_]?\s*lab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
+        (r"\bciscolab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
+    ]
+
+    for pattern, replacement in alias_patterns:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+    return normalized
 
 
 _SUGGESTION_STOPWORDS = {
@@ -313,16 +342,17 @@ def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
     q = (query or "").lower()
     people_triggers = [
         "professor", "faculty", "instructor", "teacher", "staff", "chair", "dean",
-        "department chair", "chairperson"
+        "department chair", "chairperson", "custodian", "lab technician", "technician"
     ]
     if not any(trigger in q for trigger in people_triggers):
         return docs
 
     content_keywords = [
         "faculty", "professor", "instructor", "teacher", "staff", "chair",
-        "department", "office", "personnel", "full-time", "part-time"
+        "department", "office", "personnel", "full-time", "part-time",
+        "custodian", "laboratory", "lab technician", "assigned laboratory"
     ]
-    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel"]
+    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel", "lab", "directory", "custodian"]
 
     filtered = []
     for doc in docs:
@@ -337,11 +367,60 @@ def _is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
     people_markers = [
         "faculty", "staff", "professor", "instructor", "dean",
-        "chair", "chairperson", "chairpersons", "department chair", "department chairs"
+        "chair", "chairperson", "chairpersons", "department chair", "department chairs",
+        "custodian", "custodians", "lab technician", "technician"
     ]
     if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
         return False
     return _is_listing_query(q)
+
+def _is_custodian_list_query(query: str) -> bool:
+    q = (query or "").lower()
+    asks_custodian = any(term in q for term in ["custodian", "custodians", "lab technician", "technician"])
+    asks_labs = any(term in q for term in ["lab", "labs", "laboratory", "laboratories"])
+    return asks_custodian and asks_labs and _is_listing_query(q)
+
+
+def _load_custodian_roster_from_markdown() -> List[tuple[str, str]]:
+    roster_path = Path(DOCS_FOLDER) / "lab_directory.md"
+    if not roster_path.exists():
+        return []
+
+    try:
+        text = roster_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        logger.warning(f"Failed to read custodian roster markdown: {e}")
+        return []
+
+    pattern = re.compile(
+        r"^-\s*Custodian:\s*(.*?)\s*\|\s*Laboratory:\s*(.*?)\s*(?:\|\s*Alias:\s*(.*?)\s*)?(?:\|\s*Room:\s*(.*?)\s*)?$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    roster: List[tuple[str, str]] = []
+    seen = set()
+    for name, laboratory, alias, _room in pattern.findall(text):
+        custodian = re.sub(r"\s+", " ", (name or "").strip())
+        lab = re.sub(r"\s+", " ", (laboratory or "").strip())
+        alias_clean = re.sub(r"\s+", " ", (alias or "").strip())
+        if not custodian or not lab:
+            continue
+        if alias_clean and alias_clean.lower() not in lab.lower():
+            lab = f"{lab} ({alias_clean})"
+        key = (custodian.lower(), lab.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        roster.append((custodian, lab))
+
+    return roster
+
+
+def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
+    lines = ["Here are all custodians and their assigned laboratories:", ""]
+    for custodian, laboratory in roster:
+        lines.append(f"- **{custodian}** - {laboratory}")
+    return "\n".join(lines).strip()
 
 def _is_curriculum_list_query(query: str) -> bool:
     q = (query or "").lower()
@@ -395,6 +474,13 @@ def _boost_people_list_docs(query: str, docs: List[Document], base_k: int) -> Li
         "CSEA faculty list full-time part-time instructors department chair dean",
         "Ateneo de Naga CSEA organizational structure faculty staff personnel chairpersons",
     ]
+
+    if _is_custodian_list_query(query):
+        boosted_queries.extend([
+            "list all custodians and their assigned laboratories",
+            "laboratory directory custodians responsible laboratory mapping",
+            "lab directory responsible custodian role assigned laboratory",
+        ])
 
     boosted_docs = list(docs)
     people_retriever = get_retriever(k=max(base_k, 40))
@@ -488,7 +574,7 @@ def _build_source_certainty_note(top_score: float, score_margin: float, sources:
 
     clean_names = [_clean_source_name(s) for s in unique_sources[:2]]
     source_preview = ", ".join(clean_names) if clean_names else "retrieved documents"
-    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): *{source_preview}*"
+    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): {source_preview}"
 
 def _detect_query_intent(query: str) -> str:
     q_lower = (query or "").lower()
@@ -500,6 +586,8 @@ def _detect_query_intent(query: str) -> str:
     def has_any_phrases(phrases: list[str]) -> bool:
         return any(phrase in q_lower for phrase in phrases)
 
+    if has_any_words({"custodian", "custodians", "technician"}) or has_any_phrases(["lab technician", "lab custodians", "laboratory custodian"]):
+        return "people"
     if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
         return "location"
     if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
@@ -633,9 +721,23 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
+    normalized_query = _normalize_lab_aliases(standalone_query)
+    if normalized_query != standalone_query:
+        logger.info(f"Alias normalized: '{standalone_query}' -> '{normalized_query}'")
+        standalone_query = normalized_query
+
+    if _is_custodian_list_query(standalone_query):
+        roster = _load_custodian_roster_from_markdown()
+        if roster:
+            direct_answer = _format_custodian_roster_response(roster)
+            for word in direct_answer.split():
+                yield word + " "
+                time.sleep(0.01)
+            return
+
     is_incomplete_input = _is_incomplete_query(standalone_query)
     
-    if not is_incomplete_input and not _is_listing_query(standalone_query):
+    if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query):
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
@@ -645,7 +747,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 time.sleep(0.01)
             return
     else:
-        logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
+        logger.info(f"Cache bypass for query: '{standalone_query}' (incomplete/listing/custodian lookup).")
 
     if _is_listing_query(standalone_query):
         logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
@@ -688,6 +790,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 sub_queries.append(variant)
 
     dynamic_k = get_dynamic_k(standalone_query)
+    if _is_custodian_lookup_query(standalone_query):
+        dynamic_k = max(dynamic_k, 30)
     is_curriculum_list_query = _is_curriculum_list_query(standalone_query)
     if is_curriculum_list_query:
         dynamic_k = max(dynamic_k, 40)
@@ -784,7 +888,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     else:
         # [FIX 6]: Ensure people intents get a broader slice of the context chunks
         query_intent = _detect_query_intent(standalone_query)
-        if _is_people_list_query(standalone_query):
+        if _is_custodian_list_query(standalone_query):
+            max_chunks = 20
+        elif _is_people_list_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
@@ -821,7 +927,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         people_pool = _boost_people_list_docs(standalone_query, people_pool, dynamic_k)
         ranked_people = _rank_people_list_docs(people_pool, standalone_query)
         if ranked_people:
-            top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
+            top_limit = max(RERANKER_TOP_K, 24) if _is_custodian_list_query(standalone_query) else max(RERANKER_TOP_K, 16)
+            top_reranked = ranked_people[:top_limit]
             top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
