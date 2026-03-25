@@ -1,4 +1,5 @@
 import re
+import html
 import streamlit as st
 import uuid
 import copy
@@ -57,6 +58,24 @@ def _extract_source_certainty(text: str) -> tuple[str, str]:
     cleaned = (text[:match.start()] + text[match.end():]).strip()
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned, source_plain
+
+def _render_source_certainty_hover(source_certainty: str):
+    if not source_certainty:
+        return
+
+    count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
+    badge_text = count_match.group(1) if count_match else "i"
+    tooltip = html.escape(source_certainty)
+
+    st.markdown(
+        f"""
+        <div class='source-certainty-wrap'>
+            <span class='source-certainty-btn'>{badge_text}</span>
+            <div class='source-certainty-tooltip'>{tooltip}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
@@ -271,9 +290,11 @@ def render_chat_view():
         with st.chat_message(role, avatar=avatar):
             content = _strip_suggestions(message["content"])
             source_certainty = (message.get("source_certainty") or "").strip()
-            if source_certainty and "Source certainty:" not in content:
-                content = f"{content}\n\n> {source_certainty}"
+            content, content_source_certainty = _extract_source_certainty(content)
+            if not source_certainty and content_source_certainty:
+                source_certainty = content_source_certainty
             st.markdown(content)
+            _render_source_certainty_hover(source_certainty)
 
             if "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
@@ -350,6 +371,7 @@ def _process_user_query(query: str):
         st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{user_ts}</span>", unsafe_allow_html=True)
     
     with st.chat_message("assistant", avatar="assets/logo.png"):
+        extracted_source_certainty = ""
         try:
             with st.spinner("Thinking..."):
                 stream = generate_response(
@@ -360,20 +382,19 @@ def _process_user_query(query: str):
                 full_response = ""
                 for chunk in stream:
                     full_response += chunk
-                    if '|' in full_response:
-                        response_placeholder.markdown(full_response, unsafe_allow_html=True)
+                    stream_no_source, _ = _extract_source_certainty(full_response)
+                    if '|' in stream_no_source:
+                        response_placeholder.markdown(stream_no_source, unsafe_allow_html=True)
                     else:
-                        response_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
+                        response_placeholder.markdown(stream_no_source + "▌", unsafe_allow_html=True)
                 rendered_response = _strip_suggestions(full_response)
                 rendered_response_no_source, source_certainty = _extract_source_certainty(rendered_response)
-                if source_certainty:
-                    rendered_response = f"{rendered_response_no_source}\n\n> {source_certainty}"
-                response_placeholder.markdown(rendered_response, unsafe_allow_html=True)
+                response_placeholder.markdown(rendered_response_no_source, unsafe_allow_html=True)
+                _render_source_certainty_hover(source_certainty)
                 
             clean_response = _strip_suggestions(full_response)
             clean_no_source, extracted_source_certainty = _extract_source_certainty(clean_response)
-            if extracted_source_certainty:
-                clean_response = f"{clean_no_source}\n\n> {extracted_source_certainty}"
+            clean_response = clean_no_source
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})

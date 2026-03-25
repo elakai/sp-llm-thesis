@@ -343,6 +343,48 @@ def _is_people_list_query(query: str) -> bool:
         return False
     return _is_listing_query(q)
 
+def _is_curriculum_list_query(query: str) -> bool:
+    q = (query or "").lower()
+    curriculum_markers = [
+        "curriculum", "subject", "subjects", "course", "courses",
+        "semester", "year level", "year", "units", "prerequisite"
+    ]
+    if _detect_query_intent(q) != "curriculum" and not any(marker in q for marker in curriculum_markers):
+        return False
+    return _is_listing_query(q) or "all subjects" in q or "all courses" in q
+
+def _boost_curriculum_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
+    if not _is_curriculum_list_query(query):
+        return docs
+
+    boosted_queries = [
+        f"{query} complete curriculum all semesters all subjects",
+        f"{query} list all course codes titles units prerequisites",
+        "complete curriculum 1st semester 2nd semester intersession subjects",
+    ]
+
+    boosted_docs = list(docs)
+    curriculum_retriever = get_retriever(k=max(base_k, 50))
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(curriculum_retriever.invoke, boosted_queries))
+        for res in results:
+            boosted_docs.extend(res)
+    except Exception as e:
+        logger.warning(f"Curriculum-list retrieval boost failed: {e}")
+
+    boosted_docs = filter_to_program(boosted_docs, query)
+
+    seen = set()
+    deduped = []
+    for doc in boosted_docs:
+        key = hash(doc.page_content)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(doc)
+    return deduped
+
 def _boost_people_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
     if not _is_people_list_query(query):
         return docs
@@ -642,6 +684,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 sub_queries.append(variant)
 
     dynamic_k = get_dynamic_k(standalone_query)
+    is_curriculum_list_query = _is_curriculum_list_query(standalone_query)
+    if is_curriculum_list_query:
+        dynamic_k = max(dynamic_k, 40)
     if is_incomplete_input:
         dynamic_k = max(dynamic_k, 20)
     retriever = get_retriever(k=dynamic_k)
@@ -679,6 +724,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
     all_docs = _boost_people_list_docs(standalone_query, all_docs, dynamic_k)
+    all_docs = _boost_curriculum_list_docs(standalone_query, all_docs, dynamic_k)
 
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
@@ -738,8 +784,10 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
+        elif is_curriculum_list_query:
+            max_chunks = 24
         elif is_curriculum_query:
-            max_chunks = 8
+            max_chunks = 12
         else:
             max_chunks = 3
             
@@ -755,10 +803,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 if len(sorted_indices) > 1:
                     second_score = float(scores[sorted_indices[1]])
                 
-                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+                top_limit = max(RERANKER_TOP_K, 24) if is_curriculum_list_query else RERANKER_TOP_K
+                top_reranked = [hybrid_results[i] for i in sorted_indices[:top_limit]] 
             except Exception as e:
                 logger.error(f"Reranking failed: {e}")
-                top_reranked = hybrid_results[:RERANKER_TOP_K]
+                top_limit = max(RERANKER_TOP_K, 24) if is_curriculum_list_query else RERANKER_TOP_K
+                top_reranked = hybrid_results[:top_limit]
         else:
             top_reranked = []
 

@@ -53,10 +53,10 @@ button[kind="header"],
 
 /* Transparent sidebar toggle button */
 [data-testid="stSidebar"] .st-key-sidebar_toggle button {
-    background: transparent !important;
-    border: 1px solid transparent !important;
+    background: #ffa41c !important;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
     box-shadow: none !important;
-    color: #1f1f1f !important;
+    color: #ffffff !important;
     font-size: 1.33rem !important;
     line-height: 1 !important;
     padding: 0.25rem 0.4rem !important;
@@ -72,8 +72,10 @@ button[kind="header"],
 }
 
 [data-testid="stSidebar"] .st-key-sidebar_toggle button:hover {
-    background: rgba(255, 255, 255, 0.2) !important;
-    border-color: rgba(0, 0, 0, 0.08) !important;
+    background: #fff2d6 !important;
+    border-color: #ffe5b4 !important;
+    color: #FF8F1F !important;
+    box-shadow: none !important;
 }
 
 [class*="st-key-mobile_sidebar_toggle"] {
@@ -90,12 +92,20 @@ button[kind="header"],
     height: 40px !important;
     padding: 0 !important;
     border-radius: 10px !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    background: rgba(0, 0, 0, 0.78) !important;
+    border: 2px solid rgba(255, 255, 255, 0.3) !important;
+    background: #ffa41c !important;
     color: #ffffff !important;
     font-size: 1.15rem !important;
     line-height: 1 !important;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+    box-shadow: none !important;
+}
+
+[class*="st-key-mobile_sidebar_toggle"] button:hover,
+[class*="st-key-mobile_sidebar_toggle"] button:focus,
+[class*="st-key-mobile_sidebar_toggle"] button:active,
+[class*="st-key-mobile_sidebar_toggle"] button:focus-visible {
+    box-shadow: none !important;
+    outline: none !important;
 }
 
 /* Main content and bottom input adapt to sidebar state */
@@ -915,24 +925,58 @@ button[kind="header"],
     color: #fca5a5;
 }
 
-/* Source certainty blockquote: keep readable but visually subtle */
-[data-testid="stChatMessageAssistant"] blockquote {
-    opacity: 0.09 !important;
-    border-left: 1px solid rgba(171, 171, 171, 0.18) !important;
-    padding-left: 0.5rem !important;
+/* Source certainty hover badge */
+.source-certainty-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-top: 0.2rem;
+    margin-left: 0.1rem;
 }
 
-[data-testid="stChatMessageAssistant"] blockquote,
-[data-testid="stChatMessageAssistant"] blockquote p,
-[data-testid="stChatMessageAssistant"] blockquote span,
-[data-testid="stChatMessageAssistant"] blockquote strong {
-    font-size: 0.72rem !important;
-    line-height: 1.25 !important;
-    color: rgba(87, 86, 75, 0.28) !important;
+.source-certainty-btn {
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: rgba(255, 242, 214, 0.96);
+    background: rgba(32, 20, 0, 0.92);
+    border: 1px solid rgba(255, 183, 76, 0.55);
+    line-height: 1;
+    cursor: default;
 }
 
-[data-testid="stChatMessageAssistant"] blockquote strong {
-    font-weight: 400 !important;
+.source-certainty-tooltip {
+    position: absolute;
+    left: 1.35rem;
+    top: 50%;
+    transform: translateY(-50%);
+    min-width: 320px;
+    max-width: 540px;
+    padding: 0.72rem 0.9rem;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    line-height: 1.5;
+    color: rgba(255, 251, 173, 0.92);
+    background: rgba(8, 8, 8, 0.97);
+    border: 1px solid rgba(255, 196, 90, 0.35);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+    z-index: 20;
+}
+
+.source-certainty-wrap:hover .source-certainty-tooltip,
+.source-certainty-wrap:focus-within .source-certainty-tooltip {
+    opacity: 1;
+    visibility: visible;
 }
 
 /* Sources expander in assistant messages: intentionally subtle */
