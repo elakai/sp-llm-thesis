@@ -54,6 +54,8 @@ def _extract_source_certainty(text: str) -> tuple[str, str]:
 
     source_block = match.group(0).strip()
     source_plain = re.sub(r'^\s*>\s?', '', source_block, flags=re.MULTILINE).strip()
+    source_plain = re.sub(r'\*\*(.*?)\*\*', r'\1', source_plain)
+    source_plain = re.sub(r'\*(.*?)\*', r'\1', source_plain)
 
     cleaned = (text[:match.start()] + text[match.end():]).strip()
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

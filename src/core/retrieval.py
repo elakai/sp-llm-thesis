@@ -527,10 +527,14 @@ def _is_no_answer_response(text: str) -> bool:
     if not text:
         return False
     patterns = [
-        r"i couldn't find that in the available documents",
-        r"i don't have enough info to answer that confidently",
+        r"i\s*couldn['’]?t\s*find\s*that\s*in\s*the\s*available\s*documents",
+        r"i\s*do\s*not\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
+        r"i\s*don't\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
         r"not explicitly stated in the retrieved documents",
-        r"best to check with your department chair",
+        r"best\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
+        r"your\s*best\s*bet\s*is\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
+        r"department\s*chair\s*directly",
+        r"i couldn't find an explicit answer for that detail",
     ]
     lowered = text.lower()
     return any(re.search(p, lowered) for p in patterns)
