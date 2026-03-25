@@ -22,7 +22,6 @@ from src.config.constants import (
 )
 from src.config.logging_config import logger
 
-# ── NEW IMPORTS FROM REFACTOR ──
 from src.core.reranking import (
     hybrid_rerank, enforce_source_diversity, filter_to_program,
     filter_to_people_docs, boost_people_list_docs, rank_people_list_docs,
@@ -31,7 +30,7 @@ from src.core.reranking import (
 from src.core.response_formatting import (
     fix_markdown_tables, format_raw_links, remove_speculative_sentences,
     build_source_certainty_note, fallback_questions, build_no_answer_response,
-    _contains_markdown_table, _contains_speculation
+    is_no_answer_response, _contains_markdown_table, _contains_speculation
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,7 +148,8 @@ def _is_listing_query(query: str) -> bool:
 
 def _is_incomplete_query(query: str) -> bool:
     q_lower = (query or "").strip().lower()
-    if re.search(r'\b[A-Z]{1,3}\d{3}\b', query.upper()): return False
+    
+    if re.search(r'\b[a-zA-Z]{1,5}\s*\d{3}\b', query): return False
         
     tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
     if len(tokens) <= 2: return True
@@ -248,7 +248,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             if variant not in sub_queries:
                 sub_queries.append(variant)
 
-    dynamic_k = max(get_dynamic_k(standalone_query), 20) if is_incomplete_input else get_dynamic_k(standalone_query)
+    has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}\s*\d{3}\b', standalone_query))
+    has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
+    
+    base_k = get_dynamic_k(standalone_query)
+    dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
@@ -268,17 +272,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
-    is_curriculum_query = any(
+    is_curriculum_query = has_course_code or any(
         kw in standalone_query.lower() for kw in [
             'curriculum', 'subject', 'course', 'year', 'semester', 'units',
             'prerequisite', 'schedule', 'ojt', 'practicum', 'internship',
             'immersion', 'operating systems', 'elective', 'track'
         ]
     )
+    
     is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
     is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
 
     top_score, second_score = float("-inf"), float("-inf")
+    
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
     if _detect_query_intent(standalone_query) == "people":
@@ -333,7 +339,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     if is_facility_query:
         already_has_directory = any('directory' in doc.metadata.get('source', '').lower() or 'campus' in doc.metadata.get('source', '').lower() for doc in top_reranked)
         if not already_has_directory:
-            building_code_match = re.search(r'\b([A-Z]{1,3})\d{3}\b', standalone_query.upper())
+            building_code_match = re.search(r'\b([A-Z]{1,3})\s*\d{3}\b', standalone_query.upper())
             if building_code_match:
                 directory_query = f"{building_code_match.group(1)} building rooms directory"
             else:
@@ -450,6 +456,18 @@ Hard rules for suggested questions:
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
+
+        # ── UX FIX: INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
+        if is_no_answer_response(final_verified_response):
+            final_fallback = build_no_answer_response(standalone_query)
+            add_to_cache(standalone_query, final_fallback)
+            
+            chunk_size = 40
+            for i in range(0, len(final_fallback), chunk_size):
+                yield final_fallback[i:i+chunk_size]
+                time.sleep(STREAM_DELAY) 
+            return
+        # ──────────────────────────────────────────────────────────
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
