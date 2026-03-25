@@ -59,23 +59,27 @@ def _extract_source_certainty(text: str) -> tuple[str, str]:
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned, source_plain
 
-def _render_source_certainty_hover(source_certainty: str):
-    if not source_certainty:
+def _render_message_meta(source_certainty: str, timestamp: str = ""):
+    if not source_certainty and not timestamp:
         return
 
-    count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
-    badge_text = count_match.group(1) if count_match else "i"
-    tooltip = html.escape(source_certainty)
+    certainty_html = ""
+    if source_certainty:
+        count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
+        badge_text = count_match.group(1) if count_match else "i"
+        tooltip = html.escape(source_certainty)
+        certainty_html = (
+            f"<div class='source-certainty-wrap'>"
+            f"<span class='source-certainty-btn'>{badge_text}</span>"
+            f"<div class='source-certainty-tooltip'>{tooltip}</div>"
+            f"</div>"
+        )
 
-    st.markdown(
-        f"""
-        <div class='source-certainty-wrap'>
-            <span class='source-certainty-btn'>{badge_text}</span>
-            <div class='source-certainty-tooltip'>{tooltip}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    timestamp_html = ""
+    if timestamp:
+        timestamp_html = f"<span class='message-timestamp-inline'>{html.escape(timestamp)}</span>"
+
+    st.markdown(f"<div class='message-meta-row'>{certainty_html}{timestamp_html}</div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HISTORY VIEW
@@ -294,9 +298,9 @@ def render_chat_view():
             if not source_certainty and content_source_certainty:
                 source_certainty = content_source_certainty
             st.markdown(content)
-            _render_source_certainty_hover(source_certainty)
-
-            if "timestamp" in message:
+            if is_assistant:
+                _render_message_meta(source_certainty, message.get("timestamp", ""))
+            elif "timestamp" in message:
                 st.markdown(f"<span style='font-size: 0.8em; color: gray;'>{message['timestamp']}</span>", unsafe_allow_html=True)
 
             if is_assistant and message.get("suggestions"):
@@ -390,7 +394,7 @@ def _process_user_query(query: str):
                 rendered_response = _strip_suggestions(full_response)
                 rendered_response_no_source, source_certainty = _extract_source_certainty(rendered_response)
                 response_placeholder.markdown(rendered_response_no_source, unsafe_allow_html=True)
-                _render_source_certainty_hover(source_certainty)
+                _render_message_meta(source_certainty)
                 
             clean_response = _strip_suggestions(full_response)
             clean_no_source, extracted_source_certainty = _extract_source_certainty(clean_response)
