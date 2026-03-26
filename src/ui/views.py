@@ -54,6 +54,8 @@ def _extract_source_certainty(text: str) -> tuple[str, str]:
 
     source_block = match.group(0).strip()
     source_plain = re.sub(r'^\s*>\s?', '', source_block, flags=re.MULTILINE).strip()
+    source_plain = re.sub(r'\*\*(.*?)\*\*', r'\1', source_plain)
+    source_plain = re.sub(r'\*(.*?)\*', r'\1', source_plain)
 
     cleaned = (text[:match.start()] + text[match.end():]).strip()
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -65,6 +67,8 @@ def _render_message_meta(source_certainty: str, timestamp: str = ""):
 
     certainty_html = ""
     if source_certainty:
+        source_certainty = re.sub(r'\*\*(.*?)\*\*', r'\1', source_certainty)
+        source_certainty = source_certainty.replace('*', '')
         count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
         badge_text = count_match.group(1) if count_match else "i"
         tooltip = html.escape(source_certainty)
