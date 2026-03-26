@@ -797,7 +797,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
-        elif is_curriculum_list_query:
+        elif _is_curriculum_list_query(standalone_query):  # <-- ADDED FUNCTION CALL
             max_chunks = 24
         elif is_curriculum_query:
             max_chunks = 12
@@ -979,18 +979,12 @@ Hard rules for suggested questions:
             logger.warning("🛡️ Python Kill Switch Triggered: LLM attempted to speculate.")
             final_verified_response = "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor directly to avoid any academic penalties!"
         # ─────────────────────────────────────────────────────
-
-        if _contains_speculation(final_verified_response):
-            cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
-            final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
-
         # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
 
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
 
-        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
         if is_no_answer_response(final_verified_response):
             final_fallback = build_no_answer_response(standalone_query)
             add_to_cache(standalone_query, final_fallback)
