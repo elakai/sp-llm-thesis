@@ -65,14 +65,19 @@ def fallback_questions(source_text: str, original_query: str, max_items: int = 3
     return deduped
 
 def is_no_answer_response(text: str) -> bool:
-    if not text: return True
+    if not text: return False
+    
+    # Only match if the ENTIRE response is a no-answer, not if it contains these phrases
+    # Check that the response is short AND contains the pattern
+    if len(text) > 400: return False  
+    
     lowered = text.lower()
     patterns = [
-        "i couldn't find that",
+        "i couldn't find that in the available documents",
         "i couldn't find a confident answer",
-        "i couldn't find an explicit answer",
+        "i don't have enough info to answer that confidently",
+        "not explicitly stated in the retrieved documents",
         "best to check with your department chair",
-        "not explicitly stated"
     ]
     return any(p in lowered for p in patterns)
 
@@ -88,38 +93,15 @@ def build_no_answer_response(query: str = "") -> str:
         "If you've tried rephrasing and still can't find it, your department chair is the best person to ask directly!"
     )
 
-def is_no_answer_response(text: str) -> bool:
-    if not text:
-        return False
-    patterns = [
-        r"i\s*couldn['’]?t\s*find\s*that\s*in\s*the\s*available\s*documents",
-        r"i\s*do\s*not\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
-        r"i\s*don't\s*have\s*enough\s*info\s*to\s*answer\s*that\s*confidently",
-        r"not explicitly stated in the retrieved documents",
-        r"best\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
-        r"your\s*best\s*bet\s*is\s*to\s*check\s*with\s*your\s*(respective\s*)?department\s*chair",
-        r"department\s*chair\s*directly",
-        r"i couldn't find an explicit answer for that detail",
-    ]
-    lowered = text.lower()
-    return any(re.search(pattern, lowered) for pattern in patterns)
-
 def _strip_decorative_dash_rows(t: str) -> str:
     cleaned = []
     for line in t.split('\n'):
         stripped = line.strip()
-        # Ensure it's actually a table row before processing
         if stripped.count('|') >= 2:
             inner = stripped[stripped.find('|')+1 : stripped.rfind('|')]
             cells = [c.strip() for c in inner.split('|')]
-            
-            # Check if EVERY cell is just hyphens, en-dashes, em-dashes, or spaces
             is_decorative = all(re.sub(r'[-—–\s]', '', cell) == '' for cell in cells)
-            
-            # If the row is purely decorative dashes, skip it
-            if is_decorative:
-                continue
-                
+            if is_decorative: continue
         cleaned.append(line)
     return '\n'.join(cleaned)
 
@@ -154,20 +136,25 @@ def fix_markdown_tables(text: str) -> str:
     return '\n'.join(fixed)
 
 def format_raw_links(text: str) -> str:
-    # ── FIXED: Removed the single quote exclusion so it catches Borrower's Form ──
-    raw_url_pattern = re.compile(r'(?<!\()(https?://[^\s\)\]\"]+)')
+    raw_url_pattern = re.compile(
+        r'(?<!\()'           
+        r'(?<!\]\()'         
+        r'(https?://[^\s\)\]\,<>]+)'
+    )
     def replace_url(match):
         url = match.group(1)
         
-        # Prevent trailing punctuation from sneaking into the URL
-        while url and url[-1] in ['.', ',', ';', ':']:
+        while url and url[-1] in ['.', ',', ';', ':', "'", '"']:
             url = url[:-1]
             
         pos = match.start()
-        if re.search(r'\[[^\]]*\]\($', text[max(0, pos-50):pos]): return url 
+        preceding = text[max(0, pos-100):pos]
+        
+        if re.search(r'\[[^\]]*\]\($', preceding): return url
+        if re.search(r'(__|\*\*)[^\_\*]+(__|\*\*)\s*$', preceding): return url
             
         if 'supabase' in url or 'storage' in url: label = 'Download here'
-        elif 'form' in url or 'docs.google' in url: label = 'Access the form here'
+        elif 'form' in url.lower() or 'docs.google' in url: label = 'Access the form here'
         elif 'drive.google' in url: label = 'View document here'
         else: label = 'View link here'
         return f'[{label}]({url})'
