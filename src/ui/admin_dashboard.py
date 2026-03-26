@@ -273,7 +273,7 @@ def render_admin_view():
                     display_table = display_table[ordered_final_cols]
                     
                     if 'Time' in display_table.columns:
-                        display_table['Time'] = pd.to_datetime(display_table['Time']).dt.strftime('%b %d, %Y • %I:%M %p')
+                        display_table['Time'] = pd.to_datetime(display_table['Time'], utc=True).dt.tz_convert('Asia/Manila').dt.strftime('%b %d, %Y • %I:%M %p')
                     
                     html_table = generate_saas_table_html(display_table.head(500), is_scrollable=True)
                     st.markdown(html_table, unsafe_allow_html=True)
@@ -572,7 +572,7 @@ def render_admin_view():
                         failed_table = failed_table[failed_ordered_cols]
                         
                         if 'Time' in failed_table.columns:
-                            failed_table['Time'] = pd.to_datetime(failed_table['Time']).dt.strftime('%b %d, %Y • %I:%M %p')
+                            failed_table['Time'] = pd.to_datetime(failed_table['Time'], utc=True).dt.tz_convert('Asia/Manila').dt.strftime('%b %d, %Y • %I:%M %p')
                         
                         ROWS_PER_PAGE = 8
                         total_rows = len(failed_table)
@@ -700,7 +700,7 @@ def render_admin_view():
                         import plotly.graph_objects as go
 
                         df_plot = df_runs.sort_values(by="run_at", ascending=True)
-                        df_plot['run_at'] = pd.to_datetime(df_plot['run_at']).dt.strftime('%b %d, %H:%M')
+                        df_plot['run_at'] = pd.to_datetime(df_plot['run_at'], utc=True).dt.tz_convert('Asia/Manila').dt.strftime('%b %d, %H:%M')
 
                         fig_eval = go.Figure()
                         
