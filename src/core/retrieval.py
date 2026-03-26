@@ -246,7 +246,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             if variant not in sub_queries:
                 sub_queries.append(variant)
 
-    has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}\s*\d{3}\b', standalone_query))
+    # ── FIX: Widen the net to catch hyphens so Pinecone fetches the doc for the reranker ──
+    has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
     
     base_k = get_dynamic_k(standalone_query)
@@ -280,7 +281,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
     is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
-    is_prerequisite_query = any(kw in standalone_query.lower() for kw in ['prerequisite', 'pre-requisite', 'prereq', 'required before'])
+    # ── FIX: Broaden the trigger to catch conversational phrasing ──
+    is_prerequisite_query = any(kw in standalone_query.lower() for kw in [
+        'prerequisite', 'pre-requisite', 'prereq', 'required before', 
+        'failed', 'can i take', 'allowed to take'
+    ])
 
     top_score, second_score = float("-inf"), float("-inf")
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
