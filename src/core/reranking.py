@@ -17,10 +17,8 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
         bm25 = BM25Okapi(tokenized_docs)
         bm25_scores = bm25.get_scores(_tokenize(query))
 
-        # ── EXACT MATCH BOOSTING ──
-        # Extract course codes (e.g., QCPP512, SOCS104) and normalize spaces
-        course_codes = [c.replace(" ", "") for c in re.findall(r'\b[a-zA-Z]{2,5}\s*\d{3}\b', query)]
-        # Terms that dense vectors typically fail to prioritize
+        # ── FIX: Regex now explicitly catches hyphens AND spaces ──
+        course_codes = [re.sub(r'[-\s]', '', c) for c in re.findall(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', query)]
         high_value_terms = [t for t in ['intersession', 'summer', 'prerequisite'] if t in query.lower()]
 
         ranked = []
@@ -28,13 +26,11 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
             position_score = (len(docs) - i) * POSITIONAL_SCORE_WEIGHT
             boost = 0.0
             
-            # Apply +50 points if the chunk contains the exact course code
-            content_norm = doc.page_content.lower().replace(" ", "")
+            content_norm = doc.page_content.lower().replace(" ", "").replace("-", "")
             for code in course_codes:
-                if code in content_norm:
+                if code.lower() in content_norm:
                     boost += 50.0  
                     
-            # Apply +20 points if it contains highly specific curriculum terms
             content_lower = doc.page_content.lower()
             for term in high_value_terms:
                 if term in content_lower:
@@ -66,9 +62,14 @@ def filter_to_program(docs: List[Document], query: str) -> List[Document]:
         'environmental management': 'em', 'bs em': 'em',
     }
     q = query.lower()
-    matched_program = next((code for kw, code in PROGRAM_KEYWORDS.items() if kw in q), None)
-    if not matched_program: return docs
-    return [d for d in docs if matched_program in d.metadata.get("source", "").lower()]
+    
+    # ── FIX: Find ALL matching programs to prevent cross-program collisions ──
+    matched_programs = [code for kw, code in PROGRAM_KEYWORDS.items() if kw in q]
+    
+    if not matched_programs: 
+        return docs
+        
+    return [d for d in docs if any(mp in d.metadata.get("source", "").lower() for mp in matched_programs)]
 
 def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
     if not docs: return []

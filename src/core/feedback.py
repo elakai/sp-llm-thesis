@@ -7,7 +7,6 @@ from src.config.logging_config import logger
 
 def log_conversation(query, response, user_email, session_id, context, metrics=None):
     """Saves the chat interaction, context, and performance metrics to Supabase."""
-    # 1. Guardrail: Don't log greetings or errors
     if any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
         return
 
@@ -33,30 +32,26 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
     except Exception as e:
         logger.error(f"Backend Logging Error: {e}")
 
-def save_feedback(query: str, response: str, rating: str, user_id: str = "Anonymous", session_id: str = None):
-    """Updates the most recent log entry for this user/query pair with a rating.
-
-    Pass ``session_id`` when available so the update targets a single session
-    rather than every row where the same query text appears.
-    """
+# ── FIX: Strictly enforced session_id and user_email for secure updates ──
+def save_feedback(query: str, response: str, rating: str, session_id: str, user_email: str):
+    """Updates the specific log entry for this session with a rating."""
     try:
-        data = {"rating": rating}
-        query_builder = (
-            supabase.table("chat_logs")
-            .update(data)
-            .eq("user_email", user_id)
-            .eq("query", query)
-        )
-        if session_id:
-            query_builder = query_builder.eq("session_id", session_id)
-        query_builder.execute()
+        if not session_id or not user_email:
+            logger.error("Feedback rejected: Missing session_id or user_email")
+            return False
+
+        supabase.table("chat_logs") \
+            .update({"rating": rating}) \
+            .eq("session_id", session_id) \
+            .eq("user_email", user_email) \
+            .eq("query", query) \
+            .execute()
         return True
     except Exception as e:
         logger.error(f"Failed to save feedback: {e}")
         return False
 
 def delete_conversation(session_id: str, user_email: str):
-    """Deletes a conversation from the database by session_id."""
     try:
         if not session_id or not user_email:
             return False
@@ -72,7 +67,6 @@ def delete_conversation(session_id: str, user_email: str):
         return False
 
 def load_chat_history(user_email: str):
-    """Reconstructs past conversations grouped by session for the UI."""
     try:
         if not user_email: return []
         
@@ -82,8 +76,7 @@ def load_chat_history(user_email: str):
             .order("created_at", desc=False) \
             .execute()
         
-        if not response.data:
-            return []
+        if not response.data: return []
 
         sessions = defaultdict(list)
         session_order = [] 
