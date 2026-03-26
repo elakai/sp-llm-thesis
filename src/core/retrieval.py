@@ -730,6 +730,16 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
     
+    # ── NEW: DENSE VECTOR QUERY ENRICHMENT ──
+    # Forces Pinecone's vector math to look specifically at curriculum documents
+    if has_course_code:
+        course_match = re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query)
+        if course_match:
+            course_expansion = f"{course_match.group(0)} curriculum course subject prerequisite units"
+            if course_expansion not in sub_queries:
+                sub_queries.append(course_expansion)
+    # ────────────────────────────────────────
+
     base_k = get_dynamic_k(standalone_query)
     dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
     retriever = get_retriever(k=dynamic_k)
