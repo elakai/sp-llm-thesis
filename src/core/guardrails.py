@@ -60,12 +60,10 @@ def _count_table_rows(text: str) -> int:
     )
 
 def verify_answer(query: str, context: str, draft_answer: str) -> str:
-    """Critic Persona: Verifies the draft against the retrieved context."""
     critic_llm = get_critic_llm()
     trimmed_context = trim_context(context)
 
-    # Use f-string directly — avoids ChatPromptTemplate variable parsing issues
-    full_prompt = f"""You are a Quality Reviewer for AXIsstant, an AI assistant for Ateneo de Naga University's CSEA Department.
+    system_prompt = """You are a Quality Reviewer for AXIsstant, an AI assistant for Ateneo de Naga University's CSEA Department.
 
 Your job is to review a drafted answer and decide if it is faithful to the retrieved context.
 
@@ -82,38 +80,39 @@ STRICT OUTPUT RULES:
 - If the draft accurately reflects the context: copy and output the draft exactly as written, with no additions.
 - NEVER truncate, shorten, or summarize tables. If the draft has a 15-row table, your output must also have all 15 rows.
 - If the draft contains fabricated specific details: rewrite it removing only those fabricated details.
+- 🔴 SPECULATION KILL SWITCH: If the drafted answer contains words like "assume", "assuming", "implies", "if we assume", or "we interpret this", it means the AI is guessing missing variables. YOU MUST REJECT IT COMPLETELY. Output ONLY this exact sentence: "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor!"
 - If the context is completely unrelated to the question: output only this: "I couldn't find that in the available documents — your best bet is to check with your respective department chair directly!"
 - NEVER write words like SUPPORTED, PARTIALLY SUPPORTED, or NOT SUPPORTED in your output.
 - NEVER explain your decision. Just output the final answer directly.
 
 CRITICAL RULES:
-- WHEN IN DOUBT, PASS THE DRAFT THROUGH. Your default action should be to approve, not reject.
-- Names, titles, positions (e.g. Dean, Chairperson), and credentials mentioned in the context ARE facts — do NOT reject answers that cite them.
+- WHEN IN DOUBT, PASS THE DRAFT THROUGH. Your default action should be to approve, not reject (unless the Kill Switch is triggered).
+- Names, titles, positions, and credentials mentioned in the context ARE facts — do NOT reject answers that cite them.
 - Never combine a draft answer AND a sorry message in the same output.
-- Thesis abstracts, titles, and author names found in the context ARE valid verifiable facts.
-- Paraphrasing of context content is NOT a hallucination. Only flag invented facts.
-- If you are unsure whether a claim is supported, pass the draft through verbatim without modification.
 
 Context:
-{trimmed_context}
+{trimmed_context}"""
 
-User Query:
-{query}
+    human_prompt = "User Query:\n{query}\n\nDrafted Answer:\n{draft_answer}\n\nVerified Answer:"
 
-Drafted Answer:
-{draft_answer}
-
-Verified Answer:"""
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", human_prompt)
+    ])
 
     try:
-        response = critic_llm.invoke(full_prompt)
+        messages = prompt_template.format_messages(
+            trimmed_context=trimmed_context,
+            query=query,
+            draft_answer=draft_answer
+        )
+        response = critic_llm.invoke(messages)
         result = response.content.strip() if response and response.content else None
 
         if not result:
             logger.warning("Critic returned empty response. Passing draft through.")
             return draft_answer
             
-        # Table row truncation guard
         draft_rows = _count_table_rows(draft_answer)
         result_rows = _count_table_rows(result)
         if draft_rows > 0 and result_rows < draft_rows * 0.8:

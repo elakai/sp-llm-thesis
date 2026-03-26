@@ -1,73 +1,49 @@
+import re
 from src.config.constants import GREETING_KEYWORDS, OFF_TOPIC_KEYWORDS
 from src.config.logging_config import logger
 
-
 def route_query_fast(query: str) -> str:
-    """Instant keyword-based intent classification."""
     q = query.lower().strip()
-    if any(q.startswith(g) or q == g for g in GREETING_KEYWORDS):
+    
+    # ── FIX: Strip punctuation so "Hi, what is CPE?" isn't flagged as a greeting ──
+    q_clean = re.sub(r'[^\w\s]', '', q).strip()
+    
+    if q_clean in GREETING_KEYWORDS:
         return "greeting"
+        
     if any(kw in q for kw in OFF_TOPIC_KEYWORDS):
         return "off_topic"
+        
     return "search"
 
-
 def get_dynamic_k(query: str) -> int:
-    """Returns retrieval depth based on query complexity."""
     q = query.lower()
 
-    # Curriculum/subject queries need more chunks to cover all year levels
-    curriculum_keywords = [
-        'curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite'
-    ]
-    if any(kw in q for kw in curriculum_keywords):
-        return 20  # Need more chunks to cover all year levels
+    curriculum_keywords = ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite']
+    if any(kw in q for kw in curriculum_keywords): return 20 
 
-    # Comparison or multi-topic queries need more context
-    complex_signals = [
-        " difference ", " compare ", " vs ", " versus ",
-        " list all ", " what are all ",
-    ]
-    if any(signal in q for signal in complex_signals):
+    complex_signals = [" difference ", " compare ", " vs ", " versus ", " list all ", " what are all "]
+    if any(signal in q for signal in complex_signals): return 15
+
+    if any(kw in q for kw in ["thesis", "research", "manuscript", "capstone"]): return 15
+
+    if any(kw in q for kw in ["dean", "chairperson", "chair", "faculty", "professor", "department", "who is", "who are", "staff", "organizational", "org structure", "instructor", "engr", "lab technician", "full-time", "part-time", "is he", "is she", "is the"]):
         return 15
 
-    # Thesis searches benefit from more results
-    if any(kw in q for kw in ["thesis", "research", "manuscript", "capstone"]):
-        return 15
-
-    # Organizational / people queries need broader retrieval
-    if any(kw in q for kw in [
-        "dean", "chairperson", "chair", "faculty", "professor",
-        "department", "who is", "who are", "staff", "organizational",
-        "org structure", "instructor", "engr", "lab technician",
-        "full-time", "part-time", "is he", "is she", "is the"
-    ]):
-        return 15
-
-    # Facility/location queries
-    if any(kw in q for kw in [
-        'room', 'building', 'floor', 'where is', 'where',
-        'location', 'located', 'lab', 'office', 'campus', 'facility'
-    ]):
+    if any(kw in q for kw in ['room', 'building', 'floor', 'where is', 'where', 'location', 'located', 'lab', 'office', 'campus', 'facility']):
         return 20
 
-    # Download/link queries
-    if any(kw in q for kw in [
-        'download', 'link', 'pdf', 'get the', 'access', 'where can i'
-    ]):
+    if any(kw in q for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i']):
         return 20
 
-    # Default for simple factual questions
     return 12
 
-
 def route_query(query: str) -> tuple:
-    """
-    Main router.  Returns (intent, filters, content_type, category_filter).
-    Metadata filtering is disabled — the flat document structure makes
-    keyword-based filters unreliable (false positives cause 0-result queries).
-    Retrieval depth is now handled by get_dynamic_k() instead.
-    """
     intent = route_query_fast(query)
     logger.info(f"Router | Intent: {intent}")
+    
+    # ── FIX: Stop retrieving chunks for non-search intents ──
+    if intent in ["greeting", "off_topic"]:
+        return intent, None, "none", None
+        
     return intent, None, "all", None

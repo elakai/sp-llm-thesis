@@ -66,10 +66,25 @@ _CONTEXT_TRIGGERS = re.compile(
 def format_chat_history(messages: List[Dict[str, str]]) -> str:
     formatted_history = []
     history_to_process = messages[1:] if len(messages) > 1 else []
-    for msg in history_to_process[-6:]: 
+    
+    # ── FIX: Only keep the last 4 messages (2 conversation turns) to prevent context bloat
+    for msg in history_to_process[-4:]: 
         role = "User" if msg["role"] == "user" else "Assistant"
         content = msg["content"].replace("{", "{{").replace("}", "}}")
+        
+        # ── FIX: Truncate massive markdown tables from the assistant's memory ──
+        # This prevents the LLM from getting "lazy" and regurgitating old tables
+        if role == "Assistant" and "|" in content and "---" in content:
+            # Find where the table starts and truncate the message there
+            table_start = content.find("|")
+            content = content[:table_start] + "\n... [Previous table truncated to preserve memory]"
+            
+        # Hard cap the memory string length to prevent context anchoring
+        if len(content) > 500 and role == "Assistant":
+            content = content[:500] + "..."
+
         formatted_history.append(f"{role}: {content}")
+        
     return "\n".join(formatted_history) if formatted_history else "No previous context."
 
 def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> str:
@@ -128,7 +143,6 @@ def add_to_cache(query: str, response: str):
 def invalidate_cache():
     GLOBAL_CACHE.clear() 
     logger.info("🧹 Semantic cache invalidated.")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. INTENT DETECTION & QUERY BUILDING
@@ -506,19 +520,11 @@ def _detect_query_intent(query: str) -> str:
     def has_any(words): return any(word in tokens for word in words)
     def has_phrases(phrases): return any(phrase in q_lower for phrase in phrases)
 
-    if has_any({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
-        return "location"
-    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
-        return "curriculum"
-    people_word_hit = has_any({"who", "faculty", "chair", "chairperson", "dean", "professor", "staff", "instructor"})
-    people_phrase_hit = has_phrases(["chairperson", "chairpersons", "department chair", "department chairs", "faculty list"])
-    people_stem_hit = any(token.startswith("chair") for token in tokens)
-    if people_word_hit or people_phrase_hit or people_stem_hit:
-        return "people"
-    if has_any({"download", "link", "pdf", "form", "access"}) or has_phrases(["google form", "download link"]):
-        return "download"
-    if has_any({"policy", "rule", "guideline", "procedure", "manual"}) or has_phrases(["dress code"]):
-        return "policy"
+    if has_any({"where", "room", "building", "located", "floor", "lab", "office", "directory", "saan", "nasaan"}): return "location"
+    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}): return "curriculum"
+    if has_any({"who", "faculty", "chair", "dean", "professor", "staff", "instructor", "sino"}) or has_phrases(["department chair", "faculty list"]): return "people"
+    if has_any({"download", "link", "pdf", "form", "access"}) or has_phrases(["google form"]): return "download"
+    if has_any({"policy", "rule", "guideline", "procedure", "manual"}) or has_phrases(["dress code"]): return "policy"
     return "general"
 
 def _is_listing_query(query: str) -> bool:
@@ -649,7 +655,6 @@ def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN GENERATOR PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -664,20 +669,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
-    normalized_query = _normalize_lab_aliases(standalone_query)
-    if normalized_query != standalone_query:
-        logger.info(f"Alias normalized: '{standalone_query}' -> '{normalized_query}'")
-        standalone_query = normalized_query
 
-    if _is_custodian_list_query(standalone_query):
-        roster = _load_custodian_roster_from_markdown()
-        if roster:
-            direct_answer = _format_custodian_roster_response(roster)
-            for word in direct_answer.split():
-                yield word + " "
-                time.sleep(0.01)
-            return
-
+    def _normalize_course_codes(text):
+        return re.sub(r'\b([a-zA-Z]{2,5})[-\s]*(\d{3})\b', lambda m: f"{m.group(1).upper()}{m.group(2)}", text)
+    
+    standalone_query = _normalize_course_codes(standalone_query)
+    # ───────────────────────────────────────────────────────────────
+    
     is_incomplete_input = _is_incomplete_query(standalone_query)
     
     if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query):
@@ -728,12 +726,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             if variant not in sub_queries:
                 sub_queries.append(variant)
 
-    dynamic_k = get_dynamic_k(standalone_query)
-    is_curriculum_list_query = _is_curriculum_list_query(standalone_query)
-    if is_curriculum_list_query:
-        dynamic_k = max(dynamic_k, 40)
-    if is_incomplete_input:
-        dynamic_k = max(dynamic_k, 20)
+    # ── FIX: Widen the net to catch hyphens so Pinecone fetches the doc for the reranker ──
+    has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query))
+    has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
+    
+    base_k = get_dynamic_k(standalone_query)
+    dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
@@ -752,7 +750,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
-    has_course_code = bool(re.search(r"\b[A-Z]{2,5}\s*\d{3}[A-Z]?\b", standalone_query.upper()))
+    # ── ADD THIS ONE LINE HERE TO MAKE PROGRAM FILTERING UNIVERSAL ──
+    latest_per_source = filter_to_program(latest_per_source, standalone_query)
+    # ────────────────────────────────────────────────────────────────
     
     is_curriculum_query = has_course_code or any(
         kw in standalone_query.lower() for kw in [
@@ -762,11 +762,17 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         ]
     )
     
-    is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
+    is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects', 'sum', 'total', 'count'])
+    
     is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
+    
+    is_prerequisite_query = any(kw in standalone_query.lower() for kw in ['prerequisite', 'pre-requisite', 'prereq', 'required before', 'failed', 'can i take', 'allowed to take', 'kailangan'])
+
+    is_facility_query = any(
+        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
+    )
 
     top_score, second_score = float("-inf"), float("-inf")
-    
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
     if _detect_query_intent(standalone_query) == "people":
@@ -816,13 +822,23 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         else:
             top_reranked = []
 
-    if _is_people_list_query(standalone_query):
-        people_pool = filter_to_people_docs(prefer_latest_per_source(list(unique_docs_map.values())), standalone_query)
-        people_pool = _boost_people_list_docs(standalone_query, people_pool, dynamic_k)
-        ranked_people = _rank_people_list_docs(people_pool, standalone_query)
-        if ranked_people:
-            top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
-            top_score = max(top_score, 5.0)
+    # ── DYNAMIC PREREQUISITE INJECTION ──
+    if is_prerequisite_query:
+        stop_words = r'\b(what|is|the|for|of|in|bs|cpe|ece|ce|arch|em|bio|math|prerequisite|pre-requisite|prereq|subject|course|required|before)\b'
+        subject_terms = re.sub(stop_words, '', standalone_query.lower()).strip()
+        
+        if len(subject_terms) > 3:
+            prereq_retriever = get_retriever(k=15)
+            prereq_docs = prereq_retriever.invoke(f"{subject_terms} prerequisite curriculum")
+            prereq_filtered = prefer_latest_per_source(prereq_docs)
+            
+            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            for doc in prereq_filtered:
+                if hash(doc.page_content) not in existing_hashes:
+                    top_reranked.append(doc)
+                    existing_hashes.add(hash(doc.page_content))
+                    
+            if top_reranked: top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
@@ -835,7 +851,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         if top_reranked: top_score = max(top_score, 5.0)
 
     is_facility_query = any(
-        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'campus', 'facility', 'location of']
+        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
     )
 
     if is_facility_query:
@@ -881,9 +897,10 @@ Answer the question using ONLY the context below.
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — count carefully, and give a definitive answer. 
 11. **MULTIPLE TABLES**: Give each table a clear bold label above it.
 12. **LINKS**: Never paste raw URLs. Always format links as descriptive markdown like [Download the official curriculum here](url).
-13. **ROOM CODES**: When the user asks about a room like "D412", "AL112", or "EB111", look up the building prefix in the campus directory in the context. "D" = Fr. Francis Dolan SJ Building, "AL" = Godofredo Alingal SJ Building, "EB" = Engineering Building. Always decode the building name, floor number, and room number for the user. Only use acronyms confirmed in the context.
-14. **NO SPECULATION**: Never guess or infer missing details. Do not use speculative words like "likely", "possibly", "probably", "might", or "could be".
+13. **ROOM CODES**: When the user asks about a room, look up the building prefix in the campus directory in the context. Always decode the building name.
+14. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
 15. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
+16. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
 
 **Context:**
 {context}
@@ -910,7 +927,7 @@ Hard rules for suggested questions:
 
     try:
         is_protected_query = (
-            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input
+            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input or is_prerequisite_query
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -955,11 +972,25 @@ Hard rules for suggested questions:
 
         if not final_verified_response: final_verified_response = draft_response
 
+        # ── NEW: DETERMINISTIC ANTI-SPECULATION KILL SWITCH ──
+        # If the LLM disobeys the prompt and tries to assume missing variables, Python kills it.
+        speculation_triggers = r'\b(assume|assuming|assumed|infer|inferred|let\'s say|hypothetically)\b'
+        if re.search(speculation_triggers, final_verified_response, re.IGNORECASE):
+            logger.warning("🛡️ Python Kill Switch Triggered: LLM attempted to speculate.")
+            final_verified_response = "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor directly to avoid any academic penalties!"
+        # ─────────────────────────────────────────────────────
+
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
 
-        # ── UX FIX: INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
+        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
+
+        if _contains_speculation(final_verified_response):
+            cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
+            final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
+
+        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
         if is_no_answer_response(final_verified_response):
             final_fallback = build_no_answer_response(standalone_query)
             add_to_cache(standalone_query, final_fallback)
@@ -969,7 +1000,6 @@ Hard rules for suggested questions:
                 yield final_fallback[i:i+chunk_size]
                 time.sleep(STREAM_DELAY) 
             return
-        # ──────────────────────────────────────────────────────────
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
