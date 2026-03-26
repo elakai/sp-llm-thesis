@@ -63,9 +63,12 @@ def filter_to_program(docs: List[Document], query: str) -> List[Document]:
     }
     q = query.lower()
     
-    # ── FIX: Find ALL matching programs to prevent cross-program collisions ──
-    matched_programs = [code for kw, code in PROGRAM_KEYWORDS.items() if kw in q]
-    
+    # ── FIX: Use Regex Word Boundaries (\b) to stop "ce" from matching inside "cpe" ──
+    matched_programs = []
+    for kw, code in PROGRAM_KEYWORDS.items():
+        if re.search(rf'\b{re.escape(kw)}\b', q):
+            matched_programs.append(code)
+            
     if not matched_programs: 
         return docs
         

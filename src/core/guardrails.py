@@ -80,17 +80,15 @@ STRICT OUTPUT RULES:
 - If the draft accurately reflects the context: copy and output the draft exactly as written, with no additions.
 - NEVER truncate, shorten, or summarize tables. If the draft has a 15-row table, your output must also have all 15 rows.
 - If the draft contains fabricated specific details: rewrite it removing only those fabricated details.
+- 🔴 SPECULATION KILL SWITCH: If the drafted answer contains words like "assume", "assuming", "implies", "if we assume", or "we interpret this", it means the AI is guessing missing variables. YOU MUST REJECT IT COMPLETELY. Output ONLY this exact sentence: "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor!"
 - If the context is completely unrelated to the question: output only this: "I couldn't find that in the available documents — your best bet is to check with your respective department chair directly!"
 - NEVER write words like SUPPORTED, PARTIALLY SUPPORTED, or NOT SUPPORTED in your output.
 - NEVER explain your decision. Just output the final answer directly.
 
 CRITICAL RULES:
-- WHEN IN DOUBT, PASS THE DRAFT THROUGH. Your default action should be to approve, not reject.
-- Names, titles, positions (e.g. Dean, Chairperson), and credentials mentioned in the context ARE facts — do NOT reject answers that cite them.
+- WHEN IN DOUBT, PASS THE DRAFT THROUGH. Your default action should be to approve, not reject (unless the Kill Switch is triggered).
+- Names, titles, positions, and credentials mentioned in the context ARE facts — do NOT reject answers that cite them.
 - Never combine a draft answer AND a sorry message in the same output.
-- Thesis abstracts, titles, and author names found in the context ARE valid verifiable facts.
-- Paraphrasing of context content is NOT a hallucination. Only flag invented facts.
-- If you are unsure whether a claim is supported, pass the draft through verbatim without modification.
 
 Context:
 {trimmed_context}"""
