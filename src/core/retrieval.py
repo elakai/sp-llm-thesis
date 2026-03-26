@@ -768,6 +768,10 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     is_prerequisite_query = any(kw in standalone_query.lower() for kw in ['prerequisite', 'pre-requisite', 'prereq', 'required before', 'failed', 'can i take', 'allowed to take', 'kailangan'])
 
+    is_facility_query = any(
+        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
+    )
+
     top_score, second_score = float("-inf"), float("-inf")
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
