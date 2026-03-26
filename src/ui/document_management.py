@@ -117,14 +117,19 @@ def show_knowledge_map_dialog(algo, dims):
                 fig.update_layout(
                     paper_bgcolor='rgba(128,128,128,0.05)',
                     plot_bgcolor='rgba(128,128,128,0.05)',
-                    margin=dict(l=10, r=10, t=30, b=180),
+                    margin=dict(l=10, r=10, t=30, b=250), # ── Increased bottom margin ──
                     legend=dict(
-                        orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, title=dict(side="top"),
-                        title_font_family="sans-serif", font=dict(size=11),
-                        bgcolor='rgba(255,255,255,0.7)', bordercolor='rgba(128,128,128,0.2)', borderwidth=1
+                        title=dict(side="top"), # ── Forces the title above the items ──
+                        orientation="h",       # ── Horizontal grid orientation ──
+                        yanchor="top", 
+                        y=-0.15,               # ── Placed below the chart ──
+                        xanchor="left",        # ── Anchored to the left so it expands to the right ──
+                        x=0, 
+                        bgcolor="rgba(255,255,255,0.85)", 
+                        font=dict(size=10)
                     ),
                     hoverlabel=dict(bgcolor="white", font_size=13, font_family="sans-serif", font_color="black"),
-                    height=750 
+                    height=650                 # ── Increased height to fit the expanded legend ──
                 )
                 
                 if dims == 2:
@@ -247,7 +252,34 @@ def render_indexed_documents_view():
                 if "table_key" not in st.session_state:
                     st.session_state["table_key"] = 0
 
-                sorted_manifest = sorted(manifest.items(), key=lambda x: x[0])
+                # ── GLOBAL SORTING LOGIC ADDED HERE ──
+                col_spacer, col_sort = st.columns([7.5, 2.5])
+                with col_sort:
+                    def reset_page():
+                        st.session_state.library_page = 0
+                        
+                    sort_order = st.selectbox(
+                        "Sort by",
+                        ["Date Indexed (Newest)", "Date Indexed (Oldest)", "Document Name (A-Z)", "Document Name (Z-A)"],
+                        index=0,
+                        label_visibility="collapsed",
+                        on_change=reset_page
+                    )
+                
+                def safe_date(date_str):
+                    try:
+                        return pd.to_datetime(date_str, utc=True)
+                    except Exception:
+                        return pd.to_datetime("1970-01-01", utc=True)
+                        
+                if sort_order == "Date Indexed (Newest)":
+                    sorted_manifest = sorted(manifest.items(), key=lambda x: safe_date(x[1].get("uploaded_at", "")), reverse=True)
+                elif sort_order == "Date Indexed (Oldest)":
+                    sorted_manifest = sorted(manifest.items(), key=lambda x: safe_date(x[1].get("uploaded_at", "")))
+                elif sort_order == "Document Name (A-Z)":
+                    sorted_manifest = sorted(manifest.items(), key=lambda x: x[0].lower())
+                else:
+                    sorted_manifest = sorted(manifest.items(), key=lambda x: x[0].lower(), reverse=True)
 
                 top_controls_placeholder = st.empty()
 
@@ -255,7 +287,8 @@ def render_indexed_documents_view():
                 for filename, info in sorted_manifest:
                     raw_date = info.get("uploaded_at", "Unknown")
                     try:
-                        formatted_date = pd.to_datetime(raw_date).strftime('%b %d, %Y • %I:%M %p')
+                        dt_obj = pd.to_datetime(raw_date, utc=True)
+                        formatted_date = dt_obj.tz_convert('Asia/Manila').strftime('%b %d, %Y • %I:%M %p')
                     except Exception:
                         formatted_date = raw_date
                         

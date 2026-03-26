@@ -32,8 +32,8 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
     except Exception as e:
         logger.error(f"Backend Logging Error: {e}")
 
-# ── FIX: Strictly enforced session_id and user_email for secure updates ──
-def save_feedback(query: str, response: str, rating: str, session_id: str, user_email: str):
+
+def save_feedback(query: str, response: str, rating: str, user_email: str, session_id: str):
     """Updates the specific log entry for this session with a rating."""
     try:
         if not session_id or not user_email:
