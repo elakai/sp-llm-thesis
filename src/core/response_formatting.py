@@ -35,7 +35,7 @@ def build_source_certainty_note(top_score: float, score_margin: float, sources: 
 
     clean_names = [_clean_source_name(s) for s in unique_sources[:2]]
     preview = ", ".join(clean_names) if clean_names else "retrieved documents"
-    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): *{preview}*"
+    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): {preview}"
 
 def fallback_questions(source_text: str, original_query: str, max_items: int = 3) -> List[str]:
     source_lower = source_text.lower()
