@@ -586,6 +586,219 @@ def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[st
             seen.add(norm)
     return deduped[:2] 
 
+def _is_thesis_query(query: str) -> bool:
+    q = (query or "").lower()
+    thesis_terms = [
+        "thesis", "study", "studies", "manuscript", "research",
+        "capstone", "prototype", "microcontroller", "esp32", "arduino", "iot"
+    ]
+    return any(term in q for term in thesis_terms)
+
+def _is_thesis_title_request(query: str) -> bool:
+    q = (query or "").lower()
+    title_terms = ["title", "titles", "name of study", "names of studies", "study title", "thesis title"]
+    return _is_thesis_query(q) and any(term in q for term in title_terms)
+
+def _is_thesis_abstract_request(query: str) -> bool:
+    q = (query or "").lower()
+    abstract_terms = ["abstract", "summary", "summarize", "what is this study about"]
+    return _is_thesis_query(q) and any(term in q for term in abstract_terms)
+
+def _extract_study_hint_from_query(query: str) -> str:
+    q = (query or "").strip()
+    if not q:
+        return ""
+    explicit = re.search(r'(?i)(?:study|thesis|title)\s*:\s*(.+)$', q)
+    if explicit:
+        return explicit.group(1).strip(' ."')
+    return q
+
+def _boost_thesis_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
+    if not _is_thesis_query(query):
+        return docs
+
+    boosted_queries = [
+        f"{query} thesis manuscript title abstract",
+        f"{query} studies using microcontroller esp32 arduino iot",
+        "thesis manuscript titles and abstracts CSEA",
+        "research study title microcontroller embedded systems",
+    ]
+
+    boosted_docs = list(docs)
+    thesis_retriever = get_retriever(k=max(base_k, 45))
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(thesis_retriever.invoke, boosted_queries))
+        for res in results:
+            boosted_docs.extend(res)
+    except Exception as e:
+        logger.warning(f"Thesis retrieval boost failed: {e}")
+
+    seen = set()
+    deduped = []
+    for doc in boosted_docs:
+        key = hash(doc.page_content)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(doc)
+    return deduped
+
+def _extract_program_year_from_doc(doc: Document, content: str) -> tuple[str, str]:
+    metadata = doc.metadata or {}
+    source = (metadata.get("source") or "")
+    source_lower = source.lower()
+
+    program = ""
+    year = ""
+
+    metadata_program = str(metadata.get("program") or "").strip()
+    if metadata_program:
+        program = metadata_program
+    else:
+        if "cpe" in source_lower or "computer engineering" in source_lower:
+            program = "Computer Engineering"
+        elif "ece" in source_lower or "electronics" in source_lower:
+            program = "Electronics Engineering"
+        elif "ce" in source_lower or "civil engineering" in source_lower:
+            program = "Civil Engineering"
+        elif "arch" in source_lower or "architecture" in source_lower:
+            program = "Architecture"
+
+    metadata_year = str(metadata.get("year") or "").strip()
+    if metadata_year:
+        year = metadata_year
+    else:
+        source_year_match = re.search(r"\b(20\d{2})\b", source)
+        if source_year_match:
+            year = source_year_match.group(1)
+        else:
+            head_text = "\n".join((content or "").splitlines()[:20])
+            head_year_match = re.search(r"\b(20\d{2})\b", head_text)
+            if head_year_match:
+                year = head_year_match.group(1)
+
+    return program, year
+
+
+def _extract_thesis_title_records_from_docs(docs: List[Document]) -> List[Dict[str, str]]:
+    records: List[Dict[str, str]] = []
+    seen = set()
+
+    for doc in docs:
+        source = (doc.metadata.get("source") or "").lower()
+        content = doc.page_content or ""
+        content_lower = content.lower()
+
+        if "thesis" not in source and "manuscript" not in source and "thesis" not in content_lower and "abstract" not in content_lower:
+            continue
+
+        title_matches = re.findall(r'(?im)^\s*title\s*[:\-]\s*(.+)$', content)
+        for match in title_matches:
+            cleaned = re.sub(r'\s+', ' ', match).strip(' "\t-')
+            if cleaned and len(cleaned) >= 8:
+                key = cleaned.lower()
+                if key not in seen:
+                    seen.add(key)
+                    program, year = _extract_program_year_from_doc(doc, content)
+                    records.append({
+                        "title": cleaned,
+                        "program": program,
+                        "year": year,
+                    })
+
+        if not title_matches:
+            for raw_line in content.splitlines()[:12]:
+                line = re.sub(r'\s+', ' ', raw_line).strip()
+                if not line:
+                    continue
+                if line.startswith('[') and 'source' in line.lower():
+                    continue
+                if line.startswith('[') and ('thesis' in line.lower() or 'manuscript' in line.lower()):
+                    continue
+                if 'past csea thesis manuscripts' in line.lower():
+                    continue
+                if line.lower().startswith(("abstract", "authors", "adviser", "program", "keywords", "introduction")):
+                    continue
+                if len(line) < 14 or len(line) > 220:
+                    continue
+                if line.count(' ') < 3:
+                    continue
+                if '|' in line:
+                    continue
+                key = line.lower().strip('"')
+                if key not in seen:
+                    seen.add(key)
+                    program, year = _extract_program_year_from_doc(doc, content)
+                    records.append({
+                        "title": line.strip('"'),
+                        "program": program,
+                        "year": year,
+                    })
+                break
+
+    return records[:20]
+
+def _extract_abstract_text(content: str) -> str:
+    if not content:
+        return ""
+    match = re.search(
+        r'(?is)\babstract\b\s*[:\-]?\s*(.+?)(?:\n\s*(?:keywords?|introduction|chapter\s+1|i\.)\b|$)',
+        content,
+    )
+    if match:
+        text = re.sub(r'\s+', ' ', match.group(1)).strip()
+        return text[:1600]
+    return ""
+
+def _extract_thesis_abstract_records_from_docs(docs: List[Document]) -> List[Dict[str, str]]:
+    records: List[Dict[str, str]] = []
+    seen = set()
+
+    for doc in docs:
+        content = doc.page_content or ""
+        source = (doc.metadata.get("source") or "").lower()
+        lowered = content.lower()
+        if "thesis" not in source and "manuscript" not in source and "abstract" not in lowered:
+            continue
+
+        title_records = _extract_thesis_title_records_from_docs([doc])
+        title = title_records[0]["title"] if title_records else ""
+        abstract = _extract_abstract_text(content)
+        if not abstract:
+            continue
+
+        program, year = _extract_program_year_from_doc(doc, content)
+        key = (title.lower(), abstract[:200].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({
+            "title": title,
+            "abstract": abstract,
+            "program": program,
+            "year": year,
+        })
+
+    return records[:20]
+
+def _select_best_abstract_record(records: List[Dict[str, str]], query_hint: str) -> Dict[str, str] | None:
+    if not records:
+        return None
+
+    hint_tokens = {tok for tok in _tokenize(query_hint) if len(tok) > 2 and tok not in _SUGGESTION_STOPWORDS}
+    if not hint_tokens:
+        return records[0]
+
+    def score(record: Dict[str, str]) -> int:
+        hay = f"{record.get('title','')} {record.get('abstract','')[:400]}".lower()
+        hay_tokens = set(_tokenize(hay))
+        overlap = len(hint_tokens & hay_tokens)
+        return overlap
+
+    ranked = sorted(records, key=score, reverse=True)
+    return ranked[0] if ranked else None
+
 def _is_custodian_lookup_query(query: str) -> bool:
     q = (query or "").lower()
     asks_person = any(term in q for term in ["custodian", "in charge", "responsible", "handler", "assigned"])
@@ -678,7 +891,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     is_incomplete_input = _is_incomplete_query(standalone_query)
     
-    if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query):
+    if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query) and not _is_thesis_query(standalone_query):
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
@@ -758,6 +971,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
+    all_docs = _boost_thesis_docs(standalone_query, all_docs, dynamic_k)
+
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     # ── ADD THIS ONE LINE HERE TO MAKE PROGRAM FILTERING UNIVERSAL ──
@@ -804,6 +1019,8 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         # [FIX 6]: Ensure people intents get a broader slice of the context chunks
         query_intent = _detect_query_intent(standalone_query)
         if _is_people_list_query(standalone_query):
+            max_chunks = 12
+        elif _is_thesis_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
@@ -880,6 +1097,50 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                     top_reranked.append(doc)
                     existing_hashes.add(hash(doc.page_content))
             if top_reranked: top_score = max(top_score, 5.0)
+
+    if _is_thesis_title_request(standalone_query):
+        thesis_records = _extract_thesis_title_records_from_docs(top_reranked)
+        if thesis_records:
+            lines = ["Here are the thesis titles in the retrieved documents:", ""]
+            for record in thesis_records:
+                detail_parts = []
+                if record.get("program"):
+                    detail_parts.append(f"Program: {record['program']}")
+                if record.get("year"):
+                    detail_parts.append(f"Year: {record['year']}")
+                if detail_parts:
+                    lines.append(f"- {record['title']} ({', '.join(detail_parts)})")
+                else:
+                    lines.append(f"- {record['title']}")
+            direct_response = "\n".join(lines).strip()
+            yield direct_response
+            return
+
+    if _is_thesis_abstract_request(standalone_query):
+        abstract_records = _extract_thesis_abstract_records_from_docs(top_reranked)
+        if not abstract_records:
+            query_hint = _extract_study_hint_from_query(standalone_query)
+            abstract_query = f"{query_hint} thesis abstract study"
+            abstract_docs = get_retriever(k=50).invoke(abstract_query)
+            abstract_records = _extract_thesis_abstract_records_from_docs(prefer_latest_per_source(abstract_docs))
+        if abstract_records:
+            query_hint = _extract_study_hint_from_query(standalone_query)
+            best = _select_best_abstract_record(abstract_records, query_hint)
+            if best:
+                header_parts = []
+                if best.get("title"):
+                    header_parts.append(f"Title: {best['title']}")
+                if best.get("program"):
+                    header_parts.append(f"Program: {best['program']}")
+                if best.get("year"):
+                    header_parts.append(f"Year: {best['year']}")
+                prefix = "\n".join(header_parts)
+                if prefix:
+                    direct_response = f"{prefix}\n\nAbstract:\n{best['abstract']}"
+                else:
+                    direct_response = f"Abstract:\n{best['abstract']}"
+                yield direct_response
+                return
     
     logger.info(f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f}")
     
@@ -911,6 +1172,7 @@ Answer the question using ONLY the context below.
 14. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
 15. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
 16. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
+17. **THESIS QUERIES**: If asked for thesis titles or studies, return the exact thesis titles from context (verbatim when available). Do not paraphrase titles.
 
 **Context:**
 {context}
@@ -937,7 +1199,7 @@ Hard rules for suggested questions:
 
     try:
         is_protected_query = (
-            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input or is_prerequisite_query
+            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input or is_prerequisite_query or _is_thesis_query(standalone_query)
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -997,7 +1259,6 @@ Hard rules for suggested questions:
 
         if is_no_answer_response(final_verified_response):
             final_fallback = build_no_answer_response(standalone_query)
-            add_to_cache(standalone_query, final_fallback)
             
             chunk_size = 40
             for i in range(0, len(final_fallback), chunk_size):
