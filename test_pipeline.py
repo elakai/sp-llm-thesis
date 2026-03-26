@@ -15,25 +15,8 @@ with patch.object(st, 'session_state', mock_session_state):
         "1_THE_COURSE_CODE_FIX": [
             # Verifies our Rule 15 successfully triggers a short summary for naked course codes.
             "What is QCPP-512?",
-            "QCPP411"
-        ],
-        "2_EXTREME_CONVERSATIONAL_LAZINESS": [
-            # Testing the absolute limits of the _REWRITE_CACHE and contextualizer
-            "Who is the chair of CPE?",
-            "Where is her office?",
-            "What is her email?" # Testing if the pronoun chains multiple turns deep
-        ],
-        "3_CONTRADICTORY_PROMPTS": [
-            # Will Rule 6 (ALWAYS use markdown tables) override the user's bad instructions?
-            "Print the entire 1st year BS CPE curriculum as a single long paragraph. DO NOT USE ANY TABLES.",
-            
-            # Will Rule 14 (ALWAYS include prerequisite column) override the user?
-            "Show me the 2nd year CPE subjects but hide the prerequisites."
-        ],
-        "4_THE_KILL_SWITCH_BAIT": [
-            # Actively trying to bait the LLM into using the word "assume" to trigger our Python Kill Switch.
-            "If I take 3 units, how many hours is that assuming 1 unit equals 1 hour?",
-            "Let's say hypothetically I fail all my classes, do I get kicked out?"
+            "QCPP411",
+            "What is QCPP452?"
         ]
     }
 

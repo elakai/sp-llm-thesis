@@ -75,7 +75,6 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
         # ── FIX: Truncate massive markdown tables from the assistant's memory ──
         # This prevents the LLM from getting "lazy" and regurgitating old tables
         if role == "Assistant" and "|" in content and "---" in content:
-            # Find where the table starts and truncate the message there
             table_start = content.find("|")
             content = content[:table_start] + "\n... [Previous table truncated to preserve memory]"
             
@@ -147,214 +146,8 @@ def invalidate_cache():
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. INTENT DETECTION & QUERY BUILDING
 # ─────────────────────────────────────────────────────────────────────────────
-def format_chat_history(messages: List[Dict[str, str]]) -> str:
-    formatted_history = []
-    history_to_process = messages[1:] if len(messages) > 1 else []
-    for msg in history_to_process[-6:]: 
-        role = "User" if msg["role"] == "user" else "Assistant"
-        content = msg["content"].replace("{", "{{").replace("}", "}}")
-        formatted_history.append(f"{role}: {content}")
-    return "\n".join(formatted_history) if formatted_history else "No previous context."
-
 def _tokenize(text: str) -> list:
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
-
-
-_SUGGESTION_STOPWORDS = {
-    "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
-    "is", "are", "was", "were", "be", "being", "been", "do", "does", "did",
-    "to", "for", "of", "in", "on", "at", "by", "from", "with", "about", "and",
-    "or", "the", "a", "an", "this", "that", "these", "those", "can", "could",
-    "should", "would", "will", "my", "your", "their", "our", "i", "you", "we",
-    "they", "it", "me", "us", "them"
-}
-
-
-def _filter_grounded_suggestions(
-    suggestions: List[str],
-    context: str,
-    original_query: str,
-    max_items: int = 3
-) -> List[str]:
-    if not suggestions:
-        return []
-
-    context_tokens = set(_tokenize(context))
-    query_tokens = set(_tokenize(original_query))
-    seen = set()
-    grounded = []
-
-    for question in suggestions:
-        normalized = re.sub(r'\s+', ' ', question).strip()
-        if not normalized:
-            continue
-
-        key = normalized.lower().rstrip(' ?')
-        if key in seen:
-            continue
-
-        content_tokens = [
-            token for token in _tokenize(normalized)
-            if len(token) > 2 and token not in _SUGGESTION_STOPWORDS
-        ]
-        if not content_tokens:
-            continue
-
-        overlap = [token for token in content_tokens if token in context_tokens]
-        minimum_overlap = 1 if len(content_tokens) <= 2 else 2
-        if len(overlap) < minimum_overlap:
-            continue
-
-        if query_tokens and set(content_tokens).issubset(query_tokens):
-            continue
-
-        seen.add(key)
-        grounded.append(normalized if normalized.endswith('?') else f"{normalized}?")
-
-        if len(grounded) >= max_items:
-            break
-
-    return grounded
-
-
-def _build_source_fallback_suggestions(
-    source_list: List[str],
-    original_query: str,
-    max_items: int = 3,
-) -> List[str]:
-    if not source_list:
-        return []
-
-    query_tokens = set(_tokenize(original_query))
-    fallbacks = []
-    seen = set()
-
-    for source in source_list:
-        cleaned_source = re.sub(r'\.[A-Za-z0-9]+$', '', source).strip()
-        cleaned_source = re.sub(r'[_-]+', ' ', cleaned_source)
-        cleaned_source = re.sub(r'\s+', ' ', cleaned_source).strip()
-        if not cleaned_source:
-            continue
-
-        topic_tokens = [tok for tok in _tokenize(cleaned_source) if len(tok) > 2]
-        if not topic_tokens:
-            continue
-
-        title = " ".join(cleaned_source.split()[:6])
-        candidate_set = [
-            f"What are the key points in {title}?",
-            f"Can you summarize {title}?",
-            f"What important policies are in {title}?",
-        ]
-
-        for candidate in candidate_set:
-            key = candidate.lower().rstrip(' ?')
-            if key in seen:
-                continue
-
-            candidate_tokens = {
-                tok for tok in _tokenize(candidate)
-                if len(tok) > 2 and tok not in _SUGGESTION_STOPWORDS
-            }
-            if candidate_tokens and candidate_tokens.issubset(query_tokens):
-                continue
-
-            seen.add(key)
-            fallbacks.append(candidate)
-            if len(fallbacks) >= max_items:
-                return fallbacks
-
-    return fallbacks
-
-def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
-    if not docs: return []
-    try:
-        tokenized_docs = [_tokenize(doc.page_content) for doc in docs]
-        bm25 = BM25Okapi(tokenized_docs)
-        tokenized_query = _tokenize(query)
-        bm25_scores = bm25.get_scores(tokenized_query)
-
-        ranked = []
-        for i, doc in enumerate(docs):
-            position_score = (len(docs) - i) * POSITIONAL_SCORE_WEIGHT
-            final_score = bm25_scores[i] + position_score
-            ranked.append((final_score, doc))
-
-        ranked.sort(reverse=True, key=lambda x: x[0])
-        return [doc for _, doc in ranked[:RETRIEVAL_K]]
-    except Exception as e:
-        logger.warning(f"Hybrid rerank failed: {e}")
-        return docs[:RETRIEVAL_K]
-
-def enforce_source_diversity(docs: List[Document], max_per_source: int = 3) -> List[Document]:
-    source_counts: Dict[str, int] = {}
-    diverse_docs = []
-    for doc in docs:
-        source = doc.metadata.get("source", "unknown")
-        count = source_counts.get(source, 0)
-        if count < max_per_source:
-            diverse_docs.append(doc)
-            source_counts[source] = count + 1
-    return diverse_docs
-
-def filter_to_program(docs: List[Document], query: str) -> List[Document]:
-    PROGRAM_KEYWORDS = {
-        'computer engineering': 'cpe',
-        'cpe': 'cpe',
-        'civil engineering': 'ce',
-        'bs ce': 'ce',
-        'electronics engineering': 'ece',
-        'bs ece': 'ece',
-        'architecture': 'arch',
-        'bs arch': 'arch',
-        'biology': 'bio',
-        'bs bio': 'bio',
-        'mathematics': 'math',
-        'bs math': 'math',
-        'environmental management': 'em',
-        'bs em': 'em',
-    }
-    q = query.lower()
-    matched_program = None
-    for keyword, code in PROGRAM_KEYWORDS.items():
-        if keyword in q:
-            matched_program = code
-            break
-
-    if not matched_program:
-        return docs
-
-    return [
-        d for d in docs
-        if matched_program in d.metadata.get("source", "").lower()
-    ]
-
-def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
-    if not docs:
-        return []
-
-    q = (query or "").lower()
-    people_triggers = [
-        "professor", "faculty", "instructor", "teacher", "staff", "chair", "dean",
-        "department chair", "chairperson"
-    ]
-    if not any(trigger in q for trigger in people_triggers):
-        return docs
-
-    content_keywords = [
-        "faculty", "professor", "instructor", "teacher", "staff", "chair",
-        "department", "office", "personnel", "full-time", "part-time"
-    ]
-    source_keywords = ["faculty", "organizational", "org", "structure", "staff", "personnel"]
-
-    filtered = []
-    for doc in docs:
-        content = (doc.page_content or "").lower()
-        source = (doc.metadata.get("source") or "").lower()
-        if any(k in content for k in content_keywords) or any(k in source for k in source_keywords):
-            filtered.append(doc)
-
-    return filtered if filtered else docs
 
 def _is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
@@ -470,48 +263,6 @@ def _rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
 
     return sorted(docs, key=_score, reverse=True)
 
-def _contains_markdown_table(text: str) -> bool:
-    return any(
-        '|' in line and line.strip().startswith('|')
-        for line in text.strip().split('\n')
-    )
-
-# [FIX 1]: Narrowed to facts, excluded recommendations like "might" or "could be"
-def _contains_speculation(text: str) -> bool:
-    return bool(re.search(r"\b(likely|possibly|probably|appears to be|seems to be)\b", text, re.IGNORECASE))
-
-def _remove_speculative_sentences(text: str) -> str:
-    if not text or not text.strip():
-        return text
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
-    kept = []
-    for sentence in parts:
-        if not sentence.strip():
-            continue
-        if _contains_speculation(sentence):
-            continue
-        kept.append(sentence.strip())
-    return " ".join(kept).strip()
-
-# [FIX 2]: Strip out messy internal extensions and underscores for public display
-def _build_source_certainty_note(top_score: float, score_margin: float, sources: list[str]) -> str:
-    unique_sources = list({(s or "Unknown").strip() for s in sources})
-
-    if top_score >= HIGH_CONFIDENCE_THRESHOLD and score_margin >= HIGH_CONFIDENCE_MARGIN:
-        level = "High"
-    elif top_score >= LOW_CONFIDENCE_THRESHOLD:
-        level = "Medium"
-    else:
-        level = "Low"
-
-    def _clean_source_name(s: str) -> str:
-        s = re.sub(r'[-_]', ' ', s)           
-        s = re.sub(r'\.(pdf|md|txt|docx|csv|xlsx)$', '', s, flags=re.IGNORECASE)  
-        return s.strip().title()
-
-    clean_names = [_clean_source_name(s) for s in unique_sources[:2]]
-    source_preview = ", ".join(clean_names) if clean_names else "retrieved documents"
-    return f"> **Source certainty:** {level} — based on {len(unique_sources)} document(s): *{source_preview}*"
 
 def _detect_query_intent(query: str) -> str:
     q_lower = (query or "").lower()
@@ -534,18 +285,6 @@ def _is_listing_query(query: str) -> bool:
         "who are", "names", "name", "members", "provide"
     ]
     return any(trigger in q for trigger in list_triggers)
-
-def _is_no_answer_response(text: str) -> bool:
-    if not text:
-        return False
-    patterns = [
-        r"i couldn't find that in the available documents",
-        r"i don't have enough info to answer that confidently",
-        r"not explicitly stated in the retrieved documents",
-        r"best to check with your department chair",
-    ]
-    lowered = text.lower()
-    return any(re.search(p, lowered) for p in patterns)
 
 # [FIX 4]: Room codes no longer get falsely flagged as "incomplete"
 def _is_incomplete_query(query: str) -> bool:
@@ -670,8 +409,13 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
 
-    def _normalize_course_codes(text):
-        return re.sub(r'\b([a-zA-Z]{2,5})[-\s]*(\d{3})\b', lambda m: f"{m.group(1).upper()}{m.group(2)}", text)
+    def _normalize_course_codes(text: str) -> str:
+        # Catch both spaces AND hyphens natively
+        return re.sub(
+            r'\b([A-Za-z]{2,5})[-\s]*(\d{3})\b',
+            lambda m: f"{m.group(1).upper()}{m.group(2)}",
+            text
+        )
     
     standalone_query = _normalize_course_codes(standalone_query)
     # ───────────────────────────────────────────────────────────────
@@ -726,22 +470,31 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             if variant not in sub_queries:
                 sub_queries.append(variant)
 
-    # ── FIX: Widen the net to catch hyphens so Pinecone fetches the doc for the reranker ──
-    has_course_code = bool(re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query))
+    has_course_code = bool(re.search(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query.upper()))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
     
-    # ── NEW: DENSE VECTOR QUERY ENRICHMENT ──
-    # Forces Pinecone's vector math to look specifically at curriculum documents
-    if has_course_code:
-        course_match = re.search(r'\b[a-zA-Z]{2,5}[-\s]*\d{3}\b', standalone_query)
-        if course_match:
-            course_expansion = f"{course_match.group(0)} curriculum course subject prerequisite units"
-            if course_expansion not in sub_queries:
-                sub_queries.append(course_expansion)
-    # ────────────────────────────────────────
-
     base_k = get_dynamic_k(standalone_query)
-    dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
+
+    # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
+    is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite'])
+    if is_curr_search:
+        dynamic_k = max(base_k, 150) # Force Pinecone to pull an incredibly wide net
+    else:
+        dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
+
+    if has_course_code:
+        code_match = re.search(r'\b[A-Z]{2,5}\d{3}\b', standalone_query.upper())
+        if code_match:
+            # ── DENSE VECTOR BAIT ──
+            # Pinecone is blind to raw course codes. We MUST attach heavy 
+            # curriculum keywords to forcefully drag the vector search to the tables.
+            bait_query = f"{code_match.group(0)} complete curriculum syllabus course subjects prerequisites units laboratory"
+            if bait_query not in sub_queries:
+                sub_queries.append(bait_query)
+            
+            if code_match.group(0) not in sub_queries:
+                sub_queries.append(code_match.group(0))
+
     retriever = get_retriever(k=dynamic_k)
     
     all_docs = []
@@ -760,9 +513,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
 
     unique_docs_map = {hash(d.page_content): d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
-    # ── ADD THIS ONE LINE HERE TO MAKE PROGRAM FILTERING UNIVERSAL ──
-    latest_per_source = filter_to_program(latest_per_source, standalone_query)
-    # ────────────────────────────────────────────────────────────────
     
     is_curriculum_query = has_course_code or any(
         kw in standalone_query.lower() for kw in [
@@ -785,6 +535,19 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     top_score, second_score = float("-inf"), float("-inf")
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
+    # ── THE BM25 RESCUE OPERATION ──
+    # BM25 algorithmically buries massive markdown tables. We manually scan the 
+    # raw chunks, find the exact course code, and force it into the reranker.
+    if has_course_code:
+        course_codes = [re.sub(r'[-\s]', '', c).lower() for c in re.findall(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query)]
+        for doc in latest_per_source:
+            content_norm = doc.page_content.lower().replace(" ", "").replace("-", "")
+            if any(code in content_norm for code in course_codes):
+                # If BM25 dropped it, forcefully inject it back into the pool!
+                if not any(d.page_content == doc.page_content for d in hybrid_results):
+                    hybrid_results.append(doc)
+    # ────────────────────────────────
+
     if _detect_query_intent(standalone_query) == "people":
         people_pool = filter_to_people_docs(latest_per_source, standalone_query)
         people_pool = boost_people_list_docs(standalone_query, people_pool, dynamic_k)
@@ -801,13 +564,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         if top_reranked: top_score = 10.0 
         
     else:
-        # [FIX 6]: Ensure people intents get a broader slice of the context chunks
         query_intent = _detect_query_intent(standalone_query)
         if _is_people_list_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
-        elif _is_curriculum_list_query(standalone_query):  # <-- ADDED FUNCTION CALL
+        elif _is_curriculum_list_query(standalone_query): 
             max_chunks = 24
         elif is_curriculum_query:
             max_chunks = 12
@@ -819,7 +581,32 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         if hybrid_results:
             try:
                 pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
-                scores = get_reranker().predict(pairs)
+                
+                # Convert to a list so we can freely modify the scores
+                scores = list(get_reranker().predict(pairs))
+                
+                # ── THE CROSS-ENCODER SAFETY NET ──
+                # Extract course codes using the EXACT same forgiving regex we used for normalization
+                raw_codes = re.findall(r'\b[A-Za-z]{2,5}[-\s]*\d{3}\b', standalone_query)
+                course_codes = [re.sub(r'[-\s]', '', c).lower() for c in raw_codes]
+                
+                subject_keywords = [w for w in re.findall(r'\b[a-zA-Z]{4,}\b', standalone_query.lower()) if w not in {"what", "when", "where", "which", "who", "how", "course", "code", "subject", "for", "and", "the"}]
+
+                for i, doc in enumerate(hybrid_results):
+                    content_lower = doc.page_content.lower()
+                    content_norm = content_lower.replace(" ", "").replace("-", "")
+                    
+                    # 1. Force exact course codes to Rank #1
+                    if course_codes and any(code in content_norm for code in course_codes):
+                        scores[i] += 50.0
+                        
+                    # 2. Protect tables from being buried if they contain the user's keywords
+                    elif '|' in content_lower and '---' in content_lower:
+                        match_count = sum(1 for kw in subject_keywords if kw in content_lower)
+                        if match_count > 0:
+                            scores[i] += (match_count * 15.0) 
+                # ─────────────────────────────────────────
+
                 sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
                 
                 top_score = float(scores[sorted_indices[0]])
@@ -859,10 +646,6 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 top_reranked.append(doc)
                 existing_hashes.add(hash(doc.page_content))
         if top_reranked: top_score = max(top_score, 5.0)
-
-    is_facility_query = any(
-        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
-    )
 
     if is_facility_query:
         already_has_directory = any('directory' in doc.metadata.get('source', '').lower() or 'campus' in doc.metadata.get('source', '').lower() for doc in top_reranked)
@@ -937,7 +720,9 @@ Hard rules for suggested questions:
 
     try:
         is_protected_query = (
-            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input or is_prerequisite_query
+            is_curriculum_query or is_facility_query or is_analytical_query or 
+            is_download_query or is_incomplete_input or is_prerequisite_query or
+            has_course_code
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -982,15 +767,13 @@ Hard rules for suggested questions:
 
         if not final_verified_response: final_verified_response = draft_response
 
-        # ── NEW: DETERMINISTIC ANTI-SPECULATION KILL SWITCH ──
-        # If the LLM disobeys the prompt and tries to assume missing variables, Python kills it.
+        # ── DETERMINISTIC ANTI-SPECULATION KILL SWITCH ──
         speculation_triggers = r'\b(assume|assuming|assumed|infer|inferred|let\'s say|hypothetically)\b'
         if re.search(speculation_triggers, final_verified_response, re.IGNORECASE):
             logger.warning("🛡️ Python Kill Switch Triggered: LLM attempted to speculate.")
             final_verified_response = "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor directly to avoid any academic penalties!"
-        # ─────────────────────────────────────────────────────
-        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
 
+        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
