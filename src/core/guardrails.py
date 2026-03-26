@@ -60,12 +60,10 @@ def _count_table_rows(text: str) -> int:
     )
 
 def verify_answer(query: str, context: str, draft_answer: str) -> str:
-    """Critic Persona: Verifies the draft against the retrieved context."""
     critic_llm = get_critic_llm()
     trimmed_context = trim_context(context)
 
-    # Use f-string directly — avoids ChatPromptTemplate variable parsing issues
-    full_prompt = f"""You are a Quality Reviewer for AXIsstant, an AI assistant for Ateneo de Naga University's CSEA Department.
+    system_prompt = """You are a Quality Reviewer for AXIsstant, an AI assistant for Ateneo de Naga University's CSEA Department.
 
 Your job is to review a drafted answer and decide if it is faithful to the retrieved context.
 
@@ -95,25 +93,28 @@ CRITICAL RULES:
 - If you are unsure whether a claim is supported, pass the draft through verbatim without modification.
 
 Context:
-{trimmed_context}
+{trimmed_context}"""
 
-User Query:
-{query}
+    human_prompt = "User Query:\n{query}\n\nDrafted Answer:\n{draft_answer}\n\nVerified Answer:"
 
-Drafted Answer:
-{draft_answer}
-
-Verified Answer:"""
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", human_prompt)
+    ])
 
     try:
-        response = critic_llm.invoke(full_prompt)
+        messages = prompt_template.format_messages(
+            trimmed_context=trimmed_context,
+            query=query,
+            draft_answer=draft_answer
+        )
+        response = critic_llm.invoke(messages)
         result = response.content.strip() if response and response.content else None
 
         if not result:
             logger.warning("Critic returned empty response. Passing draft through.")
             return draft_answer
             
-        # Table row truncation guard
         draft_rows = _count_table_rows(draft_answer)
         result_rows = _count_table_rows(result)
         if draft_rows > 0 and result_rows < draft_rows * 0.8:

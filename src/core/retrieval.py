@@ -124,7 +124,6 @@ def invalidate_cache():
     GLOBAL_CACHE.clear() 
     logger.info("🧹 Semantic cache invalidated.")
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. INTENT DETECTION & QUERY BUILDING
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,7 +186,6 @@ def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[st
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN GENERATOR PIPELINE
@@ -282,9 +280,9 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many courses', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects'])
     is_download_query = any(kw in standalone_query.lower() for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i get', 'where can i download'])
+    is_prerequisite_query = any(kw in standalone_query.lower() for kw in ['prerequisite', 'pre-requisite', 'prereq', 'required before'])
 
     top_score, second_score = float("-inf"), float("-inf")
-    
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
     if _detect_query_intent(standalone_query) == "people":
@@ -321,6 +319,24 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 top_reranked = hybrid_results[:RERANKER_TOP_K]
         else:
             top_reranked = []
+
+    # ── DYNAMIC PREREQUISITE INJECTION ──
+    if is_prerequisite_query:
+        stop_words = r'\b(what|is|the|for|of|in|bs|cpe|ece|ce|arch|em|bio|math|prerequisite|pre-requisite|prereq|subject|course|required|before)\b'
+        subject_terms = re.sub(stop_words, '', standalone_query.lower()).strip()
+        
+        if len(subject_terms) > 3:
+            prereq_retriever = get_retriever(k=15)
+            prereq_docs = prereq_retriever.invoke(f"{subject_terms} prerequisite curriculum")
+            prereq_filtered = prefer_latest_per_source(prereq_docs)
+            
+            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            for doc in prereq_filtered:
+                if hash(doc.page_content) not in existing_hashes:
+                    top_reranked.append(doc)
+                    existing_hashes.add(hash(doc.page_content))
+                    
+            if top_reranked: top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
@@ -408,7 +424,7 @@ Hard rules for suggested questions:
 
     try:
         is_protected_query = (
-            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input
+            is_curriculum_query or is_facility_query or is_analytical_query or is_download_query or is_incomplete_input or is_prerequisite_query
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
@@ -457,7 +473,7 @@ Hard rules for suggested questions:
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
 
-        # ── UX FIX: INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
+        # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
         if is_no_answer_response(final_verified_response):
             final_fallback = build_no_answer_response(standalone_query)
             add_to_cache(standalone_query, final_fallback)
@@ -467,7 +483,6 @@ Hard rules for suggested questions:
                 yield final_fallback[i:i+chunk_size]
                 time.sleep(STREAM_DELAY) 
             return
-        # ──────────────────────────────────────────────────────────
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)

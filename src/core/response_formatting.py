@@ -64,26 +64,46 @@ def fallback_questions(source_text: str, original_query: str, max_items: int = 3
         if len(deduped) == max_items: break
     return deduped
 
-def build_no_answer_response(query: str) -> str:
-    tips = (
-        "Here are some tips to get a better answer:\n\n"
-        "- **Avoid using acronyms** — spell out terms instead of abbreviations (e.g., use 'on-the-job training in Computer Engineering' instead of 'OJT in CPE').\n"
-        "- **Be as specific as possible** — include details like the year, semester, course name, or department.\n"
-        "- **Ask clear and focused questions** — break down complex queries into smaller parts if needed.\n"
-        "- **Try rephrasing your question** — sometimes a different wording pulls up the right document.\n"
-        "- **Clarify what you are looking for** — e.g., 'What are the prerequisites for BS CPE thesis?' instead of 'thesis requirements'."
+def is_no_answer_response(text: str) -> bool:
+    if not text: return True
+    lowered = text.lower()
+    patterns = [
+        "i couldn't find that",
+        "i couldn't find a confident answer",
+        "i couldn't find an explicit answer",
+        "best to check with your department chair",
+        "not explicitly stated"
+    ]
+    return any(p in lowered for p in patterns)
+
+def build_no_answer_response(query: str = "") -> str:
+    return (
+        "I couldn't find a confident answer for that in the available documents.\n\n"
+        "**Here are a few tips to help me find the right information:**\n"
+        "- **Spell out acronyms** — instead of *'OJT in CPE'*, try *'on-the-job training in Computer Engineering'*.\n"
+        "- **Be specific about the program** — mention *'BS Computer Engineering'* or *'BS ECE'* rather than just *'engineering'*.\n"
+        "- **Include the year or semester** — e.g., *'third year first semester BS CPE'*.\n"
+        "- **Use full course titles** — instead of *'OS'*, try *'Operating Systems'*.\n"
+        "- **Check for typos** — a small typo in a course code (like *QCP512* instead of *QCPP512*) can hide the result.\n\n"
+        "If you've tried rephrasing and still can't find it, your department chair is the best person to ask directly!"
     )
-    return f"I couldn't find a confident answer for that in the documents I have.\n\n{tips}\n\nIf you still can't get an answer, your department chair is the best person to ask directly!"
 
 def _strip_decorative_dash_rows(t: str) -> str:
     cleaned = []
     for line in t.split('\n'):
         stripped = line.strip()
-        if stripped.startswith('|') and stripped.endswith('|'):
-            cells = [c.strip() for c in stripped.strip('|').split('|')]
-            all_dashes = all(re.fullmatch(r'-+', cell) for cell in cells if cell)
-            has_empty = any(cell == '' for cell in cells)
-            if all_dashes and not has_empty: continue
+        # Ensure it's actually a table row before processing
+        if stripped.count('|') >= 2:
+            inner = stripped[stripped.find('|')+1 : stripped.rfind('|')]
+            cells = [c.strip() for c in inner.split('|')]
+            
+            # Check if EVERY cell is just hyphens, en-dashes, em-dashes, or spaces
+            is_decorative = all(re.sub(r'[-—–\s]', '', cell) == '' for cell in cells)
+            
+            # If the row is purely decorative dashes, skip it
+            if is_decorative:
+                continue
+                
         cleaned.append(line)
     return '\n'.join(cleaned)
 
@@ -118,9 +138,15 @@ def fix_markdown_tables(text: str) -> str:
     return '\n'.join(fixed)
 
 def format_raw_links(text: str) -> str:
-    raw_url_pattern = re.compile(r'(?<!\()(https?://[^\s\)\]\,\"\']+)')
+    # ── FIXED: Removed the single quote exclusion so it catches Borrower's Form ──
+    raw_url_pattern = re.compile(r'(?<!\()(https?://[^\s\)\]\"]+)')
     def replace_url(match):
         url = match.group(1)
+        
+        # Prevent trailing punctuation from sneaking into the URL
+        while url and url[-1] in ['.', ',', ';', ':']:
+            url = url[:-1]
+            
         pos = match.start()
         if re.search(r'\[[^\]]*\]\($', text[max(0, pos-50):pos]): return url 
             
@@ -129,4 +155,5 @@ def format_raw_links(text: str) -> str:
         elif 'drive.google' in url: label = 'View document here'
         else: label = 'View link here'
         return f'[{label}]({url})'
+        
     return raw_url_pattern.sub(replace_url, text)
