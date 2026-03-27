@@ -22,8 +22,8 @@ def detect_query_intent(query: str) -> str:
     if has_any_words({"where", "room", "building", "located", "floor", "lab", "laboratory", "office", "directory", "saan", "nasaan", "location", "hanapin"}) or has_any_phrases(["where is", "how to go", "paano pumunta", "where can i find", "anong floor"]):
         return "location"
         
-    # 3. Curriculum (Expanded for student slang, grading, and enrollment panic)
-    if has_any_words({"curriculum", "course", "subject", "subjects", "semester", "units", "prerequisite", "prereq", "prospectus", "classes", "load", "flowchart", "bridging", "grades", "grade"}) or has_any_phrases(["what subjects", "how many units", "what course", "ilang units", "kailangan ba"]):
+    # 3. Curriculum (Expanded for programs, majors, and slang)
+    if has_any_words({"curriculum", "course", "subject", "subjects", "semester", "units", "prerequisite", "prereq", "prospectus", "classes", "load", "flowchart", "bridging", "grades", "grade", "program", "cpe", "bscpe", "ece", "bsece"}) or has_any_phrases(["what subjects", "how many units", "what course", "ilang units", "kailangan ba", "bs cpe", "bs ece"]):
         return "curriculum"
         
     # 4. People (Expanded for titles, student slang, and contact info)
