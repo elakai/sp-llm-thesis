@@ -243,51 +243,44 @@ def _rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
 
     return sorted(docs, key=_score, reverse=True)
 
-def _load_custodian_roster_from_markdown() -> str:
-    """Reads the markdown file, attempts clean parsing, and falls back to raw text if needed."""
-    roster_path = DOCS_FOLDER / "lab_directory.md"
-    if not roster_path.exists():
-        return ""
+# ── NEW: VECTOR DB CUSTODIAN LOADER ──
+def _load_custodian_roster_from_vectordb() -> List[tuple[str, str]]:
+    """Pulls the lab directory from the Vector DB chunks instead of a local file."""
     try:
-        text = roster_path.read_text(encoding="utf-8", errors="ignore")
+        # 1. Ask the Vector DB specifically for the directory chunks
+        roster_retriever = get_retriever(k=20)
+        docs = roster_retriever.invoke("Custodian Laboratory Alias Room directory list")
         
-        # ── Your Original Data Cleaning Regex ──
+        # 2. Stitch the scattered chunks back together into one giant text block
+        text = "\n".join([doc.page_content for doc in docs])
+        
+        # 3. Run your custom data-cleaning regex over the stitched chunks!
         pattern = re.compile(
             r"^-\s*Custodian:\s*(.*?)\s*\|\s*Laboratory:\s*(.*?)\s*(?:\|\s*Alias:\s*(.*?)\s*)?(?:\|\s*Room:\s*(.*?)\s*)?$",
             re.IGNORECASE | re.MULTILINE,
         )
-        
-        roster = []
+        roster: List[tuple[str, str]] = []
         seen = set()
         for name, laboratory, alias, _room in pattern.findall(text):
             custodian = re.sub(r"\s+", " ", (name or "").strip())
             lab = re.sub(r"\s+", " ", (laboratory or "").strip())
             alias_clean = re.sub(r"\s+", " ", (alias or "").strip())
-            if not custodian or not lab: continue
+            if not custodian or not lab:
+                continue
             
-            # Your magic alias stitching
             if alias_clean and alias_clean.lower() not in lab.lower():
                 lab = f"{lab} ({alias_clean})"
                 
             key = (custodian.lower(), lab.lower())
-            if key in seen: continue
+            if key in seen:
+                continue
             seen.add(key)
             roster.append((custodian, lab))
-            
-        # If your regex found matches, format them beautifully!
-        if roster:
-            lines = ["Here are all custodians and their assigned laboratories:", ""]
-            for custodian, laboratory in roster:
-                lines.append(f"- **{custodian}** - {laboratory}")
-            return "\n".join(lines).strip()
-            
-        # ── THE BULLETPROOF FALLBACK ──
-        # If the regex found 0 matches (e.g. markdown table format changed), return raw text!
-        return text
-        
+        return roster
     except Exception as e:
-        logger.warning(f"Failed to read custodian roster markdown: {e}")
-        return ""
+        logger.warning(f"Failed to read custodian roster from Vector DB: {e}")
+        return []
+# ─────────────────────────────────────
 
 def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
     lines = ["Here are all custodians and their assigned laboratories:", ""]
@@ -537,9 +530,10 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         else:
             top_reranked = []
 
-    # ── CUSTODIAN DIRECTORY INJECTION ──
+# ── CUSTODIAN DIRECTORY INJECTION ──
     if is_custodian_lookup_query(standalone_query) or is_custodian_list_query(standalone_query):
-        roster = _load_custodian_roster_from_markdown()
+        # We now call the Vector DB version!
+        roster = _load_custodian_roster_from_vectordb()
         if roster:
             roster_text = _format_custodian_roster_response(roster)
             roster_doc = Document(page_content=roster_text, metadata={"source": "Lab Directory"})
@@ -550,18 +544,6 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 top_score = max(top_score, 15.0)
     # ────────────────────────────────────────
 
-    # ── CUSTODIAN DIRECTORY INJECTION ──
-    if is_custodian_lookup_query(standalone_query) or is_custodian_list_query(standalone_query):
-        roster_text = _load_custodian_roster_from_markdown()
-        if roster_text.strip(): 
-            roster_doc = Document(page_content=roster_text, metadata={"source": "Lab Directory"})
-            
-            existing_hashes = {hash(d.page_content) for d in top_reranked}
-            if hash(roster_doc.page_content) not in existing_hashes:
-                top_reranked.insert(0, roster_doc)
-                top_score = max(top_score, 15.0) # Force High Confidence!
-    # ────────────────────────────────────────
-    
     # ── DYNAMIC PREREQUISITE INJECTION ──
     if is_prerequisite_query:
         stop_words = r'\b(what|is|the|for|of|in|bs|cpe|ece|ce|arch|em|bio|math|prerequisite|pre-requisite|prereq|subject|course|required|before)\b'
