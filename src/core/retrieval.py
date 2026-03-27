@@ -151,9 +151,11 @@ def _tokenize(text: str) -> list:
 
 def _is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
+    # ── FIX: Added "faculties", "teacher", "teachers" to catch slang/plurals ──
     people_markers = [
-        "faculty", "staff", "professor", "instructor", "dean",
-        "chair", "chairperson", "chairpersons", "department chair", "department chairs"
+        "faculty", "faculties", "staff", "professor", "professors", "instructor", 
+        "instructors", "teacher", "teachers", "dean", "chair", "chairperson", 
+        "chairpersons", "department chair"
     ]
     if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
         return False
@@ -273,7 +275,11 @@ def _detect_query_intent(query: str) -> str:
 
     if has_any({"where", "room", "building", "located", "floor", "lab", "office", "directory", "saan", "nasaan"}): return "location"
     if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}): return "curriculum"
-    if has_any({"who", "faculty", "chair", "dean", "professor", "staff", "instructor", "sino"}) or has_phrases(["department chair", "faculty list"]): return "people"
+    if has_any({"where", "room", "building", "located", "floor", "lab", "laboratory", "office", "directory", "saan", "nasaan", "location"}): return "location"
+    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}): return "curriculum"
+    
+    # ── FIX: Added "field", "specialization", "teacher", "dr.", "engr.", "ar." ──
+    if has_any({"who", "faculty", "faculties", "chair", "chairperson", "dean", "professor", "staff", "instructor", "teacher", "sino", "field", "dr", "engr", "ar"}) or has_phrases(["department chair", "faculty list"]): return "people"
     if has_any({"download", "link", "pdf", "form", "access"}) or has_phrases(["google form"]): return "download"
     if has_any({"policy", "rule", "guideline", "procedure", "manual"}) or has_phrases(["dress code"]): return "policy"
     return "general"
@@ -408,6 +414,21 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
+
+
+    # ── NEW: DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
+    estimator_keywords = ['estimator', 'passing rate', 'calculate grade', 'compute grade', 'grade calculator']
+    if any(kw in standalone_query.lower() for kw in estimator_keywords):
+        msg = "To estimate your college passing rate and compute your grades, please use the official tool here: [https://www.adnu.edu.ph/school-fee-estimator/]"
+        for word in msg.split():
+            yield word + " "
+            time.sleep(0.02)
+        return
+        
+    # ── NEW: PAASCU & ACCREDITATION BOOST ──
+    if "paascu" in standalone_query.lower() or "accreditation" in standalone_query.lower():
+        standalone_query += " PAASCU accreditation status level standard"
+    # ────────────────────────────────────────────────────────
 
     def _normalize_course_codes(text: str) -> str:
         # Catch both spaces AND hyphens natively
