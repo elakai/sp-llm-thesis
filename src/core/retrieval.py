@@ -547,10 +547,12 @@ def filter_to_people_docs(docs: List[Document], query: str) -> List[Document]:
 
 def _is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
+    # ── FIX: Added "faculties", "teacher", "teachers" to catch slang/plurals ──
     people_markers = [
-        "faculty", "staff", "professor", "instructor", "dean",
-        "chair", "chairperson", "chairpersons", "department chair", "department chairs",
-        "custodian", "custodians", "lab technician", "technician"
+        "faculty", "faculties", "staff", "professor", "professors", "instructor", 
+        "instructors", "teacher", "teachers", "dean", "chair", "chairperson", 
+        "chairpersons", "department chair",  "department chairs", "prof", 
+        "custodian", "custodians"
     ]
     if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
         return False
@@ -768,19 +770,36 @@ def _detect_query_intent(query: str) -> str:
     def has_any_phrases(phrases: list[str]) -> bool:
         return any(phrase in q_lower for phrase in phrases)
 
+    # 1. Custodian & Technician Routing
     if has_any_words({"custodian", "custodians", "technician"}) or has_any_phrases(["lab technician", "lab custodians", "laboratory custodian"]):
         return "people"
-    if has_any_words({"where", "room", "building", "located", "floor", "lab", "office", "directory"}):
+        
+    # 2. Location Routing (Merged with Tagalog & 'laboratory'/'location' fixes)
+    if has_any_words({"where", "room", "building", "located", "floor", "lab", "laboratory", "office", "directory", "saan", "nasaan", "location"}):
         return "location"
+        
+    # 3. Curriculum Routing
     if has_any_words({"curriculum", "course", "subject", "semester", "units", "prerequisite"}):
         return "curriculum"
-    people_word_hit = has_any_words({"who", "faculty", "chair", "chairperson", "dean", "professor", "staff", "instructor"})
-    people_phrase_hit = has_any_phrases(["chairperson", "chairpersons", "department chair", "department chairs", "faculty list"])
+        
+    # 4. People Routing (Merged with expanded edge cases: 'faculties', 'teacher', 'field', 'dr', 'sino')
+    people_word_hit = has_any_words({
+        "who", "faculty", "faculties", "chair", "chairperson", "dean", "professor", "staff", 
+        "instructor", "teacher", "teachers", "sino", "field", "dr", "engr", "ar"
+    })
+    people_phrase_hit = has_any_phrases([
+        "chairperson", "chairpersons", "department chair", "department chairs", "faculty list"
+    ])
     people_stem_hit = any(token.startswith("chair") for token in tokens)
+    
     if people_word_hit or people_phrase_hit or people_stem_hit:
         return "people"
+        
+    # 5. Download Routing
     if has_any_words({"download", "link", "pdf", "form", "access"}) or has_any_phrases(["google form", "download link"]):
         return "download"
+        
+    # 6. Policy Routing
     if has_any_words({"policy", "rule", "guideline", "procedure", "manual"}) or has_any_phrases(["dress code"]):
         return "policy"
     return "general"
@@ -917,6 +936,32 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                 time.sleep(0.01)
             return
 
+
+    # ── NEW: DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
+    estimator_keywords = ['estimator', 'passing rate', 'calculate grade', 'compute grade', 'grade calculator']
+    if any(kw in standalone_query.lower() for kw in estimator_keywords):
+        msg = "To estimate your college passing rate and compute your grades, please use the official tool here: [https://www.adnu.edu.ph/school-fee-estimator/]"
+        for word in msg.split():
+            yield word + " "
+            time.sleep(0.02)
+        return
+        
+    # ── NEW: PAASCU & ACCREDITATION BOOST ──
+    if "paascu" in standalone_query.lower() or "accreditation" in standalone_query.lower():
+        standalone_query += " PAASCU accreditation status level standard"
+    # ────────────────────────────────────────────────────────
+
+    def _normalize_course_codes(text: str) -> str:
+        # Catch both spaces AND hyphens natively
+        return re.sub(
+            r'\b([A-Za-z]{2,5})[-\s]*(\d{3})\b',
+            lambda m: f"{m.group(1).upper()}{m.group(2)}",
+            text
+        )
+    
+    standalone_query = _normalize_course_codes(standalone_query)
+    # ───────────────────────────────────────────────────────────────
+    
     is_incomplete_input = _is_incomplete_query(standalone_query)
     
     if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query) and not _is_thesis_query(standalone_query):
