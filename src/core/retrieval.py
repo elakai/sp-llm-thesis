@@ -243,19 +243,44 @@ def _rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
 
     return sorted(docs, key=_score, reverse=True)
 
-# ── NEW: FIXED MARKDOWN LOADER ──
-def _load_custodian_roster_from_markdown() -> str:
-    """Reads the raw markdown text for the LLM to process natively."""
+# ── RESTORED: THE DATA-CLEANING MARKDOWN PARSER ──
+def _load_custodian_roster_from_markdown() -> List[tuple[str, str]]:
+    roster_path = DOCS_FOLDER / "lab_directory.md"
+    if not roster_path.exists():
+        return []
     try:
-        roster_path = DOCS_FOLDER / "lab_directory.md"
-        if not roster_path.exists():
-            logger.error("lab_directory.md not found in DOCS_FOLDER!")
-            return ""
-        return roster_path.read_text(encoding="utf-8", errors="ignore")
+        text = roster_path.read_text(encoding="utf-8", errors="ignore")
     except Exception as e:
-        logger.error(f"Failed to read custodian roster markdown: {e}")
-        return ""
-# ────────────────────────────────
+        logger.warning(f"Failed to read custodian roster markdown: {e}")
+        return []
+
+    pattern = re.compile(
+        r"^-\s*Custodian:\s*(.*?)\s*\|\s*Laboratory:\s*(.*?)\s*(?:\|\s*Alias:\s*(.*?)\s*)?(?:\|\s*Room:\s*(.*?)\s*)?$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    roster: List[tuple[str, str]] = []
+    seen = set()
+    for name, laboratory, alias, _room in pattern.findall(text):
+        custodian = re.sub(r"\s+", " ", (name or "").strip())
+        lab = re.sub(r"\s+", " ", (laboratory or "").strip())
+        alias_clean = re.sub(r"\s+", " ", (alias or "").strip())
+        if not custodian or not lab:
+            continue
+        if alias_clean and alias_clean.lower() not in lab.lower():
+            lab = f"{lab} ({alias_clean})"
+        key = (custodian.lower(), lab.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        roster.append((custodian, lab))
+    return roster
+
+def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
+    lines = ["Here are all custodians and their assigned laboratories:", ""]
+    for custodian, laboratory in roster:
+        lines.append(f"- **{custodian}** - {laboratory}")
+    return "\n".join(lines).strip()
+# ─────────────────────────────────────────────────
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
@@ -276,7 +301,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
 
-    # ── NEW: DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
+    # ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
     estimator_keywords = ['estimator', 'passing rate', 'calculate grade', 'compute grade', 'grade calculator']
     if any(kw in standalone_query.lower() for kw in estimator_keywords):
         msg = "To estimate your college passing rate and compute your grades, please use the official tool here: [https://www.adnu.edu.ph/school-fee-estimator/]"
@@ -285,12 +310,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             time.sleep(0.02)
         return
         
-    # ── NEW: PAASCU & ACCREDITATION BOOST ──
+    # ── PAASCU & ACCREDITATION BOOST ──
     if "paascu" in standalone_query.lower() or "accreditation" in standalone_query.lower():
         standalone_query += " PAASCU accreditation status level standard"
     # ────────────────────────────────────────────────────────
 
-    # ── NEW: DYNAMIC FALLBACK GENERATOR ──
+    # ── DYNAMIC FALLBACK GENERATOR ──
     def _generate_dynamic_fallback(user_q: str) -> str:
         fb_prompt = f"""You are AXIsstant, a friendly upperclassman CSEA assistant. 
 The user asked: "{user_q}"
@@ -370,7 +395,6 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     if has_course_code:
         code_match = re.search(r'\b[A-Z]{2,5}\d{3}\b', standalone_query.upper())
         if code_match:
-            # ── DENSE VECTOR BAIT ──
             bait_query = f"{code_match.group(0)} complete curriculum syllabus course subjects prerequisites units laboratory"
             if bait_query not in sub_queries:
                 sub_queries.append(bait_query)
@@ -501,9 +525,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
     # ── CUSTODIAN DIRECTORY INJECTION ──
     if is_custodian_lookup_query(standalone_query) or is_custodian_list_query(standalone_query):
-        roster_text = _load_custodian_roster_from_markdown()
-        if roster_text.strip(): 
+        roster = _load_custodian_roster_from_markdown()
+        if roster:
+            roster_text = _format_custodian_roster_response(roster)
             roster_doc = Document(page_content=roster_text, metadata={"source": "Lab Directory"})
+            
             existing_hashes = {hash(d.page_content) for d in top_reranked}
             if hash(roster_doc.page_content) not in existing_hashes:
                 top_reranked.insert(0, roster_doc)
