@@ -365,7 +365,7 @@ def render_chat_view():
         return
 
     # Handle new user input
-    if query := st.chat_input("Ask AXIstant about rules, exemptions, or curriculum..."):
+    if query := st.chat_input("Use full official names for subjects and rooms; avoid abbreviations; be specific."):
         _process_user_query(query)
 
 
