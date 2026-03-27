@@ -393,7 +393,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     base_k = get_dynamic_k(standalone_query)
 
     # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
-    is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite'])
+    is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite', 'program', 'cpe', 'ece'])
     if is_curr_search:
         dynamic_k = max(base_k, 150)
     else:
@@ -436,7 +436,9 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         kw in standalone_query.lower() for kw in [
             'curriculum', 'subject', 'course', 'year', 'semester', 'units',
             'prerequisite', 'schedule', 'ojt', 'practicum', 'internship',
-            'immersion', 'operating systems', 'elective', 'track'
+            'immersion', 'operating systems', 'elective', 'track',
+            'program', 'cpe', 'ece', 'bscpe', 'bsece', 'ce', 'bsece', 
+            'bsbio', 'bio', 'arch', 'bsarch', 'math', 'bsmath', 'em', 'bsem'
         ]
     )
     
@@ -697,11 +699,13 @@ Hard rules for suggested questions:
         if not final_verified_response: final_verified_response = draft_response
 
         # ── DETERMINISTIC ANTI-SPECULATION KILL SWITCH ──
-        speculation_triggers = r'\b(assume|assuming|assumed|infer|inferred|let\'s say|hypothetically)\b'
+        # Made strictly contextual so it ignores phrases like "assume leadership roles"
+        speculation_triggers = r'\b(let\'s assume|assuming that you|i will assume|i am assuming|hypothetically speaking)\b'
         if re.search(speculation_triggers, final_verified_response, re.IGNORECASE):
             logger.warning("🛡️ Python Kill Switch Triggered: LLM attempted to speculate.")
             final_verified_response = "I don't have enough specific information (like your exact unit load or class hours) to calculate that accurately. Please check your syllabus or ask your instructor directly to avoid any academic penalties!"
-
+        
+        
         # ── INTERCEPT NO-ANSWER SCENARIOS FOR BETTER TIPS ──
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
