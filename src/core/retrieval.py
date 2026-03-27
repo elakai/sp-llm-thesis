@@ -9,6 +9,12 @@ from rank_bm25 import BM25Okapi
 import re
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from src.core.semantics import (
+    tokenize, detect_query_intent, is_listing_query, is_people_list_query,
+    is_curriculum_list_query, is_incomplete_query, build_incomplete_query_variants,
+    is_custodian_lookup_query, is_custodian_list_query, normalize_lab_aliases,
+    normalize_course_codes
+)
 from src.core.guardrails import verify_answer, validate_query, redact_pii
 from src.config.settings import get_generator_llm, get_embeddings, get_retriever
 from src.core.router import route_query, get_dynamic_k
@@ -146,33 +152,9 @@ def invalidate_cache():
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. INTENT DETECTION & QUERY BUILDING
 # ─────────────────────────────────────────────────────────────────────────────
-def _tokenize(text: str) -> list:
-    return re.sub(r'[^\w\s]', ' ', text.lower()).split()
-
-def _is_people_list_query(query: str) -> bool:
-    q = (query or "").lower()
-    # ── FIX: Added "faculties", "teacher", "teachers" to catch slang/plurals ──
-    people_markers = [
-        "faculty", "faculties", "staff", "professor", "professors", "instructor", 
-        "instructors", "teacher", "teachers", "dean", "chair", "chairperson", 
-        "chairpersons", "department chair"
-    ]
-    if _detect_query_intent(q) != "people" and not any(marker in q for marker in people_markers):
-        return False
-    return _is_listing_query(q)
-
-def _is_curriculum_list_query(query: str) -> bool:
-    q = (query or "").lower()
-    curriculum_markers = [
-        "curriculum", "subject", "subjects", "course", "courses",
-        "semester", "year level", "year", "units", "prerequisite"
-    ]
-    if _detect_query_intent(q) != "curriculum" and not any(marker in q for marker in curriculum_markers):
-        return False
-    return _is_listing_query(q) or "all subjects" in q or "all courses" in q
 
 def _boost_curriculum_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
-    if not _is_curriculum_list_query(query):
+    if not is_curriculum_list_query(query):
         return docs
 
     boosted_queries = [
@@ -204,7 +186,7 @@ def _boost_curriculum_list_docs(query: str, docs: List[Document], base_k: int) -
     return deduped
 
 def _boost_people_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
-    if not _is_people_list_query(query):
+    if not is_people_list_query(query):
         return docs
 
     boosted_queries = [
@@ -264,100 +246,6 @@ def _rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
         return score
 
     return sorted(docs, key=_score, reverse=True)
-
-
-def _detect_query_intent(query: str) -> str:
-    q_lower = (query or "").lower()
-    tokens = set(re.findall(r"[a-z0-9']+", q_lower))
-
-    def has_any(words): return any(word in tokens for word in words)
-    def has_phrases(phrases): return any(phrase in q_lower for phrase in phrases)
-
-    if has_any({"where", "room", "building", "located", "floor", "lab", "office", "directory", "saan", "nasaan"}): return "location"
-    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}): return "curriculum"
-    if has_any({"where", "room", "building", "located", "floor", "lab", "laboratory", "office", "directory", "saan", "nasaan", "location"}): return "location"
-    if has_any({"curriculum", "course", "subject", "semester", "units", "prerequisite"}): return "curriculum"
-    
-    # ── FIX: Added "field", "specialization", "teacher", "dr.", "engr.", "ar." ──
-    if has_any({"who", "faculty", "faculties", "chair", "chairperson", "dean", "professor", "staff", "instructor", "teacher", "sino", "field", "dr", "engr", "ar"}) or has_phrases(["department chair", "faculty list"]): return "people"
-    if has_any({"download", "link", "pdf", "form", "access"}) or has_phrases(["google form"]): return "download"
-    if has_any({"policy", "rule", "guideline", "procedure", "manual"}) or has_phrases(["dress code"]): return "policy"
-    return "general"
-
-def _is_listing_query(query: str) -> bool:
-    q = (query or "").lower()
-    list_triggers = [
-        "list", "enumerate", "show", "show all", "all ",
-        "who are", "names", "name", "members", "provide"
-    ]
-    return any(trigger in q for trigger in list_triggers)
-
-# [FIX 4]: Room codes no longer get falsely flagged as "incomplete"
-def _is_incomplete_query(query: str) -> bool:
-    q_lower = (query or "").strip().lower()
-    
-    if re.search(r'\b[a-zA-Z]{1,5}\s*\d{3}\b', query): return False
-        
-    tokens = re.findall(r"[a-zA-Z0-9']+", q_lower)
-    if len(tokens) <= 2: return True
-
-    starters = {"what", "where", "who", "when", "why", "how", "which"}
-    verbs = {"is", "are", "can", "do", "does", "did", "show", "list", "find", "tell"}
-    return len(tokens) <= 4 and not any(t in starters or t in verbs for t in tokens)
-
-def _build_incomplete_query_variants(query: str, chat_history_list: List[Dict[str, str]]) -> List[str]:
-    base = (query or "").strip()
-    if not base: return []
-
-    intent = _detect_query_intent(base)
-    variants = [base]
-
-    if intent == "location": variants.append(f"{base} location building room")
-    elif intent == "curriculum": variants.append(f"{base} curriculum course prerequisite")
-    elif intent == "people": variants.append(f"{base} faculty staff department chair professor")
-    elif intent == "download": variants.append(f"{base} official link pdf")
-    elif intent == "policy": variants.append(f"{base} policy guideline rule")
-
-    for msg in reversed(chat_history_list):
-        if msg.get("role") == "user" and (msg.get("content") or "").strip().lower() != base.lower():
-            variants.append(f"{msg.get('content').strip()} {base}")
-            break
-
-    deduped, seen = [], set()
-    for v in variants:
-        norm = v.strip().lower()
-        if norm and norm not in seen:
-            deduped.append(v.strip())
-            seen.add(norm)
-    return deduped[:2] 
-
-def _is_custodian_lookup_query(query: str) -> bool:
-    q = (query or "").lower()
-    asks_person = any(term in q for term in ["custodian", "in charge", "responsible", "handler", "assigned"])
-    asks_place = any(term in q for term in ["lab", "laboratory", "room", "aelab", "ae lab", "commslab", "comms lab", "cisco lab"])
-    return asks_person and asks_place
-
-def _is_custodian_list_query(query: str) -> bool:
-    q = (query or "").lower()
-    asks_custodian = any(term in q for term in ["custodian", "custodians", "lab technician", "technician"])
-    asks_labs = any(term in q for term in ["lab", "labs", "laboratory", "laboratories"])
-    return asks_custodian and asks_labs and _is_listing_query(q)
-
-def _normalize_lab_aliases(query: str) -> str:
-    if not query:
-        return query
-    normalized = query
-    alias_patterns = [
-        (r"\bae\s*[-_]?\s*lab\b", "Advanced Electronics Laboratory (AE Lab)"),
-        (r"\baelab\b", "Advanced Electronics Laboratory (AE Lab)"),
-        (r"\bcomms\s*[-_]?\s*lab\b", "Communications Laboratory (Comms Lab)"),
-        (r"\bcommslab\b", "Communications Laboratory (Comms Lab)"),
-        (r"\bcisco\s*[-_]?\s*lab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
-        (r"\bciscolab\b", "CISCO Networking Academy Computer Laboratory (CISCO Lab)"),
-    ]
-    for pattern, replacement in alias_patterns:
-        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
-    return normalized
 
 def _load_custodian_roster_from_markdown() -> List[tuple[str, str]]:
     roster_path = DOCS_FOLDER / "lab_directory.md"
@@ -430,20 +318,24 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         standalone_query += " PAASCU accreditation status level standard"
     # ────────────────────────────────────────────────────────
 
-    def _normalize_course_codes(text: str) -> str:
-        # Catch both spaces AND hyphens natively
-        return re.sub(
-            r'\b([A-Za-z]{2,5})[-\s]*(\d{3})\b',
-            lambda m: f"{m.group(1).upper()}{m.group(2)}",
-            text
-        )
+    # ── NEW: DYNAMIC FALLBACK GENERATOR ──
+    def _generate_dynamic_fallback(user_q: str) -> str:
+        fb_prompt = f"""You are AXIsstant, a friendly upperclassman CSEA assistant. 
+The user asked: "{user_q}"
+You do not have the official documentation to answer this, or it is a subjective/opinion-based question. 
+Respond warmly and conversationally in 2-3 sentences. Acknowledge what they asked naturally (e.g., "As much as I'd love to tell you who the best teacher is..." or "I wish I knew the answer to that..."). Explain that your brain is only loaded with official university and college-approved documents, and offer to help them with those topics instead."""
+        try:
+            return get_generator_llm().invoke(fb_prompt).content.strip()
+        except:
+            return "I don't have the official info for that. However, if you have any more questions, I will try my best to answer!"
+    # ─────────────────────────────────────
     
-    standalone_query = _normalize_course_codes(standalone_query)
+    standalone_query = normalize_course_codes(standalone_query)
     # ───────────────────────────────────────────────────────────────
     
-    is_incomplete_input = _is_incomplete_query(standalone_query)
+    is_incomplete_input = is_incomplete_query(standalone_query)
     
-    if not is_incomplete_input and not _is_listing_query(standalone_query) and not _is_custodian_lookup_query(standalone_query):
+    if not is_incomplete_input and not is_listing_query(standalone_query) and not is_custodian_lookup_query(standalone_query):
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
@@ -454,7 +346,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     else:
         logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
-    if _is_listing_query(standalone_query):
+    if (standalone_query):
         logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
 
     retrieval_start = time.time()
@@ -487,7 +379,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         except: pass
 
     if is_incomplete_input:
-        for variant in _build_incomplete_query_variants(standalone_query, chat_history_list):
+        for variant in build_incomplete_query_variants(standalone_query, chat_history_list):
             if variant not in sub_queries:
                 sub_queries.append(variant)
 
@@ -527,7 +419,11 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         for res in results: all_docs.extend(res)
 
     if not all_docs:
-        yield build_no_answer_response(standalone_query)
+        fallback = _generate_dynamic_fallback(standalone_query)
+        chunk_size = 40
+        for i in range(0, len(fallback), chunk_size):
+            yield fallback[i:i+chunk_size]
+            time.sleep(STREAM_DELAY)
         return
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
@@ -569,7 +465,7 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
                     hybrid_results.append(doc)
     # ────────────────────────────────
 
-    if _detect_query_intent(standalone_query) == "people":
+    if detect_query_intent(standalone_query) == "people":
         people_pool = filter_to_people_docs(latest_per_source, standalone_query)
         people_pool = boost_people_list_docs(standalone_query, people_pool, dynamic_k)
         ranked_people = rank_people_list_docs(people_pool, standalone_query)
@@ -585,12 +481,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
         if top_reranked: top_score = 10.0 
         
     else:
-        query_intent = _detect_query_intent(standalone_query)
-        if _is_people_list_query(standalone_query):
+        query_intent = (standalone_query)
+        if is_people_list_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
             max_chunks = 6
-        elif _is_curriculum_list_query(standalone_query): 
+        elif is_curriculum_list_query(standalone_query): 
             max_chunks = 24
         elif is_curriculum_query:
             max_chunks = 12
@@ -704,7 +600,7 @@ Answer the question using ONLY the context below.
 3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino.
 4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where every cell contains only dashes (---).
 5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. 
-6. **STRICTLY FACTUAL**: Use ONLY what is in the context. If the context genuinely lacks the answer, say: 'I couldn't find that in the available documents. You might want to check with your respective department chair directly!'
+6. 6. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
 7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
 8. **BE CONCISE**: Get to the point quickly.
 9. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
@@ -748,7 +644,11 @@ Hard rules for suggested questions:
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
             logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            yield build_no_answer_response(standalone_query)
+            fallback = _generate_dynamic_fallback(standalone_query)
+            chunk_size = 40
+            for i in range(0, len(fallback), chunk_size):
+                yield fallback[i:i+chunk_size]
+                time.sleep(STREAM_DELAY)
             return
 
         llm = get_generator_llm()
@@ -798,16 +698,6 @@ Hard rules for suggested questions:
         if _contains_speculation(final_verified_response):
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
-
-        if is_no_answer_response(final_verified_response):
-            final_fallback = build_no_answer_response(standalone_query)
-            add_to_cache(standalone_query, final_fallback)
-            
-            chunk_size = 40
-            for i in range(0, len(final_fallback), chunk_size):
-                yield final_fallback[i:i+chunk_size]
-                time.sleep(STREAM_DELAY) 
-            return
 
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
