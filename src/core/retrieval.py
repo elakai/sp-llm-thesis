@@ -73,18 +73,14 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
     formatted_history = []
     history_to_process = messages[1:] if len(messages) > 1 else []
     
-    # ── FIX: Only keep the last 4 messages (2 conversation turns) to prevent context bloat
     for msg in history_to_process[-4:]: 
         role = "User" if msg["role"] == "user" else "Assistant"
         content = msg["content"].replace("{", "{{").replace("}", "}}")
         
-        # ── FIX: Truncate massive markdown tables from the assistant's memory ──
-        # This prevents the LLM from getting "lazy" and regurgitating old tables
         if role == "Assistant" and "|" in content and "---" in content:
             table_start = content.find("|")
             content = content[:table_start] + "\n... [Previous table truncated to preserve memory]"
             
-        # Hard cap the memory string length to prevent context anchoring
         if len(content) > 500 and role == "Assistant":
             content = content[:500] + "..."
 
@@ -150,7 +146,7 @@ def invalidate_cache():
     logger.info("🧹 Semantic cache invalidated.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. INTENT DETECTION & QUERY BUILDING
+# 2. LOCAL RETRIEVAL HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _boost_curriculum_list_docs(query: str, docs: List[Document], base_k: int) -> List[Document]:
@@ -331,6 +327,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     # ─────────────────────────────────────
     
     standalone_query = normalize_course_codes(standalone_query)
+    standalone_query = normalize_lab_aliases(standalone_query)
     # ───────────────────────────────────────────────────────────────
     
     is_incomplete_input = is_incomplete_query(standalone_query)
@@ -346,7 +343,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     else:
         logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
-    if (standalone_query):
+    if is_listing_query(standalone_query):
         logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
 
     retrieval_start = time.time()
@@ -399,8 +396,6 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         code_match = re.search(r'\b[A-Z]{2,5}\d{3}\b', standalone_query.upper())
         if code_match:
             # ── DENSE VECTOR BAIT ──
-            # Pinecone is blind to raw course codes. We MUST attach heavy 
-            # curriculum keywords to forcefully drag the vector search to the tables.
             bait_query = f"{code_match.group(0)} complete curriculum syllabus course subjects prerequisites units laboratory"
             if bait_query not in sub_queries:
                 sub_queries.append(bait_query)
@@ -453,14 +448,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
 
     # ── THE BM25 RESCUE OPERATION ──
-    # BM25 algorithmically buries massive markdown tables. We manually scan the 
-    # raw chunks, find the exact course code, and force it into the reranker.
     if has_course_code:
         course_codes = [re.sub(r'[-\s]', '', c).lower() for c in re.findall(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query)]
         for doc in latest_per_source:
             content_norm = doc.page_content.lower().replace(" ", "").replace("-", "")
             if any(code in content_norm for code in course_codes):
-                # If BM25 dropped it, forcefully inject it back into the pool!
                 if not any(d.page_content == doc.page_content for d in hybrid_results):
                     hybrid_results.append(doc)
     # ────────────────────────────────
@@ -481,7 +473,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         if top_reranked: top_score = 10.0 
         
     else:
-        query_intent = (standalone_query)
+        query_intent = detect_query_intent(standalone_query)
         if is_people_list_query(standalone_query):
             max_chunks = 12
         elif query_intent == "people":
@@ -499,11 +491,9 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             try:
                 pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
                 
-                # Convert to a list so we can freely modify the scores
                 scores = list(get_reranker().predict(pairs))
                 
                 # ── THE CROSS-ENCODER SAFETY NET ──
-                # Extract course codes using the EXACT same forgiving regex we used for normalization
                 raw_codes = re.findall(r'\b[A-Za-z]{2,5}[-\s]*\d{3}\b', standalone_query)
                 course_codes = [re.sub(r'[-\s]', '', c).lower() for c in raw_codes]
                 
@@ -513,11 +503,9 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                     content_lower = doc.page_content.lower()
                     content_norm = content_lower.replace(" ", "").replace("-", "")
                     
-                    # 1. Force exact course codes to Rank #1
                     if course_codes and any(code in content_norm for code in course_codes):
                         scores[i] += 50.0
                         
-                    # 2. Protect tables from being buried if they contain the user's keywords
                     elif '|' in content_lower and '---' in content_lower:
                         match_count = sum(1 for kw in subject_keywords if kw in content_lower)
                         if match_count > 0:
@@ -535,6 +523,19 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 top_reranked = hybrid_results[:RERANKER_TOP_K]
         else:
             top_reranked = []
+
+    # ── CUSTODIAN DIRECTORY INJECTION ──
+    if is_custodian_lookup_query(standalone_query) or is_custodian_list_query(standalone_query):
+        roster = _load_custodian_roster_from_markdown()
+        if roster:
+            roster_text = _format_custodian_roster_response(roster)
+            roster_doc = Document(page_content=roster_text, metadata={"source": "Lab Directory"})
+            
+            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            if hash(roster_doc.page_content) not in existing_hashes:
+                top_reranked.insert(0, roster_doc)
+                top_score = max(top_score, 15.0)
+    # ────────────────────────────────────────
 
     # ── DYNAMIC PREREQUISITE INJECTION ──
     if is_prerequisite_query:
@@ -600,7 +601,7 @@ Answer the question using ONLY the context below.
 3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino.
 4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where every cell contains only dashes (---).
 5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. 
-6. 6. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
+6. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
 7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
 8. **BE CONCISE**: Get to the point quickly.
 9. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
