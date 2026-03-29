@@ -58,7 +58,7 @@ def get_google_login_url():
             "provider": "google",
             "options": {
                 # ⚠️ IMPORTANT: Change this URL to your deployed Streamlit app URL when you launch!
-                "redirect_to": "http://localhost:8501", 
+                "redirect_to": "pamtest.streamlit.app", 
                 "query_params": {
                     # This forces the Google login screen to ONLY accept this domain
                     "hd": "gbox.adnu.edu.ph" 
