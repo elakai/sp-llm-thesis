@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 import uuid
 import streamlit as st
+import streamlit.components.v1 as st_components # <-- Added this!
 
 _app_start_time = time.time()
 
@@ -93,32 +94,40 @@ if "app_loaded" not in st.session_state:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4.5. OAUTH CALLBACK CATCHER (DEBUG MODE)
+# 4.5. THE JAVASCRIPT HASH CONVERTER (Runs in the browser)
+# Streamlit can't read '#'. This script catches the raw tokens, flips '#' to '?', 
+# and instantly reloads so Python can read them.
 # ─────────────────────────────────────────────────────────────────────────────
-if "error" in st.query_params:
-    st.error(f"Google returned an error: {st.query_params['error_description']}")
-    st.stop()
+st_components.html(
+    """
+    <script>
+    if (window.location.hash && window.location.hash.includes("access_token")) {
+        let newUrl = window.location.href.replace("#", "?");
+        window.location.replace(newUrl);
+    }
+    </script>
+    """,
+    height=0
+)
 
-if "code" in st.query_params and not st.session_state.get("authenticated"):
-    st.warning("🔄 Google Auth Code detected! Attempting to log in... (Please wait)")
+# ─────────────────────────────────────────────────────────────────────────────
+# 4.6. THE DIRECT TOKEN CATCHER (Needs NO memory!)
+# ─────────────────────────────────────────────────────────────────────────────
+if "access_token" in st.query_params and "refresh_token" in st.query_params and not st.session_state.get("authenticated"):
+    st.warning("🔄 Tokens detected! Setting up your session... (Please wait)")
     try:
-        auth_code = st.query_params["code"]
-        
-        # 2. RETRIEVE THE EXACT SAME CLIENT that created the URL
-        if "sb_auth_client" not in st.session_state:
-            st.error("🚨 Browser session memory was lost during the redirect. Please clear the URL and click Login again.")
-            st.query_params.clear()
-            st.stop()
-            
-        supabase_client = st.session_state["sb_auth_client"]
-        
-        # Attempt to exchange the code (It will now have the code_verifier!)
-        session = supabase_client.auth.exchange_code_for_session({"auth_code": auth_code})
+        access_token = st.query_params["access_token"]
+        refresh_token = st.query_params["refresh_token"]
+
+        # Create a brand new client and feed it the raw tokens directly
+        supabase_client = create_supabase_client()
+        session = supabase_client.auth.set_session(access_token, refresh_token)
         
         user = session.user
         role = normalize_role(user.user_metadata.get("role", "student")) 
         full_name = user.user_metadata.get("full_name", user.email.split("@")[0])
 
+        # Log the user in
         st.session_state["authenticated"] = True
         st.session_state["user_id"] = user.id
         st.session_state["email"] = user.email
@@ -131,14 +140,14 @@ if "code" in st.query_params and not st.session_state.get("authenticated"):
             
         st.session_state["view"] = "admin" if role == "admin" else "chat"
         
+        # Clean up the ugly URL parameters
         st.query_params.clear()
-        st.success("✅ Login successful! Redirecting...")
         st.rerun()
         
     except Exception as e:
-        st.error(f"🚨 Supabase rejected the code! Error details: {e}")
+        st.error(f"🚨 Token authentication failed! Error details: {e}")
         st.stop()
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
@@ -147,11 +156,6 @@ if "code" in st.query_params and not st.session_state.get("authenticated"):
 if not st.session_state["db_online"]:
     st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
     st.stop()
-
-# ── CRITICAL FIX: Removed `_sb.auth.get_session()` auto-restore block.
-# In a multi-user server environment, that block retrieves the globally cached 
-# session of the last person who logged in, causing severe security leaks.
-# We now rely exclusively on Streamlit's isolated `st.session_state`.
 
 if not st.session_state["authenticated"]:
     render_login()

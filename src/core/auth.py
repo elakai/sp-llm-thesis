@@ -3,8 +3,18 @@ from src.config.settings import SUPABASE_URL, SUPABASE_KEY
 from src.config.logging_config import logger
 
 # Initialize Supabase Client using the centralized keys from settings.py
+import os
+from supabase import create_client, Client, ClientOptions
+
 def create_supabase_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    
+    # ── THIS IS THE MAGIC FIX ──
+    # Forces Supabase to skip the memory-based PKCE flow and use Implicit flow
+    opts = ClientOptions(flow_type="implicit")
+    
+    return create_client(url, key, options=opts)
 
 def normalize_role(role) -> str:
     return str(role).strip().lower() if role else "student"
@@ -20,6 +30,26 @@ def _is_valid_domain(email: str) -> bool:
     email = email.lower().strip()
     return email.endswith("@gbox.adnu.edu.ph") or email.endswith("@adnu.edu.ph")
 
+def get_google_login_url():
+    """Generates the Google OAuth URL restricted to the gbox domain."""
+    try:
+        # Request the OAuth URL from Supabase
+        res = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                # Update this to your deployed URL later (e.g., https://your-app.streamlit.app)
+                "redirect_to": "http://localhost:8501", 
+                "query_params": {
+                    # This forces the Google login screen to ONLY accept this domain!
+                    "hd": "gbox.adnu.edu.ph" # <-- REPLACE WITH YOUR EXACT GBOX DOMAIN
+                }
+            }
+        })
+        return res.url
+    except Exception as e:
+        print(f"Error generating Google login URL: {e}")
+        return None
+    
 def login_user(email, password):
     """
     Authenticates via Supabase Auth, then IMMEDIATELY fetches the 'role' 
