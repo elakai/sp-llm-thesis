@@ -96,56 +96,48 @@ if "app_loaded" not in st.session_state:
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 
-if not st.session_state["db_online"]:
-    st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
+# 1. RENDER YOUR CUSTOM UI (Tabs, Email, Password, AND Google Button)
+# We check both the native Google state AND your manual email/password session state
+if not st.user.is_logged_in and not st.session_state.get("authenticated"):
+    render_login() # <--- This brings your tabs and CSS back!
     st.stop()
 
-if st.session_state.get("authenticated"):
-    st.session_state["role"] = normalize_role(st.session_state.get("role"))
+# 2. CATCH THE NATIVE GOOGLE REDIRECT
+if st.user.is_logged_in and not st.session_state.get("authenticated"):
+    email = st.user.email
 
-if not st.session_state["authenticated"]:
-    render_login()
-    st.stop()
+    # Enforce the ADNU Domain Lock
+    if not (email.endswith("@gbox.adnu.edu.ph") or email.endswith("@adnu.edu.ph")):
+        st.error(f"🚨 Access Restricted: {email} is not a valid ADNU Gbox email.")
+        if st.button("Log Out and Try Again"):
+            st.logout()
+        st.stop()
 
-role = normalize_role(st.session_state.get("role"))
-st.session_state["role"] = role
-current_view = st.session_state.get("view", "chat")
+    # Fetch the user's role from Supabase and set session state
+    sb = create_supabase_client()
+    try:
+        profile = sb.table("users").select("role, full_name").eq("email", email).single().execute()
+        role = normalize_role(profile.data.get("role"))
+        full_name = profile.data.get("full_name")
+    except Exception:
+        # FIRST TIME LOGIN: Default to student and auto-register them in the DB
+        role = "student"
+        full_name = st.user.get("name") or email.split("@")[0]
+        try:
+            sb.table("users").insert({"email": email, "full_name": full_name, "role": role}).execute()
+        except Exception as db_e:
+            logger.error(f"Could not auto-register user in DB: {db_e}")
+    
+    # Lock in the session state for the rest of the app
+    st.session_state["authenticated"] = True
+    st.session_state["email"] = email
+    st.session_state["role"] = role
+    st.session_state["full_name"] = full_name
+    st.session_state["view"] = "admin" if role == "admin" else "chat"
+    
+    st.rerun()
 
-# Defense-in-depth role guard for route/view state.
-if role != "admin" and current_view in {"admin", "indexed_docs"}:
-    st.session_state["view"] = "chat"
-    logger.warning(
-        "Blocked non-admin user %s from admin view '%s'; rerouted to chat.",
-        st.session_state.get("email", "unknown"),
-        current_view,
-    )
-elif role == "admin" and current_view not in {"admin", "indexed_docs", "chat"}:
-    st.session_state["view"] = "admin"
-    logger.info(
-        "Corrected admin user %s from stale view '%s' to admin dashboard.",
-        st.session_state.get("email", "unknown"),
-        current_view,
-    )
-
-if not st.session_state["chat_history_loaded"]:
-    # chat_logs are stored by user_email, so load with email for refresh persistence.
-    history_owner = st.session_state.get("email") or st.session_state.get("user_id")
-    user_history = load_chat_history(history_owner)
-    if user_history:
-        st.session_state["chat_history"] = user_history
-        
-        # If there are current messages, try to find matching conversation
-        current_msgs = st.session_state.get("messages", [])
-        if current_msgs and st.session_state.get("active_convo_idx") is None:
-            # Look for a conversation that matches current messages
-            for i, conv in enumerate(user_history):
-                messages = conv.get("messages", []) if isinstance(conv, dict) else conv
-                if messages and len(current_msgs) > 0:
-                    # Match by first message content
-                    if messages[0].get("content") == current_msgs[0].get("content"):
-                        st.session_state["active_convo_idx"] = i
-                        break
-    st.session_state["chat_history_loaded"] = True
+# ─────────────────────────────────────────────────────────────────────────────
 
 render_sidebar()
 
