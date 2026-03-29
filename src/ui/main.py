@@ -93,7 +93,7 @@ if "app_loaded" not in st.session_state:
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 
 
-## ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # 4.5. OAUTH CALLBACK CATCHER (DEBUG MODE)
 # ─────────────────────────────────────────────────────────────────────────────
 if "error" in st.query_params:
@@ -140,6 +140,7 @@ if "code" in st.query_params and not st.session_state.get("authenticated"):
         st.error(f"🚨 Supabase rejected the code! Error details: {e}")
         st.stop()
 # ─────────────────────────────────────────────────────────────────────────────
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
