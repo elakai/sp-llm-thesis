@@ -23,7 +23,6 @@ supabase
 plotly 
 ragas 
 datasets>=2.16.1
-pyarrow<15.0.0
 opencv-python-headless
 numpy
 nest-asyncio
