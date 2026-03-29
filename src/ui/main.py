@@ -95,8 +95,6 @@ if "app_loaded" not in st.session_state:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4.5. THE JAVASCRIPT HASH CONVERTER (Runs in the browser)
-# Streamlit can't read '#'. This script catches the raw tokens, flips '#' to '?', 
-# and instantly reloads so Python can read them.
 # ─────────────────────────────────────────────────────────────────────────────
 st_components.html(
     """
@@ -111,42 +109,53 @@ st_components.html(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4.6. THE DIRECT TOKEN CATCHER (Needs NO memory!)
+# 4.6. THE OAUTH CATCHER (Handles BOTH Codes and Tokens)
 # ─────────────────────────────────────────────────────────────────────────────
-if "access_token" in st.query_params and "refresh_token" in st.query_params and not st.session_state.get("authenticated"):
-    st.warning("🔄 Tokens detected! Setting up your session... (Please wait)")
+
+# --- Case A: Handle ?code= (PKCE Flow) ---
+if "code" in st.query_params and not st.session_state.get("authenticated"):
+    st.info("🔄 Verifying Google Code...")
     try:
-        access_token = st.query_params["access_token"]
-        refresh_token = st.query_params["refresh_token"]
-
-        # Create a brand new client and feed it the raw tokens directly
-        supabase_client = create_supabase_client()
-        session = supabase_client.auth.set_session(access_token, refresh_token)
+        auth_code = st.query_params["code"]
+        sb_client = create_supabase_client()
+        # Exchange the code for a session
+        res = sb_client.auth.exchange_code_for_session({"auth_code": auth_code})
         
-        user = session.user
-        role = normalize_role(user.user_metadata.get("role", "student")) 
-        full_name = user.user_metadata.get("full_name", user.email.split("@")[0])
-
-        # Log the user in
+        user = res.user
         st.session_state["authenticated"] = True
         st.session_state["user_id"] = user.id
         st.session_state["email"] = user.email
-        st.session_state["role"] = role
-        st.session_state["full_name"] = full_name
-        st.session_state["show_welcome"] = True
+        st.session_state["role"] = normalize_role(user.user_metadata.get("role", "student"))
+        st.session_state["full_name"] = user.user_metadata.get("full_name", user.email.split("@")[0])
         
-        if "session_id" not in st.session_state:
-            st.session_state["session_id"] = str(uuid.uuid4())
-            
-        st.session_state["view"] = "admin" if role == "admin" else "chat"
-        
-        # Clean up the ugly URL parameters
         st.query_params.clear()
         st.rerun()
-        
     except Exception as e:
-        st.error(f"🚨 Token authentication failed! Error details: {e}")
-        st.stop()
+        st.error(f"🚨 Code exchange failed: {e}")
+        st.query_params.clear()
+
+# --- Case B: Handle ?access_token= (Implicit Flow) ---
+elif "access_token" in st.query_params and "refresh_token" in st.query_params and not st.session_state.get("authenticated"):
+    st.info("🔄 Setting up session from tokens...")
+    try:
+        access_token = st.query_params["access_token"]
+        refresh_token = st.query_params["refresh_token"]
+        
+        supabase_client = create_supabase_client()
+        res = supabase_client.auth.set_session(access_token, refresh_token)
+        
+        user = res.user
+        st.session_state["authenticated"] = True
+        st.session_state["user_id"] = user.id
+        st.session_state["email"] = user.email
+        st.session_state["role"] = normalize_role(user.user_metadata.get("role", "student"))
+        st.session_state["full_name"] = user.user_metadata.get("full_name", user.email.split("@")[0])
+
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"🚨 Token session failed: {e}")
+        st.query_params.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
