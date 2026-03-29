@@ -111,13 +111,10 @@ def render_login():
     # ── NATIVE STREAMLIT GOOGLE LOGIN ──
     st.markdown("<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>", unsafe_allow_html=True)
     
-    # This binds the native login instantly to your custom button
-    st.button(
-        "🌐 Sign in with ADNU Gbox", 
-        use_container_width=True, 
-        on_click=st.login, 
-        kwargs={"provider": "google"}
-    )
+    # We use a simple IF statement. 
+    # Python will absolutely NOT run st.login() until this button is clicked.
+    if st.button("🌐 Sign in with ADNU Gbox", use_container_width=True):
+        st.login(provider="google")
 
 
 def render_sidebar():
