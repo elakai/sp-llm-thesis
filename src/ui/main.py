@@ -34,6 +34,11 @@ from src.core.auth import supabase as _sb, create_supabase_client, normalize_rol
 from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
+# --- TEMPORARY DEBUGGER ---
+st.info("App refreshed!")
+st.write("What Streamlit sees in the URL:", st.query_params)
+st.write("What Streamlit remembers in memory:", st.session_state.keys())
+# --------------------------
 
 def check_pinecone_health() -> bool:
     """Lightweight health check — avoids importing heavy ingestion module."""
