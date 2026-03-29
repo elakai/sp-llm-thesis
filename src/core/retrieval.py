@@ -308,10 +308,10 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
 
-    # ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
-    estimator_keywords = ['estimator', 'passing rate', 'calculate grade', 'compute grade', 'grade calculator']
+# ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
+    estimator_keywords = ['estimator', 'tuition', 'fee', 'fees', 'cost', 'payment', 'price', 'magkano']
     if any(kw in standalone_query.lower() for kw in estimator_keywords):
-        msg = "To estimate your college passing rate and compute your grades, please use the official tool here: [https://www.adnu.edu.ph/school-fee-estimator/]"
+        msg = "To estimate your tuition fees and other school assessments, please use the official ADNU School Fee Estimator here: [https://www.adnu.edu.ph/school-fee-estimator/]"
         for word in msg.split():
             yield word + " "
             time.sleep(0.02)
