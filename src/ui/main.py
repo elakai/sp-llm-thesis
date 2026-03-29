@@ -30,7 +30,7 @@ from src.ui.admin_dashboard import render_admin_view
 from src.ui.document_management import render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
-from src.core.auth import normalize_role
+from src.core.auth import supabase as _sb, create_supabase_client, normalize_role
 from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
@@ -92,6 +92,54 @@ if "app_loaded" not in st.session_state:
     st.session_state["app_loaded"] = True
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 
+
+## ─────────────────────────────────────────────────────────────────────────────
+# 4.5. OAUTH CALLBACK CATCHER (DEBUG MODE)
+# ─────────────────────────────────────────────────────────────────────────────
+if "error" in st.query_params:
+    st.error(f"Google returned an error: {st.query_params['error_description']}")
+    st.stop()
+
+if "code" in st.query_params and not st.session_state.get("authenticated"):
+    st.warning("🔄 Google Auth Code detected! Attempting to log in... (Please wait)")
+    try:
+        auth_code = st.query_params["code"]
+        
+        # 2. RETRIEVE THE EXACT SAME CLIENT that created the URL
+        if "sb_auth_client" not in st.session_state:
+            st.error("🚨 Browser session memory was lost during the redirect. Please clear the URL and click Login again.")
+            st.query_params.clear()
+            st.stop()
+            
+        supabase_client = st.session_state["sb_auth_client"]
+        
+        # Attempt to exchange the code (It will now have the code_verifier!)
+        session = supabase_client.auth.exchange_code_for_session({"auth_code": auth_code})
+        
+        user = session.user
+        role = normalize_role(user.user_metadata.get("role", "student")) 
+        full_name = user.user_metadata.get("full_name", user.email.split("@")[0])
+
+        st.session_state["authenticated"] = True
+        st.session_state["user_id"] = user.id
+        st.session_state["email"] = user.email
+        st.session_state["role"] = role
+        st.session_state["full_name"] = full_name
+        st.session_state["show_welcome"] = True
+        
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"] = str(uuid.uuid4())
+            
+        st.session_state["view"] = "admin" if role == "admin" else "chat"
+        
+        st.query_params.clear()
+        st.success("✅ Login successful! Redirecting...")
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"🚨 Supabase rejected the code! Error details: {e}")
+        st.stop()
+# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,32 +148,14 @@ if not st.session_state["db_online"]:
     st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
     st.stop()
 
-if st.session_state.get("authenticated"):
-    st.session_state["role"] = normalize_role(st.session_state.get("role"))
+# ── CRITICAL FIX: Removed `_sb.auth.get_session()` auto-restore block.
+# In a multi-user server environment, that block retrieves the globally cached 
+# session of the last person who logged in, causing severe security leaks.
+# We now rely exclusively on Streamlit's isolated `st.session_state`.
 
 if not st.session_state["authenticated"]:
     render_login()
     st.stop()
-
-role = normalize_role(st.session_state.get("role"))
-st.session_state["role"] = role
-current_view = st.session_state.get("view", "chat")
-
-# Defense-in-depth role guard for route/view state.
-if role != "admin" and current_view in {"admin", "indexed_docs"}:
-    st.session_state["view"] = "chat"
-    logger.warning(
-        "Blocked non-admin user %s from admin view '%s'; rerouted to chat.",
-        st.session_state.get("email", "unknown"),
-        current_view,
-    )
-elif role == "admin" and current_view not in {"admin", "indexed_docs", "chat"}:
-    st.session_state["view"] = "admin"
-    logger.info(
-        "Corrected admin user %s from stale view '%s' to admin dashboard.",
-        st.session_state.get("email", "unknown"),
-        current_view,
-    )
 
 if not st.session_state["chat_history_loaded"]:
     # chat_logs are stored by user_email, so load with email for refresh persistence.
