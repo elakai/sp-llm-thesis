@@ -96,10 +96,12 @@ if "app_loaded" not in st.session_state:
 # ─────────────────────────────────────────────────────────────────────────────
 # 4.5. THE JAVASCRIPT HASH CONVERTER (Runs in the browser)
 # ─────────────────────────────────────────────────────────────────────────────
+# This catches the '#' from Supabase, flips it to '?', and reloads the page.
 st_components.html(
     """
     <script>
     if (window.location.hash && window.location.hash.includes("access_token")) {
+        // Find the current URL, replace '#' with '?', and reload
         let newUrl = window.location.href.replace("#", "?");
         window.location.replace(newUrl);
     }
@@ -109,38 +111,15 @@ st_components.html(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4.6. THE OAUTH CATCHER (Handles BOTH Codes and Tokens)
+# 4.6. THE DIRECT TOKEN CATCHER (Bypasses the "Verifier" error)
 # ─────────────────────────────────────────────────────────────────────────────
-
-# --- Case A: Handle ?code= (PKCE Flow) ---
-if "code" in st.query_params and not st.session_state.get("authenticated"):
-    st.info("🔄 Verifying Google Code...")
-    try:
-        auth_code = st.query_params["code"]
-        sb_client = create_supabase_client()
-        # Exchange the code for a session
-        res = sb_client.auth.exchange_code_for_session({"auth_code": auth_code})
-        
-        user = res.user
-        st.session_state["authenticated"] = True
-        st.session_state["user_id"] = user.id
-        st.session_state["email"] = user.email
-        st.session_state["role"] = normalize_role(user.user_metadata.get("role", "student"))
-        st.session_state["full_name"] = user.user_metadata.get("full_name", user.email.split("@")[0])
-        
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"🚨 Code exchange failed: {e}")
-        st.query_params.clear()
-
-# --- Case B: Handle ?access_token= (Implicit Flow) ---
-elif "access_token" in st.query_params and "refresh_token" in st.query_params and not st.session_state.get("authenticated"):
-    st.info("🔄 Setting up session from tokens...")
+if "access_token" in st.query_params and "refresh_token" in st.query_params and not st.session_state.get("authenticated"):
+    st.info("🔄 Tokens detected! Finalizing login...")
     try:
         access_token = st.query_params["access_token"]
         refresh_token = st.query_params["refresh_token"]
-        
+
+        # We create a clean client and just give it the tokens
         supabase_client = create_supabase_client()
         res = supabase_client.auth.set_session(access_token, refresh_token)
         
@@ -150,11 +129,17 @@ elif "access_token" in st.query_params and "refresh_token" in st.query_params an
         st.session_state["email"] = user.email
         st.session_state["role"] = normalize_role(user.user_metadata.get("role", "student"))
         st.session_state["full_name"] = user.user_metadata.get("full_name", user.email.split("@")[0])
-
+        
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"] = str(uuid.uuid4())
+            
+        st.session_state["view"] = "admin" if st.session_state["role"] == "admin" else "chat"
+        
         st.query_params.clear()
         st.rerun()
+        
     except Exception as e:
-        st.error(f"🚨 Token session failed: {e}")
+        st.error(f"🚨 Login failed: {e}")
         st.query_params.clear()
 
 
