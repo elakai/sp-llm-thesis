@@ -646,10 +646,11 @@ Hard rules for suggested questions:
 """
 
     try:
+        # Update this boolean check in generate_response (around source: 334)
         is_protected_query = (
             is_curriculum_query or is_facility_query or is_analytical_query or 
             is_download_query or is_incomplete_input or is_prerequisite_query or
-            has_course_code
+            has_course_code or intent == "history"  # <--- Add this!
         )
 
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:

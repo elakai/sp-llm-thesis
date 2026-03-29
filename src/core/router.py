@@ -21,7 +21,9 @@ def get_dynamic_k(query: str) -> int:
 
     curriculum_keywords = ['curriculum', 'subject', 'course', 'year', 'semester', 'units', 'prerequisite']
     if any(kw in q for kw in curriculum_keywords): return 20 
-
+    # Add this check to your get_dynamic_k function (around source: 351)
+    if any(kw in q for kw in ["history", "background", "origin", "founded", "established"]):
+        return 20  # Increased from the default 12 to capture more narrative context
     complex_signals = [" difference ", " compare ", " vs ", " versus ", " list all ", " what are all "]
     if any(signal in q for signal in complex_signals): return 15
 
