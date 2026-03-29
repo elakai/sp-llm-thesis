@@ -30,13 +30,14 @@ from src.ui.admin_dashboard import render_admin_view
 from src.ui.document_management import render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
 from src.core.feedback import load_chat_history
-from src.core.auth import normalize_role
+
+# ── FIX: Added create_supabase_client to imports! ──
+from src.core.auth import normalize_role, create_supabase_client 
+
 from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
-
 def check_pinecone_health() -> bool:
-    """Lightweight health check — avoids importing heavy ingestion module."""
     try:
         import os
         from pinecone import Pinecone
@@ -53,10 +54,8 @@ def check_pinecone_health() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
-# Load main styles immediately to prevent flash of unstyled content
 render_main_styles()
 
-# Initialize ALL your session variables exactly as you had them
 if "session_id" not in st.session_state: st.session_state["session_id"] = str(uuid.uuid4())
 if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
 if "messages" not in st.session_state: st.session_state["messages"] = []
@@ -82,7 +81,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── FIX: REPLACED SPINNER BLOCK WITH FASTER COLD START ──
 if "app_loaded" not in st.session_state:
     from src.config.settings import get_embeddings, get_generator_llm
     from src.core.retrieval import get_reranker
@@ -92,42 +90,49 @@ if "app_loaded" not in st.session_state:
     st.session_state["app_loaded"] = True
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Streamlit's st.user object relies on the presence of an email, not a boolean.
-google_email = getattr(st.user, "email", None)
-if not google_email and isinstance(st.user, dict):
-    google_email = st.user.get("email")
+# Bulletproof st.user lookup (handles Streamlit version quirks)
+current_user = getattr(st, "user", getattr(st, "experimental_user", None))
+google_email = getattr(current_user, "email", None) if current_user else None
+if not google_email and isinstance(current_user, dict):
+    google_email = current_user.get("email")
 
-# 1. RENDER YOUR CUSTOM UI (Tabs, Email, Password, AND Google Button)
-# If there is no Google email, and they haven't manually logged in, show the UI
+# 1. Check Database Health (Restored)
+if not st.session_state["db_online"]:
+    st.error("🚨 Database Connection Error. Please verify your Pinecone API Key.")
+    st.stop()
+
+# 2. Render Login Form
 if not google_email and not st.session_state.get("authenticated"):
     render_login() 
     st.stop()
 
-# 2. CATCH THE NATIVE GOOGLE REDIRECT
+# 3. Catch the Google Redirect
 if google_email and not st.session_state.get("authenticated"):
-    # Enforce the ADNU Domain Lock
+    
+    # Enforce Domain Lock
     if not (google_email.endswith("@gbox.adnu.edu.ph") or google_email.endswith("@adnu.edu.ph")):
-        st.error(f"🚨 Access Restricted: {google_email} is not a valid ADNU Gbox email.")
+        st.error(f"🚨 Access Restricted: {google_email} is not a valid ADNU email.")
         if st.button("Log Out and Try Again"):
             st.logout()
         st.stop()
 
-    # Fetch the user's role from Supabase and set session state
+    # Database Lookup (Now works because import is fixed!)
     sb = create_supabase_client()
     try:
         profile = sb.table("users").select("role, full_name").eq("email", google_email).single().execute()
         role = normalize_role(profile.data.get("role"))
         full_name = profile.data.get("full_name")
     except Exception:
-        # FIRST TIME LOGIN: Default to student and auto-register them in the DB
+        # First-time user registration
         role = "student"
-        google_name = getattr(st.user, "name", None)
-        if not google_name and isinstance(st.user, dict):
-            google_name = st.user.get("name")
+        google_name = getattr(current_user, "name", None) if current_user else None
+        if not google_name and isinstance(current_user, dict):
+            google_name = current_user.get("name")
             
         full_name = google_name or google_email.split("@")[0]
         try:
@@ -135,7 +140,7 @@ if google_email and not st.session_state.get("authenticated"):
         except Exception as db_e:
             logger.error(f"Could not auto-register user in DB: {db_e}")
     
-    # Lock in the session state for the rest of the app
+    # Lock in Session
     st.session_state["authenticated"] = True
     st.session_state["email"] = google_email
     st.session_state["role"] = role
@@ -144,26 +149,33 @@ if google_email and not st.session_state.get("authenticated"):
     
     st.rerun()
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ── RESTORED: CHAT HISTORY LOADER ──
+if not st.session_state["chat_history_loaded"]:
+    history_owner = st.session_state.get("email") or st.session_state.get("user_id")
+    user_history = load_chat_history(history_owner)
+    if user_history:
+        st.session_state["chat_history"] = user_history
+        current_msgs = st.session_state.get("messages", [])
+        if current_msgs and st.session_state.get("active_convo_idx") is None:
+            for i, conv in enumerate(user_history):
+                messages = conv.get("messages", []) if isinstance(conv, dict) else conv
+                if messages and len(current_msgs) > 0:
+                    if messages[0].get("content") == current_msgs[0].get("content"):
+                        st.session_state["active_convo_idx"] = i
+                        break
+    st.session_state["chat_history_loaded"] = True
 
-render_sidebar()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. VIEW CONTROLLER
 # ─────────────────────────────────────────────────────────────────────────────
+render_sidebar()
 
-# --- OPTION A: ADMIN VIEW ---
 if st.session_state["view"] == "admin" and st.session_state.get("role") == "admin":
     render_admin_view()
-
-# --- OPTION B: INDEXED DOCUMENTS VIEW ---
 elif st.session_state["view"] == "indexed_docs" and st.session_state.get("role") == "admin":
     render_indexed_documents_view()
-
-# --- OPTION C: HISTORY VIEW ---
 elif st.session_state["view"] == "history":
     render_history_view()
-
-# --- OPTION D: MAIN CHAT VIEW ---
 else:
     render_chat_view()
