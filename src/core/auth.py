@@ -33,21 +33,23 @@ def _is_valid_domain(email: str) -> bool:
 def get_google_login_url():
     """Generates the Google OAuth URL restricted to the gbox domain."""
     try:
-        # Request the OAuth URL from Supabase
-        res = supabase.auth.sign_in_with_oauth({
+        # 1. IMPORTANT: We must create a FRESH client here that uses ClientOptions(flow_type="implicit")
+        # If we use the global 'supabase' client defined above, it might default to PKCE/Code flow.
+        auth_client = create_supabase_client()
+        
+        res = auth_client.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {
-                # Update this to your deployed URL later (e.g., https://your-app.streamlit.app)
-                "redirect_to": "http://localhost:8501", 
+                # 2. UPDATE THIS: For your live app, this must match your Streamlit Cloud URL
+                "redirect_to": "https://pamtest.streamlit.app", 
                 "query_params": {
-                    # This forces the Google login screen to ONLY accept this domain!
-                    "hd": "gbox.adnu.edu.ph" # <-- REPLACE WITH YOUR EXACT GBOX DOMAIN
+                    "hd": "gbox.adnu.edu.ph"
                 }
             }
         })
         return res.url
     except Exception as e:
-        print(f"Error generating Google login URL: {e}")
+        logger.error(f"Error generating Google login URL: {e}")
         return None
     
 def login_user(email, password):
