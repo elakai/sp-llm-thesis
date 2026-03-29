@@ -48,29 +48,6 @@ def get_base64_logo():
     return ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GOOGLE OAUTH HELPER (RESTRICTED TO GBOX)
-# ─────────────────────────────────────────────────────────────────────────────
-def get_google_login_url():
-    """Generates the Google OAuth URL restricted to the ADNU gbox domain."""
-    try:
-        supabase = create_supabase_client()
-        res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {
-                # ⚠️ IMPORTANT: Change this URL to your deployed Streamlit app URL when you launch!
-                "redirect_to": "http://localhost:8501", 
-                "query_params": {
-                    # This forces the Google login screen to ONLY accept this domain
-                    "hd": "gbox.adnu.edu.ph" 
-                }
-            }
-        })
-        return res.url
-    except Exception as e:
-        print(f"Error generating Google login URL: {e}")
-        return None
-
-# ─────────────────────────────────────────────────────────────────────────────
 # VIEWS
 # ─────────────────────────────────────────────────────────────────────────────
 def render_login():
@@ -131,22 +108,7 @@ def render_login():
                     else:
                         st.error(f"Error: {message}")
   
-  # ── GOOGLE LOGIN BUTTON (RESIZED USING COLUMNS) ──
-    google_oauth_url = get_google_login_url()
-    
-    if google_oauth_url:
-        # We use columns ONLY on the button so the tabs above are completely unaffected.
-        # 💡 TIP: If the button is still too wide, decrease '1.5' (e.g., to 1.2 or 1). 
-        # If it's too narrow, increase '1.5' (e.g., to 2) until it perfectly matches your tabs.
-        left_spacer, button_col, right_spacer = st.columns([1, 1.1, 1])
-        
-        with button_col:
-            st.markdown("<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>", unsafe_allow_html=True)
-            st.link_button(
-                "🌐 Sign in with ADNU Gbox", 
-                url=google_oauth_url, 
-                use_container_width=True
-            )
+  
 
 
                     
