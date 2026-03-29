@@ -108,11 +108,12 @@ def render_login():
                     else:
                         st.error(f"Error: {message}")
 
-    # ── NATIVE STREAMLIT GOOGLE LOGIN (Fix: Removed Button Wrapper) ──
+    # ── NATIVE STREAMLIT GOOGLE LOGIN (Added below the tabs) ──
     st.markdown("<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>", unsafe_allow_html=True)
     
-    # Calling st.login directly prevents the double-click render failure
-    st.login("google")
+    # This single line triggers the flawless native redirect!
+    if st.button("🌐 Sign in with ADNU Gbox", use_container_width=True):
+        st.login(provider="google")
 
 def render_sidebar():
     load_css("main.css")
