@@ -96,19 +96,22 @@ if "app_loaded" not in st.session_state:
 # 5. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Streamlit's st.user object relies on the presence of an email, not a boolean.
+google_email = getattr(st.user, "email", None)
+if not google_email and isinstance(st.user, dict):
+    google_email = st.user.get("email")
+
 # 1. RENDER YOUR CUSTOM UI (Tabs, Email, Password, AND Google Button)
-# We check both the native Google state AND your manual email/password session state
-if not st.user.is_logged_in and not st.session_state.get("authenticated"):
-    render_login() # <--- This brings your tabs and CSS back!
+# If there is no Google email, and they haven't manually logged in, show the UI
+if not google_email and not st.session_state.get("authenticated"):
+    render_login() 
     st.stop()
 
 # 2. CATCH THE NATIVE GOOGLE REDIRECT
-if st.user.is_logged_in and not st.session_state.get("authenticated"):
-    email = st.user.email
-
+if google_email and not st.session_state.get("authenticated"):
     # Enforce the ADNU Domain Lock
-    if not (email.endswith("@gbox.adnu.edu.ph") or email.endswith("@adnu.edu.ph")):
-        st.error(f"🚨 Access Restricted: {email} is not a valid ADNU Gbox email.")
+    if not (google_email.endswith("@gbox.adnu.edu.ph") or google_email.endswith("@adnu.edu.ph")):
+        st.error(f"🚨 Access Restricted: {google_email} is not a valid ADNU Gbox email.")
         if st.button("Log Out and Try Again"):
             st.logout()
         st.stop()
@@ -116,21 +119,25 @@ if st.user.is_logged_in and not st.session_state.get("authenticated"):
     # Fetch the user's role from Supabase and set session state
     sb = create_supabase_client()
     try:
-        profile = sb.table("users").select("role, full_name").eq("email", email).single().execute()
+        profile = sb.table("users").select("role, full_name").eq("email", google_email).single().execute()
         role = normalize_role(profile.data.get("role"))
         full_name = profile.data.get("full_name")
     except Exception:
         # FIRST TIME LOGIN: Default to student and auto-register them in the DB
         role = "student"
-        full_name = st.user.get("name") or email.split("@")[0]
+        google_name = getattr(st.user, "name", None)
+        if not google_name and isinstance(st.user, dict):
+            google_name = st.user.get("name")
+            
+        full_name = google_name or google_email.split("@")[0]
         try:
-            sb.table("users").insert({"email": email, "full_name": full_name, "role": role}).execute()
+            sb.table("users").insert({"email": google_email, "full_name": full_name, "role": role}).execute()
         except Exception as db_e:
             logger.error(f"Could not auto-register user in DB: {db_e}")
     
     # Lock in the session state for the rest of the app
     st.session_state["authenticated"] = True
-    st.session_state["email"] = email
+    st.session_state["email"] = google_email
     st.session_state["role"] = role
     st.session_state["full_name"] = full_name
     st.session_state["view"] = "admin" if role == "admin" else "chat"
