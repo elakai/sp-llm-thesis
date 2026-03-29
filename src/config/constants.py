@@ -22,7 +22,7 @@ GREETING_KEYWORDS = ["hi", "hello", "hey", "good morning", "good afternoon", "th
 OFF_TOPIC_KEYWORDS = [
     "recipe", "cook", "bake", "movie", "weather", "sports", 
     "game", "minecraft", "valorant", "programming help", "code a", 
-    "write a script", "joke", "poem", "story"
+    "write a script", "joke", "poem"
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. PIPELINE TRIGGERS & GUARDRAILS
