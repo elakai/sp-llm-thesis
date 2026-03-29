@@ -22,7 +22,7 @@ rank_bm25
 supabase
 plotly 
 ragas 
-datasets
+datasets>=2.16.1
 opencv-python-headless
 numpy
 nest-asyncio
