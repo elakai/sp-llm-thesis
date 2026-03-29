@@ -72,7 +72,7 @@ if "app_loaded" not in st.session_state:
     st.session_state["app_loaded"] = True
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. AUTHENTICATION GATE (Fix: Rerun Race Condition Removed)
+# 4. AUTHENTICATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 google_email = None
 try:
@@ -117,8 +117,6 @@ if google_email and not st.session_state.get("authenticated"):
         st.session_state["session_id"] = str(uuid.uuid4())
     st.session_state["view"] = "admin" if role == "admin" else "chat"
     
-    # ── CRITICAL: st.rerun() removed to allow natural waterfall rendering ──
-
 # Show login if still not authenticated after all checks
 if not st.session_state.get("authenticated"):
     render_login()

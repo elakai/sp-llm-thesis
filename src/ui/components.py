@@ -108,12 +108,17 @@ def render_login():
                     else:
                         st.error(f"Error: {message}")
 
-    # ── NATIVE STREAMLIT GOOGLE LOGIN (Added below the tabs) ──
+    # ── NATIVE STREAMLIT GOOGLE LOGIN ──
     st.markdown("<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>", unsafe_allow_html=True)
     
-    # This single line triggers the flawless native redirect!
-    if st.button("🌐 Sign in with ADNU Gbox", use_container_width=True):
-        st.login(provider="google")
+    # This binds the native login instantly to your custom button
+    st.button(
+        "🌐 Sign in with ADNU Gbox", 
+        use_container_width=True, 
+        on_click=st.login, 
+        kwargs={"provider": "google"}
+    )
+
 
 def render_sidebar():
     load_css("main.css")
