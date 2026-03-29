@@ -108,13 +108,15 @@ def render_login():
                     else:
                         st.error(f"Error: {message}")
 
-    # ── NATIVE STREAMLIT GOOGLE LOGIN ──
-    st.markdown("<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>", unsafe_allow_html=True)
+    # ── NATIVE STREAMLIT GOOGLE LOGIN (With Initiation Flag) ──
+    st.markdown(
+        "<div style='text-align: center; color: #888; margin: 15px 0 10px 0;'>────── OR ──────</div>",
+        unsafe_allow_html=True
+    )
     
-    # We use a simple IF statement. 
-    # Python will absolutely NOT run st.login() until this button is clicked.
-    if st.button("🌐 Sign in with ADNU Gbox", use_container_width=True):
-        st.login(provider="google")
+    if st.button("🌐 Sign in with ADNU Gbox", use_container_width=True, key="google_login_btn"):
+        st.session_state["google_auth_initiated"] = True
+        st.login("google")
 
 
 def render_sidebar():
