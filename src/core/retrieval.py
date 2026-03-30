@@ -417,6 +417,17 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             if variant not in sub_queries:
                 sub_queries.append(variant)
                 
+    # Add capitalization variants so retrieval is robust to user casing style.
+    case_variants = [
+        standalone_query,
+        standalone_query.lower(),
+        standalone_query.title(),
+    ]
+    for variant in case_variants:
+        v = (variant or "").strip()
+        if v and v not in sub_queries:
+            sub_queries.append(v)
+
     # Ensure uniqueness to save Pinecone calls
     sub_queries = list(dict.fromkeys(sub_queries))
     # ──────────────────────────────────────────────
