@@ -312,6 +312,16 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # Do not let the LLM guess what CSEA means. Force the exact spelling.
     standalone_query = re.sub(r'\bcsea\b', 'College of Science Engineering and Architecture', standalone_query, flags=re.IGNORECASE)
     standalone_query = re.sub(r'\badnu\b', 'Ateneo de Naga University', standalone_query, flags=re.IGNORECASE)
+    # ── THESIS FIX: IMPLICIT CSEA CONTEXT ──
+    # If the user generically asks for the dean or chair, implicitly inject CSEA 
+    # so the Cross-Encoder knows exactly who they are talking about.
+    if re.search(r'\b(dean|deans|chair|chairs|chairperson|chairpersons|dept chair| dept)\b', standalone_query, re.IGNORECASE) and 'CSEA' not in standalone_query:
+        standalone_query += " CSEA"
+    # ── THESIS FIX: IMPLICIT ROOM CONTEXT ──
+    # If the user asks for a workshop or lab but forgets to type "room", inject it.
+    # This guarantees a high vector match with headers like "Electronics Workshop Room".
+    if re.search(r'\b(workshop|lab|laboratory)\b', standalone_query, re.IGNORECASE) and 'room' not in standalone_query.lower():
+        standalone_query += " room"
     # ─────────────────────────────────────────────────
 
 # ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──

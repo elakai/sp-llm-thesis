@@ -41,6 +41,10 @@ def get_dynamic_k(query: str) -> int:
     if any(kw in q for kw in ["org", "orgs", "organization", "organizations", "club", "clubs", "society", "societies", "extracurricular", "co-curricular"]):
         return 20
 
+    # ── THESIS FIX: BOOST K FOR FACILITIES AND PERSONNEL ──
+    if any(kw in q for kw in ["custodian", "technician", "workshop", "lab", "laboratory", "facility"]):
+        return 20
+
     return 12
 
 def route_query(query: str) -> tuple:
