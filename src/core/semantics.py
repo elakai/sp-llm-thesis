@@ -56,12 +56,24 @@ def detect_query_intent(query: str) -> str:
     return "general"
 
 def is_listing_query(query: str) -> bool:
-    q = (query or "").lower()
+    """
+    HOLISTIC INTENT DETECTOR:
+    Identifies if a query requires reading a full document (lists, overviews, plurals)
+    rather than finding a single specific factoid.
+    """
+    q = query.lower()
+    
+    # Structural triggers that indicate a desire for a comprehensive answer
     list_triggers = [
-        "list", "enumerate", "show", "show all", "all ",
-        "who are", "names", "name", "members", "provide"
+        "list", "all the", "what are the", "who are the", "show me all", 
+        "every", "types of", "kinds of", "examples of", "directory", 
+        "organizations", "orgs", "policies", "rules", "guidelines", "facilities", "extracurricular"
     ]
-    return any(trigger in q for trigger in list_triggers)
+    
+    import re
+    plural_regex = r"what are \w+s\b"
+    
+    return any(trigger in q for trigger in list_triggers) or bool(re.search(plural_regex, q))
 
 def is_people_list_query(query: str) -> bool:
     q = (query or "").lower()
@@ -194,3 +206,48 @@ def expand_and_normalize_query(user_query: str) -> list[str]:
     except Exception as e:
         logger.error(f"Query Expansion failed: {e}")
         return [user_query] # Safe fallback
+
+def expand_query_semantics(query: str) -> str:
+    """
+    THESIS FEATURE: Semantic Query Expansion
+    Translates local student slang and Taglish into formal search terms.
+    """
+    slang_triggers = {
+        "topnotcher", "topnotchers", "orgs", "ina", 
+        "bagsak", "fail", "failed", "pasa", "pass", "passed",
+        "lipat", "shift", "shifter", "drop", "prof", "teacher", 
+        "sir", "maam", "kailangan", "need to take", "pre-req", "prereq"
+    }
+    
+    q_tokens = set(re.findall(r'\b\w+\b', query.lower()))
+    
+    if not any(trigger in q_tokens for trigger in slang_triggers) and not any(trigger in query.lower() for trigger in slang_triggers):
+        return query 
+        
+    try:
+        llm = get_generator_llm()
+        expansion_prompt = f"""
+        You are a search optimization module for Ateneo de Naga University (ADNU).
+        Rewrite the user's query into formal academic terminology to maximize vector database retrieval.
+        KNOWN TRANSLATIONS:
+        - "topnotcher" -> "top national passer, highest board exam passer, licensure examination"
+        - "orgs" -> "student organizations, extra-curriculars, clubs"
+        - "ina" -> "Our Lady of Peñafrancia"
+        - "bagsak" / "fail" -> "retake, prerequisite failure, academic probation, failing grade"
+        - "lipat" / "shift" -> "shifting program, transfer of degree, change of course"
+        - "kailangan" / "need to take" -> "required subjects, prerequisites, curriculum"
+        - "prof" / "teacher" -> "faculty member, instructor, department chair"
+        
+        CRITICAL RULE: DO NOT write a conversational sentence. DO NOT add fluff like "Do you have a list of...". 
+        ONLY output a raw, concise string of keywords. 
+        
+        User Query: {query}
+        Expanded Keywords ONLY:"""
+        
+        response = llm.invoke(expansion_prompt).content.strip()
+        logger.info(f"✨ Semantic Expansion Triggered: {response}")
+        return response
+        
+    except Exception as e:
+        logger.warning(f"Query expansion failed: {e}. Falling back to original.")
+        return query

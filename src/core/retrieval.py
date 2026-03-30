@@ -13,7 +13,7 @@ from src.core.semantics import (
     tokenize, detect_query_intent, is_listing_query, is_people_list_query,
     is_curriculum_list_query, is_incomplete_query, build_incomplete_query_variants,
     is_custodian_lookup_query, is_custodian_list_query, normalize_lab_aliases,
-    normalize_course_codes, expand_and_normalize_query
+    normalize_course_codes, expand_query_semantics
 )
 from src.core.guardrails import verify_answer, validate_query, redact_pii
 from src.config.settings import get_generator_llm, get_embeddings, get_retriever
@@ -376,27 +376,32 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             time.sleep(0.02)
         return
 
-# ── HOLISTIC SEMANTIC QUERY EXPANSION ──
-    # Instead of relying strictly on keywords, we use the LLM to normalize the query
-    sub_queries = []
+# ── THESIS FEATURE: SEMANTIC QUERY EXPANSION ──
+    # 1. Translate Taglish/Slang into formal academic terms
+    expanded_query = expand_query_semantics(standalone_query)
     
-    if is_incomplete_input:
-        sub_queries.extend(build_incomplete_query_variants(standalone_query, chat_history_list))
-    else:
-        # This standardizes different phrasings into identical search vectors
-        expanded_queries = expand_and_normalize_query(standalone_query)
-        sub_queries.extend([q for q in expanded_queries if q])
+    sub_queries = [standalone_query]
+    
+    # If the LLM expanded the query, add the formal version to our search net
+    if expanded_query != standalone_query:
+        sub_queries.append(expanded_query)
         
-        # If it's a complex comparative query, break it down further
-        if any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS):
-            try: 
-                sub_queries.extend(decompose_query(standalone_query))
-            except: 
-                pass
+    # 2. Handle Complex/Comparative Queries (e.g. "difference between BSCS and BSCpE")
+    is_complex = (not is_incomplete_input) and any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
+    if is_complex:
+        try: 
+            sub_queries.extend(decompose_query(standalone_query))
+        except: pass
 
+    # 3. Handle Follow-up Queries (e.g. "what are the prerequisites?")
+    if is_incomplete_input:
+        for variant in build_incomplete_query_variants(standalone_query, chat_history_list):
+            if variant not in sub_queries:
+                sub_queries.append(variant)
+                
     # Ensure uniqueness to save Pinecone calls
     sub_queries = list(dict.fromkeys(sub_queries))
-    # ───────────────────────────────────────
+    # ──────────────────────────────────────────────
 
     has_course_code = bool(re.search(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query.upper()))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
@@ -464,7 +469,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     )
 
     top_score, second_score = float("-inf"), float("-inf")
-    hybrid_results = hybrid_rerank(standalone_query, latest_per_source)
+    hybrid_results = hybrid_rerank(expanded_query, latest_per_source)
 
     # ── THE BM25 RESCUE OPERATION ──
     if has_course_code:
@@ -493,22 +498,23 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         
     else:
         query_intent = detect_query_intent(standalone_query)
-        if is_people_list_query(standalone_query):
-            max_chunks = 12
-        elif query_intent == "people":
-            max_chunks = 6
-        elif is_curriculum_list_query(standalone_query): 
-            max_chunks = 24
-        elif is_curriculum_query:
-            max_chunks = 12
+        # ── HOLISTIC STRUCTURAL ROUTING ──
+        # If the user asks for a comprehensive list (orgs, policies, directories)
+        if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
+            max_chunks = 25  # Open the floodgates to read the whole document
+        # If it's a general domain query
+        elif is_curriculum_query or query_intent == "people":
+            max_chunks = 12           
+        # If it's a highly specific factoid (prevent hallucination)
         else:
-            max_chunks = 3
+            max_chunks = 5
+            # ─────────────────────────────────
             
         hybrid_results = enforce_source_diversity(hybrid_results, max_per_source=max_chunks)
 
         if hybrid_results:
             try:
-                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
+                pairs = [(expanded_query, doc.page_content) for doc in hybrid_results]
                 
                 scores = list(get_reranker().predict(pairs))
                 
@@ -536,7 +542,17 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 top_score = float(scores[sorted_indices[0]])
                 if len(sorted_indices) > 1: second_score = float(scores[sorted_indices[1]])
                 
-                top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+                # ── HOLISTIC FIX: DISABLE THE RERANKER GUILLOTINE FOR LISTS ──
+                if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
+                    # For comprehensive lists, keep ALL chunks retrieved by the dynamic allocator.
+                    # Do not slice them, because the Cross-Encoder will naturally score list items 
+                    # lower if they don't contain the exact header keyword (like "CSEA").
+                    top_reranked = [hybrid_results[i] for i in sorted_indices]
+                else:
+                    # For standard factoids, slice off the noise as usual.
+                    top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
+                # ──────────────────────────────────────────────────────────────
+                
             except Exception as e:
                 logger.error(f"Reranking failed: {e}")
                 top_reranked = hybrid_results[:RERANKER_TOP_K]
@@ -664,14 +680,20 @@ Hard rules for suggested questions:
             has_course_code or intent == "history"  # <--- Add this!
         )
 
+        # if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
+        #     logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
+        #     fallback = _generate_dynamic_fallback(standalone_query)
+        #     chunk_size = 40
+        #     for i in range(0, len(fallback), chunk_size):
+        #         yield fallback[i:i+chunk_size]
+        #         time.sleep(STREAM_DELAY)
+        #     return
+
+        # ── THESIS FIX: REMOVED THE ARTIFICIAL CHOKEHOLD ──
+        # Let the LLM read the context instead of killing it based on a math score.
         if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
-            logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
-            fallback = _generate_dynamic_fallback(standalone_query)
-            chunk_size = 40
-            for i in range(0, len(fallback), chunk_size):
-                yield fallback[i:i+chunk_size]
-                time.sleep(STREAM_DELAY)
-            return
+            logger.warning(f"⚠️ Low Retrieval Score ({top_score:.2f}), but passing to LLM to verify context anyway.")
+        # ──────────────────────────────────────────────────
 
         llm = get_generator_llm()
         draft_raw = get_llm_response(llm, prompt).content.strip()
@@ -692,14 +714,26 @@ Hard rules for suggested questions:
             draft_response = draft_raw.strip()
 
         score_margin = top_score - second_score if second_score != float("-inf") else top_score
-        high_confidence = (top_score >= 1.5 and score_margin >= 0.4)
+        
+        # ── HOLISTIC ARCHITECTURAL FIX: INTENT-AWARE CONFIDENCE ──
+        # Factoid queries require strict math (high score, high margin) to pass.
+        # But for LIST queries, chunks are just fragments of the whole. 
+        # CE scores will be naturally low and margins will be tiny. 
+        if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
+            # If we know the user wants a list, and we found chunks, trust the retrieval and bypass the Critic.
+            high_confidence = len(top_reranked) > 0
+        else:
+            # Standard factoid logic
+            high_confidence = (top_score >= 1.5 and score_margin >= 0.4)
+        # ─────────────────────────────────────────────────────────
 
         if high_confidence:
-            logger.info(f"✨ High Confidence ({top_score:.2f}, margin {score_margin:.2f}). Bypassing Critic.")
+            logger.info(f"✨ High Confidence Routing. Bypassing Critic.")
             final_verified_response = draft_response
         else:
             logger.info(f"🔍 Moderate Confidence ({top_score:.2f}, margin {score_margin:.2f}). Triggering Critic Persona...")
             final_verified_response = verify_answer(standalone_query, context, draft_response)
+
 
         st.session_state["performance_metrics"] = {
             "retrieval_latency": retrieval_time,
