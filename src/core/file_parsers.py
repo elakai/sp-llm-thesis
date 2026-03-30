@@ -157,8 +157,11 @@ def reconstruct_body_text(words: list) -> str:
         text += line_str + "\n"
     return text
 
-def load_pdf(path: str, filename: str, norm_filename: str, header_margin_pct=0.08, footer_margin_pct=0.08) -> List[Document]:
+def load_pdf(path: str, filename: str, norm_filename: str | None = None, header_margin_pct=0.08, footer_margin_pct=0.08) -> List[Document]:
     logger.info(f"Reading PDF: {filename}...")
+    # Backward-compatible fallback for older call sites still using 2 arguments.
+    if norm_filename is None:
+        norm_filename = normalize_source_key(filename)
     program_info = extract_program_info(filename)
     docs = []
     try:
