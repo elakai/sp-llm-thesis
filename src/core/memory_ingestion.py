@@ -20,6 +20,8 @@ from src.core.ingestion import (
     split_table_by_rows,
     is_curriculum_file,
 )
+from src.core.document_classifier import classify_document, DocumentType
+from src.core.chunking_strategies import chunk_document
 from src.core.curriculum_splitter import split_curriculum_by_section
 from src.core.retrieval import invalidate_cache
 from src.config.constants import CHUNK_SIZE, CHUNK_OVERLAP
@@ -48,7 +50,7 @@ def process_uploaded_file(uploaded_file, category: str) -> List[Document]:
         try:
             from src.core.ingestion import load_pdf
             # load_pdf now natively handles the Spatial Filtering
-            docs = load_pdf(tmp_path, filename)
+            docs = load_pdf(tmp_path, filename, norm_filename)
         finally:
             os.unlink(tmp_path)  # Always delete temp file
 
@@ -168,58 +170,25 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
         if skipped:
             return True, f"All files already indexed: {', '.join(skipped)}"
         return False, "No content could be extracted from the uploaded files."
-
-    # Two-phase atomic chunking
+    # Classifier-driven chunking pipeline
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
+    text_docs  = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
 
     split_table_docs = []
     for doc in table_docs:
         split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
-    curriculum_chunks = []
-    markdown_docs = []
-    regular_text_docs = []
-
+    split_text_docs = []
     for doc in text_docs:
-        src = doc.metadata.get("source", "")
-        if is_curriculum_file(src):
-            sections = split_curriculum_by_section(doc)
-            logger.info(f"📚 Curriculum split: {src} → {len(sections)} sections")
-            curriculum_chunks.extend(sections)
-        elif doc.metadata.get("type") == "markdown":
-            markdown_docs.append(doc)
-        else:
-            regular_text_docs.append(doc)
+        doc_type = classify_document(
+            source=doc.metadata.get("source", ""),
+            content=doc.page_content
+        )
+        doc.metadata["doc_type"] = doc_type.value
+        logger.info(f"📄 Classified '{doc.metadata.get('source', '')}' as {doc_type.value}")
+        split_text_docs.extend(chunk_document(doc, doc_type))
 
-    # Markdown files: split by headers first to keep tables intact
-    md_header_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
-        strip_headers=False
-    )
-    char_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
-    )
-
-    split_markdown_docs = []
-    for doc in markdown_docs:
-        header_chunks = md_header_splitter.split_text(doc.page_content)
-        for hchunk in header_chunks:
-            text = hchunk.page_content
-            meta = {**doc.metadata, **hchunk.metadata}
-            if len(text) <= CHUNK_SIZE:
-                # Keep whole — table rows stay together
-                split_markdown_docs.append(Document(page_content=text, metadata=meta))
-            else:
-                # Only re-split if section is genuinely too large
-                for subchunk in char_splitter.split_text(text):
-                    split_markdown_docs.append(Document(page_content=subchunk, metadata=meta))
-
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    split_regular_docs = text_splitter.split_documents(regular_text_docs)
-
-    final_chunks = split_table_docs + curriculum_chunks + split_markdown_docs + split_regular_docs
-
+    final_chunks = split_table_docs + split_text_docs
     # ── Context Header Injection ───────────────────────────────────────────
     # CRITICAL: all-MiniLM-L6-v2 only embeds page_content — metadata is
     # invisible to it.  Without a document-origin header, a raw faculty

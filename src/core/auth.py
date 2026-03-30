@@ -6,10 +6,8 @@ from src.config.logging_config import logger
 def create_supabase_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-
 def normalize_role(role) -> str:
     return str(role).strip().lower() if role else "student"
-
 
 supabase: Client = create_supabase_client()
 
@@ -17,12 +15,21 @@ supabase: Client = create_supabase_client()
 # Authentication Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_valid_domain(email: str) -> bool:
+    """Helper to strictly enforce ADNU domain limits."""
+    email = email.lower().strip()
+    return email.endswith("@gbox.adnu.edu.ph") or email.endswith("@adnu.edu.ph")
+
 def login_user(email, password):
     """
     Authenticates via Supabase Auth, then IMMEDIATELY fetches the 'role' 
     from the 'public.users' table to ensure real-time accuracy.
     """
     try:
+        # ── DOMAIN LOCK ──
+        if not _is_valid_domain(email):
+            return "INVALID_DOMAIN"
+
         auth_client = create_supabase_client()
 
         # 1. Verify Credentials (Login)
@@ -35,7 +42,6 @@ def login_user(email, password):
             user_id = response.user.id
             
             # 2. 🚀 SOURCE OF TRUTH: Query public.users directly
-            # We ignore metadata snapshots and go straight to the live database.
             try:
                 profile = auth_client.table("users") \
                     .select("role, full_name") \
@@ -43,15 +49,10 @@ def login_user(email, password):
                     .single() \
                     .execute()
                 
-                # If query succeeds, use that data.
-                # If the row is missing (rare edge case), these default to None.
                 db_role = profile.data.get("role")
                 db_name = profile.data.get("full_name")
                 
             except Exception as e:
-                # If the query fails entirely (e.g., row deleted or DB unreachable),
-                # default to student to fail safe.  Log as error because an admin
-                # hitting this path would silently receive a downgraded role.
                 logger.error(f"Role lookup failed for user {user_id}: {e}. Defaulting to 'student'.")
                 db_role = "student"
                 db_name = "Student"
@@ -77,6 +78,10 @@ def register_user(email, password, full_name="Student"):
     copy this user to 'public.users' with the default 'student' role.
     """
     try:
+        # ── DOMAIN LOCK ──
+        if not _is_valid_domain(email):
+            return False, "Access Restricted: You must use a valid ADNU email (@gbox.adnu.edu.ph or @adnu.edu.ph) to register."
+
         auth_client = create_supabase_client()
         response = auth_client.auth.sign_up({
             "email": email,
@@ -84,15 +89,12 @@ def register_user(email, password, full_name="Student"):
             "options": {
                 "data": {
                     "full_name": full_name,
-                    # We still send this for the initial Trigger, 
-                    # but login_user relies on the table after that.
                     "role": "student" 
                 }
             }
         })
         
         if response.user:
-            # Check if identity exists (prevents duplicate error masking)
             if response.user.identities and len(response.user.identities) > 0:
                 return True, "Registration successful! Please check your email to verify."
             else:

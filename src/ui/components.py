@@ -63,7 +63,7 @@ def render_login():
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
 
     with tab1:
-        with st.form("login_form"):
+        with st.form("login_form", clear_on_submit=False, enter_to_submit=True):
             st.markdown("<h3 style='color: white; text-align: center;'>Sign In</h3>", unsafe_allow_html=True)
             email = st.text_input("Email Address")
             password = st.text_input("Password", type="password")
@@ -71,13 +71,15 @@ def render_login():
                 user = login_user(email, password)
                 if user == "UNVERIFIED":
                     st.error("Please verify your email before logging in. Check your inbox for the confirmation link.")
-                elif user:
+                elif user == "INVALID_DOMAIN":
+                    st.error("Access restricted: please use your ADNU email (@gbox.adnu.edu.ph or @adnu.edu.ph).")
+                elif isinstance(user, dict):
                     role = normalize_role(user.get("role"))
                     st.session_state["authenticated"] = True
                     st.session_state["user_id"] = user["id"]
                     st.session_state["email"] = user["email"]
                     st.session_state["role"] = role
-                    st.session_state["full_name"] = user["full_name"]
+                    st.session_state["full_name"] = user.get("full_name", "Student")
                     st.session_state["show_welcome"] = True
                     
                     if "session_id" not in st.session_state:
