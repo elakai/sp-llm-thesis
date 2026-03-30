@@ -1,40 +1,33 @@
 # 🧪 AXIsstant Phase 6 Edge-Case Results
 
 ## 1_THE_COURSE_CODE_FIX
-**User:** What is QCPP-512?
+**User:** where is deans office
 
 **AXIsstant:**
-QCPP512 is Microprocessors Fundamentals Laboratory, with 1 credit unit, 0 pay units for lecture, and 3 pay units for lab. Its prerequisites are QCPP411, QCCP412, QCCP511, and QCCP512, which are Logic Circuits and Design Lecture, Logic Circuits and Design Laboratory, Microprocessors Fundamentals Lecture, and Microprocessors Fundamentals Laboratory.
+The CSEA Dean's Office is located on the 2nd Floor of the Engineering Building. You can find it alongside other facilities like the Civil Engineering and Architecture Faculty Office, BIM Laboratory, and several other labs.
 
-> **Source certainty:** High — based on 4 document(s): *Eb111 Operations Manual, Curriculum Bs Cpe*
+> **Source certainty:** High — based on 3 document(s): Handbook, Chapter 1, Campus Directory
 
 ---
 **You might also want to ask:**
-- What is QCPP411?
-- What is GEAL101?
-- What is QCPE110?
+- What labs are on 2nd floor?
+- Who is CSEA Dean?
+- Where is Hydraulics lab?
 
 ---
 
-**User:** QCPP411
+**User:** where is dept chairperson office
 
 **AXIsstant:**
-QCPP411 is Logic Circuits and Design Lecture, with 3 credit units, 3 pay units for lecture, and 0 pay units for lab. Its prerequisites are QCPA221, QCPA222, and QCCP412, which are Fundamentals of Electronic Circuits Lecture, Fundamentals of Electronic Circuits Laboratory, and Logic Circuits and Design Laboratory.
+The CSEA Department Chairpersons Office is located on the 1st Floor of the Engineering Building. You can find it alongside other facilities like the Hydraulics Laboratory, Architecture Studio, and UTM Room.
 
-> **Source certainty:** High — based on 4 document(s): *Eb111 Operations Manual, Transmutation 2018*
+> **Source certainty:** High — based on 6 document(s): Past Csea Thesis Manuscripts   Bio, 2025 Adnu College Handbook   Chapter 9.1.2
 
 ---
 **You might also want to ask:**
-- What is QCPP340?
-- What is QCPE110?
-- What is GEMT100?
-
----
-
-**User:** What is QCPP452?
-
-**AXIsstant:**
-QCPP512 is Microprocessors Fundamentals Laboratory, with 1 credit unit, 0 pay units for lecture, and 3 pay units for lab. Its prerequisites are QCPP411, QCCP412, QCCP511, and QCCP512, which are Logic Circuits and Design Lecture, Logic Circuits and Design Laboratory, Microprocessors Fundamentals Lecture, and Microprocessors Fundamentals Laboratory. 
+- Who is CSEA Dean?
+- Where is Hydraulics lab?
+- What is on 3rd floor?
 
 ---
 
