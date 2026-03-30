@@ -162,63 +162,66 @@ def load_pdf(path: str, filename: str, norm_filename: str, header_margin_pct=0.0
     program_info = extract_program_info(filename)
     docs = []
     try:
-        fitz_doc = fitz.open(path)
-        with pdfplumber.open(path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                fitz_page = fitz_doc[page_num - 1]
-                width, height = page.width, page.height
-                
-                plumber_bbox = (0, height * header_margin_pct, width, height * (1 - footer_margin_pct))
-                cropped_page = page.crop(plumber_bbox)
-                
-                f_rect = fitz_page.rect
-                fitz_clip = fitz.Rect(f_rect.x0, f_rect.y0 + (f_rect.height * header_margin_pct), f_rect.x1, f_rect.y1 - (f_rect.height * footer_margin_pct))
+        # ── THESIS FIX: CONTEXT MANAGER FOR MEMORY SAFETY ──
+        with fitz.open(path) as fitz_doc:
+            with pdfplumber.open(path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    fitz_page = fitz_doc[page_num - 1]
+                    width, height = page.width, page.height
+                    
+                    plumber_bbox = (0, height * header_margin_pct, width, height * (1 - footer_margin_pct))
+                    cropped_page = page.crop(plumber_bbox)
+                    
+                    f_rect = fitz_page.rect
+                    fitz_clip = fitz.Rect(f_rect.x0, f_rect.y0 + (f_rect.height * header_margin_pct), f_rect.x1, f_rect.y1 - (f_rect.height * footer_margin_pct))
 
-                tables = cropped_page.find_tables()
-                table_bboxes = [t.bbox for t in tables]
-                all_words = cropped_page.extract_words(x_tolerance=3, y_tolerance=3)
+                    tables = cropped_page.find_tables()
+                    table_bboxes = [t.bbox for t in tables]
+                    all_words = cropped_page.extract_words(x_tolerance=3, y_tolerance=3)
 
-                for table in tables:
-                    data = table.extract()
-                    if not data: continue
-                    md = convert_table_to_markdown(data)
-                    if not md.strip(): continue
-                    prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
-                    meta_t = {"source": norm_filename, "page": page_num, "type": "table"}
-                    if program_info: meta_t["program_code"] = program_info.get("program_code", "")
-                    docs.append(Document(page_content=prefix + md, metadata=meta_t))
+                    for table in tables:
+                        data = table.extract()
+                        if not data: continue
+                        md = convert_table_to_markdown(data)
+                        if not md.strip(): continue
+                        prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
+                        meta_t = {"source": norm_filename, "page": page_num, "type": "table"}
+                        if program_info: meta_t["program_code"] = program_info.get("program_code", "")
+                        docs.append(Document(page_content=prefix + md, metadata=meta_t))
 
-                if table_bboxes:
-                    non_table_words = [w for w in all_words if not is_inside_any_bbox(w, table_bboxes)]
-                    body_text = clean_text(reconstruct_body_text(non_table_words))
-                else:
-                    body_text = clean_text(fitz_page.get_text("text", clip=fitz_clip))
-                    if len(body_text) < 100:
-                        plumber_text = clean_text(reconstruct_body_text(all_words))
-                        if len(plumber_text) > len(body_text): body_text = plumber_text
+                    if table_bboxes:
+                        non_table_words = [w for w in all_words if not is_inside_any_bbox(w, table_bboxes)]
+                        body_text = clean_text(reconstruct_body_text(non_table_words))
+                    else:
+                        body_text = clean_text(fitz_page.get_text("text", clip=fitz_clip))
+                        if len(body_text) < 100:
+                            plumber_text = clean_text(reconstruct_body_text(all_words))
+                            if len(plumber_text) > len(body_text): body_text = plumber_text
 
-                if len(body_text) < 50 and not table_bboxes:
-                    raw_fitz = fitz_page.get_text("text", clip=fitz_clip).strip()
-                    if not raw_fitz or len(raw_fitz) < 50:
-                        try:
-                            logger.warning(f"Page {page_num} appears scanned. Running OCR...")
-                            pix = fitz_page.get_pixmap(dpi=300, clip=fitz_clip)
-                            pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
-                            ocr_text = pytesseract.image_to_string(preprocess_image_for_ocr(pil_img), config="--psm 3 --oem 3")
-                            body_text = clean_text(post_process_ocr_text(ocr_text))
-                        except Exception as e: logger.warning(f"OCR fallback failed: {e}")
+                    if len(body_text) < 50 and not table_bboxes:
+                        raw_fitz = fitz_page.get_text("text", clip=fitz_clip).strip()
+                        if not raw_fitz or len(raw_fitz) < 50:
+                            try:
+                                logger.warning(f"Page {page_num} appears scanned. Running OCR...")
+                                pix = fitz_page.get_pixmap(dpi=300, clip=fitz_clip)
+                                pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
+                                ocr_text = pytesseract.image_to_string(preprocess_image_for_ocr(pil_img), config="--psm 3 --oem 3")
+                                body_text = clean_text(post_process_ocr_text(ocr_text))
+                            except Exception as e: logger.warning(f"OCR fallback failed: {e}")
 
-                body_text = re.sub(r'(?m)^\s*-?\s*\d+\s*-?\s*$', '', body_text)
-                body_text = re.sub(r'(?i)Ateneo de Naga University', '', body_text)
-                body_text = re.sub(r'(?i)College of Science, Engineering, and Architecture', '', body_text)
-                body_text = re.sub(r'\n{3,}', '\n\n', body_text).strip()
+                    body_text = re.sub(r'(?m)^\s*-?\s*\d+\s*-?\s*$', '', body_text)
+                    body_text = re.sub(r'(?i)Ateneo de Naga University', '', body_text)
+                    body_text = re.sub(r'(?i)College of Science, Engineering, and Architecture', '', body_text)
+                    body_text = re.sub(r'\n{3,}', '\n\n', body_text).strip()
 
-                if len(body_text) > 20:
-                    prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
-                    meta = {"source": norm_filename, "page": page_num, "type": "text"}
-                    if program_info: meta["program_code"] = program_info.get("program_code", "")
-                    docs.append(Document(page_content=prefix + body_text, metadata=meta))
-        fitz_doc.close()
+                    if len(body_text) > 20:
+                        prefix = f"Program: {program_info['program_full']} ({program_info['program_code']})\n\n" if program_info else ""
+                        meta = {"source": norm_filename, "page": page_num, "type": "text"}
+                        if program_info: meta["program_code"] = program_info.get("program_code", "")
+                        docs.append(Document(page_content=prefix + body_text, metadata=meta))
+        # ───────────────────────────────────────────────────
+        # Note: fitz_doc.close() is safely removed because the 'with' block handles it automatically!
+
     except Exception as e:
         logger.error(f"PDF Processing Error: {e}")
     return docs

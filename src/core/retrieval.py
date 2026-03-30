@@ -308,6 +308,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     safe_query = redact_pii(clean_query) 
     standalone_query = contextualize_query(safe_query, chat_history_list)
 
+    # ── THESIS FIX: DETERMINISTIC ACRONYM INJECTION ──
+    # Do not let the LLM guess what CSEA means. Force the exact spelling.
+    standalone_query = re.sub(r'\bcsea\b', 'College of Science Engineering and Architecture', standalone_query, flags=re.IGNORECASE)
+    standalone_query = re.sub(r'\badnu\b', 'Ateneo de Naga University', standalone_query, flags=re.IGNORECASE)
+    # ─────────────────────────────────────────────────
+
 # ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
     estimator_keywords = ['estimator', 'tuition', 'fee', 'fees', 'cost', 'payment', 'price', 'magkano']
     if any(kw in standalone_query.lower() for kw in estimator_keywords):
@@ -378,8 +384,10 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
 # ── THESIS FEATURE: SEMANTIC QUERY EXPANSION ──
     # 1. Translate Taglish/Slang into formal academic terms
+# STEP 1: Expand query FIRST (before k is determined)
     expanded_query = expand_query_semantics(standalone_query)
-    
+    effective_query = expanded_query if expanded_query != standalone_query else standalone_query
+
     sub_queries = [standalone_query]
     
     # If the LLM expanded the query, add the formal version to our search net
@@ -403,10 +411,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     sub_queries = list(dict.fromkeys(sub_queries))
     # ──────────────────────────────────────────────
 
+    longest_variant = max(sub_queries, key=len)
+    base_k = get_dynamic_k(longest_variant)
+    
     has_course_code = bool(re.search(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query.upper()))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
-    
-    base_k = get_dynamic_k(standalone_query)
 
     # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
     is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite', 'program', 'cpe', 'ece'])
@@ -445,7 +454,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
     logger.info(f"📂 Retrieval Success: Found {len(all_docs)} raw chunks using K={dynamic_k}")
 
-    unique_docs_map = {hash(d.page_content): d for d in all_docs}
+    unique_docs_map = {d.page_content: d for d in all_docs}
     latest_per_source = prefer_latest_per_source(list(unique_docs_map.values()))
     
     is_curriculum_query = has_course_code or any(
@@ -514,7 +523,10 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
         if hybrid_results:
             try:
-                pairs = [(expanded_query, doc.page_content) for doc in hybrid_results]
+                # ── THESIS FIX: SCORE AGAINST ORIGINAL QUERY, NOT EXPANDED ──
+                # Expanded queries are for Vector DB recall. 
+                # The Cross-Encoder MUST grade precision against the user's exact keywords (like "CSEA").
+                pairs = [(standalone_query, doc.page_content) for doc in hybrid_results]
                 
                 scores = list(get_reranker().predict(pairs))
                 
@@ -542,17 +554,20 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 top_score = float(scores[sorted_indices[0]])
                 if len(sorted_indices) > 1: second_score = float(scores[sorted_indices[1]])
                 
-                # ── HOLISTIC FIX: DISABLE THE RERANKER GUILLOTINE FOR LISTS ──
+                # ── HOLISTIC FIX: SCORE-BASED GUILLOTINE FOR LISTS ──
                 if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
-                    # For comprehensive lists, keep ALL chunks retrieved by the dynamic allocator.
-                    # Do not slice them, because the Cross-Encoder will naturally score list items 
-                    # lower if they don't contain the exact header keyword (like "CSEA").
-                    top_reranked = [hybrid_results[i] for i in sorted_indices]
+                    # Keep chunks that are actually relevant (score > -2.5) to drop the random garbage.
+                    # This prevents Context Dilution so the LLM doesn't get lazy reading massive texts.
+                    valid_indices = [i for i in sorted_indices if scores[i] > -2.5]
+                    if valid_indices:
+                        top_reranked = [hybrid_results[i] for i in valid_indices]
+                    else:
+                        top_reranked = [hybrid_results[i] for i in sorted_indices[:5]] # Fallback
                 else:
                     # For standard factoids, slice off the noise as usual.
                     top_reranked = [hybrid_results[i] for i in sorted_indices[:RERANKER_TOP_K]] 
                 # ──────────────────────────────────────────────────────────────
-                
+
             except Exception as e:
                 logger.error(f"Reranking failed: {e}")
                 top_reranked = hybrid_results[:RERANKER_TOP_K]
@@ -567,8 +582,8 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             roster_text = _format_custodian_roster_response(roster)
             roster_doc = Document(page_content=roster_text, metadata={"source": "Lab Directory"})
             
-            existing_hashes = {hash(d.page_content) for d in top_reranked}
-            if hash(roster_doc.page_content) not in existing_hashes:
+            existing_contents = {d.page_content for d in top_reranked}
+            if roster_doc.page_content not in existing_contents:
                 top_reranked.insert(0, roster_doc)
                 top_score = max(top_score, 15.0)
     # ────────────────────────────────────────
@@ -583,22 +598,22 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             prereq_docs = prereq_retriever.invoke(f"{subject_terms} prerequisite curriculum")
             prereq_filtered = prefer_latest_per_source(prereq_docs)
             
-            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            existing_contents = {d.page_content for d in top_reranked}
             for doc in prereq_filtered:
-                if hash(doc.page_content) not in existing_hashes:
+                if doc.page_content not in existing_contents:
                     top_reranked.append(doc)
-                    existing_hashes.add(hash(doc.page_content))
+                    existing_contents.add(doc.page_content)
                     
             if top_reranked: top_score = max(top_score, 5.0)
             
     if is_download_query and top_reranked is not None:
         link_retriever = get_retriever(k=20)
         link_filtered = prefer_latest_per_source(link_retriever.invoke("official curriculum PDF download link"))
-        existing_hashes = {hash(d.page_content) for d in top_reranked}
+        existing_contents = {d.page_content for d in top_reranked}
         for doc in link_filtered:
-            if hash(doc.page_content) not in existing_hashes:
+            if doc.page_content not in existing_contents:
                 top_reranked.append(doc)
-                existing_hashes.add(hash(doc.page_content))
+                existing_contents.add(doc.page_content)
         if top_reranked: top_score = max(top_score, 5.0)
 
     if is_facility_query:
@@ -611,11 +626,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 directory_query = "campus building directory rooms"
 
             directory_filtered = prefer_latest_per_source(get_retriever(k=8).invoke(directory_query))
-            existing_hashes = {hash(d.page_content) for d in top_reranked}
+            existing_contents = {d.page_content for d in top_reranked}
             for doc in directory_filtered:
-                if hash(doc.page_content) not in existing_hashes:
+                if doc.page_content not in existing_contents:
                     top_reranked.append(doc)
-                    existing_hashes.add(hash(doc.page_content))
+                    existing_contents.add(doc.page_content)
             if top_reranked: top_score = max(top_score, 5.0)
     
     logger.info(f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f}")
@@ -636,18 +651,21 @@ Answer the question using ONLY the context below.
 2. **NO FILLER**: Do NOT say "To provide you with..." or "I'll need to refer to...".
 3. **LANGUAGE**: Always respond in English unless the student writes in Filipino, in which case respond in Filipino.
 4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where every cell contains only dashes (---).
-5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. 
-6. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
-7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
-8. ELABORATE NATURALLY: Don't just give a one-sentence answer. If the context provides details (like what a thesis is about, or the specific goals of a program), include 1-2 extra sentences of explanation to be truly helpful.
-9. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
-10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — count carefully, and give a definitive answer. 
-11. **MULTIPLE TABLES**: Give each table a clear bold label above it.
-12. **LINKS**: Never paste raw URLs. Always format links as descriptive markdown like [Download the official curriculum here](url).
-13. **ROOM CODES**: When the user asks about a room, look up the building prefix in the campus directory in the context. Always decode the building name.
-14. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
-15. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
-16. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
+5. **RESPECT MARKDOWN HEADERS**: The context uses markdown headers (## and ###). If a user asks for a specific category (like "CSEA orgs" or "CSEA"), ONLY list the items explicitly found underneath that specific matching header. Do NOT include items from other headers like "## EXTRACURRICULAR".
+6. **CONCISE LISTING**: When the user asks for a "list" or "all" items, provide the NAME of every single item found in that section. For each item, provide only a 1-sentence summary of its purpose. Do NOT copy the full paragraphs from the context. This ensures a complete but readable response.
+7. **EXHAUST ALL ITEMS**: When listing items from a section, you MUST output every single one. Include their full descriptions exactly as written. Never summarize, never skip items, and never say "no detailed description provided".
+8. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
+9. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
+10. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
+11. ELABORATE NATURALLY: Don't just give a one-sentence answer. If the context provides details (like what a thesis is about, or the specific goals of a program), include 1-2 extra sentences of explanation to be truly helpful.
+12. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
+13. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — count carefully, and give a definitive answer. 
+14. **MULTIPLE TABLES**: Give each table a clear bold label above it.
+15. **LINKS**: Never paste raw URLs. Always format links as descriptive markdown like [Download the official curriculum here](url).
+16. **ROOM CODES**: When the user asks about a room, look up the building prefix in the campus directory in the context. Always decode the building name.
+17. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
+18. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
+19. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
 
 **Context:**
 {context}

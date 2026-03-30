@@ -9,6 +9,7 @@ from pinecone import Pinecone
 from PIL import Image
 import pytesseract
 
+
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 
@@ -26,6 +27,8 @@ from src.core.file_parsers import (
     split_table_by_rows, load_pdf, normalize_source_key,
     is_curriculum_file
 )
+from src.core.document_classifier import classify_document, DocumentType
+from src.core.chunking_strategies import chunk_document
 
 def is_already_ingested(filename: str) -> bool:
     norm_name = normalize_source_key(filename)
@@ -106,32 +109,23 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
         return False, "No content extracted."
 
     table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
+    text_docs  = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
 
     split_table_docs = []
-    for doc in table_docs: split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
+    for doc in table_docs:
+        split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
 
-    curriculum_chunks, markdown_docs, regular_text_docs = [], [], []
+    split_text_docs = []
     for doc in text_docs:
-        src = doc.metadata.get("source", "")
-        if is_curriculum_file(src): curriculum_chunks.extend(split_curriculum_by_section(doc))
-        elif doc.metadata.get("type") == "markdown": markdown_docs.append(doc)
-        else: regular_text_docs.append(doc)
+        doc_type = classify_document(
+            source=doc.metadata.get("source", ""),
+            content=doc.page_content
+        )
+        doc.metadata["doc_type"] = doc_type.value
+        split_text_docs.extend(chunk_document(doc, doc_type))
 
-    md_header_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")], strip_headers=False)
-    char_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+    final_chunks = split_table_docs + split_text_docs
 
-    split_markdown_docs = []
-    for doc in markdown_docs:
-        for hchunk in md_header_splitter.split_text(doc.page_content):
-            meta = {**doc.metadata, **hchunk.metadata}
-            if len(hchunk.page_content) <= CHUNK_SIZE: split_markdown_docs.append(Document(page_content=hchunk.page_content, metadata=meta))
-            else:
-                for subchunk in char_splitter.split_text(hchunk.page_content):
-                    split_markdown_docs.append(Document(page_content=subchunk, metadata=meta))
-
-    split_regular_docs = char_splitter.split_documents(regular_text_docs)
-    final_chunks = split_table_docs + curriculum_chunks + split_markdown_docs + split_regular_docs
 
     for chunk in final_chunks:
         if not chunk.page_content.startswith("Program:") and not chunk.page_content.startswith("**"):

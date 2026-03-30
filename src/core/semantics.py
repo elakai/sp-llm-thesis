@@ -17,19 +17,15 @@ def detect_query_intent(query: str) -> str:
     def has_any_phrases(phrases: list[str]) -> bool:
         return any(phrase in q_lower for phrase in phrases)
 
-    # 1. Custodian & Technician
+    # 1. HIGHLY SPECIFIC: Custodian & Technician
     if has_any_words({"custodian", "custodians", "technician"}) or has_any_phrases(["lab technician", "lab custodians", "laboratory custodian"]):
         return "people"
         
-    # 2. Location (Expanded for Taglish, directions, and lost freshmen)
+    # 2. HIGHLY SPECIFIC: Location (Expanded for Taglish, directions, and lost freshmen)
     if has_any_words({"where", "room", "building", "located", "floor", "lab", "laboratory", "office", "directory", "saan", "nasaan", "location", "hanapin"}) or has_any_phrases(["where is", "how to go", "paano pumunta", "where can i find", "anong floor"]):
         return "location"
         
-    # 3. Curriculum (Expanded for programs, majors, and slang)
-    if has_any_words({"curriculum", "course", "subject", "subjects", "semester", "units", "prerequisite", "prereq", "prospectus", "classes", "load", "flowchart", "bridging", "grades", "grade", "program", "cpe", "bscpe", "ece", "bsece"}) or has_any_phrases(["what subjects", "how many units", "what course", "ilang units", "kailangan ba", "bs cpe", "bs ece"]):
-        return "curriculum"
-        
-    # 4. People (Expanded for titles, student slang, and contact info)
+    # 3. HIGHLY SPECIFIC: People (MOVED UP to prevent being swallowed by Curriculum)
     people_word_hit = has_any_words({
         "who", "faculty", "faculties", "chair", "chairperson", "dean", "professor", "prof", "profs", "staff", 
         "instructor", "teacher", "teachers", "sino", "field", "dr", "engr", "ar", "sir", "maam", "head", "contact", "email"
@@ -42,17 +38,23 @@ def detect_query_intent(query: str) -> str:
     if people_word_hit or people_phrase_hit or people_stem_hit:
         return "people"
         
-    # 5. Download (Expanded for requesting copies)
+    # 4. HIGHLY SPECIFIC: Download
     if has_any_words({"download", "link", "pdf", "form", "access", "copy"}) or has_any_phrases(["google form", "download link", "where to get", "can i have a copy", "hingi copy"]):
         return "download"
-        
-    # 6. Policy (Massive expansion for freshman FAQs: dress code, attendance, shifting, behavior)
-    if has_any_words({"policy", "rule", "rules", "guideline", "guidelines", "procedure", "manual", "uniform", "haircut", "absent", "late", "bawal", "allowed", "pwede", "shift", "shifting", "drop", "failing", "fail", "id"}) or has_any_phrases(["dress code", "what happens if", "is it allowed", "pwede ba", "color ng buhok", "hair color", "civilian", "wash day"]):
-        return "policy"
 
+    # 5. HIGHLY SPECIFIC: History
     if has_any_words({"history", "background", "origin", "origins", "founded", "established", "anniversary", "heritage", "legacy", "story"}):
         return "history"
+        
+    # 6. BROADER DOMAIN: Policy 
+    if has_any_words({"policy", "rule", "rules", "guideline", "guidelines", "procedure", "manual", "uniform", "haircut", "absent", "late", "bawal", "allowed", "pwede", "shift", "shifting", "drop", "failing", "fail", "id"}) or has_any_phrases(["dress code", "what happens if", "is it allowed", "pwede ba", "color ng buhok", "hair color", "civilian", "wash day"]):
+        return "policy"
+        
+    # 7. BROADER DOMAIN: Organizations
+    if has_any_words({"org", "orgs", "organization", "organizations", "club", "clubs", "society", "societies", "extracurricular", "co-curricular"}):
+        return "organizations"
 
+    # 8. FALLBACK
     return "general"
 
 def is_listing_query(query: str) -> bool:

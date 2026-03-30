@@ -39,7 +39,7 @@ def hybrid_rerank(query: str, docs: List[Document]) -> List[Document]:
             ranked.append((bm25_scores[i] + position_score + boost, doc))
 
         ranked.sort(reverse=True, key=lambda x: x[0])
-        return [doc for _, doc in ranked[:RETRIEVAL_K]]
+        return [doc for _, doc in ranked]
     except Exception as e:
         logger.warning(f"Hybrid rerank failed: {e}")
         return docs[:RETRIEVAL_K]
@@ -124,13 +124,20 @@ def rank_people_list_docs(docs: List[Document], query: str) -> List[Document]:
 
     return sorted(docs, key=_score, reverse=True)
 
-def prefer_latest_per_source(docs: List[Document]) -> List[Document]:
+def prefer_latest_per_source(docs):
     if not docs: return []
     grouped = defaultdict(list)
-    for doc in docs: grouped[doc.metadata.get("source", "unknown")].append(doc)
+    for doc in docs:
+        grouped[doc.metadata.get("source", "unknown")].append(doc)
 
     filtered = []
     for group in grouped.values():
-        latest = max((d.metadata.get("uploaded_at", 0) for d in group), default=0)
-        filtered.extend([d for d in group if d.metadata.get("uploaded_at", 0) == latest])
+        # Separate docs that actually have timestamps
+        docs_with_ts = [d for d in group if d.metadata.get("uploaded_at")]
+        if docs_with_ts:
+            latest_ts = max(d.metadata["uploaded_at"] for d in docs_with_ts)
+            filtered.extend([d for d in docs_with_ts if d.metadata.get("uploaded_at") == latest_ts])
+        else:
+            # If no timestamps exist (like injected rosters), KEEP them all safely
+            filtered.extend(group)  
     return filtered

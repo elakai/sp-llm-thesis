@@ -37,6 +37,9 @@ def get_dynamic_k(query: str) -> int:
 
     if any(kw in q for kw in ['download', 'link', 'pdf', 'get the', 'access', 'where can i']):
         return 20
+    
+    if any(kw in q for kw in ["org", "orgs", "organization", "organizations", "club", "clubs", "society", "societies", "extracurricular", "co-curricular"]):
+        return 20
 
     return 12
 
