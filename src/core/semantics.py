@@ -1,5 +1,8 @@
 import re
 from typing import List, Dict
+from src.config.settings import get_generator_llm
+import json
+from src.config.logging_config import logger
 
 def tokenize(text: str) -> list:
     return re.sub(r'[^\w\s]', ' ', text.lower()).split()
@@ -46,6 +49,9 @@ def detect_query_intent(query: str) -> str:
     # 6. Policy (Massive expansion for freshman FAQs: dress code, attendance, shifting, behavior)
     if has_any_words({"policy", "rule", "rules", "guideline", "guidelines", "procedure", "manual", "uniform", "haircut", "absent", "late", "bawal", "allowed", "pwede", "shift", "shifting", "drop", "failing", "fail", "id"}) or has_any_phrases(["dress code", "what happens if", "is it allowed", "pwede ba", "color ng buhok", "hair color", "civilian", "wash day"]):
         return "policy"
+
+    if has_any_words({"history", "background", "origin", "origins", "founded", "established", "anniversary", "heritage", "legacy", "story"}):
+        return "history"
 
     return "general"
 
@@ -145,3 +151,46 @@ def normalize_course_codes(text: str) -> str:
         lambda m: f"{m.group(1).upper()}{m.group(2)}",
         text
     )
+
+def expand_and_normalize_query(user_query: str) -> list[str]:
+    """
+    Takes a variable user query and normalizes it into highly optimized
+    search strings to guarantee semantic matches regardless of phrasing.
+    """
+    prompt = f"""You are a search query optimization engine for Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA).
+    The user asked: "{user_query}"
+    
+    Your job is to rewrite this question to maximize retrieval from a vector database. 
+    1. Identify the core intent (e.g., finding a room, checking a prerequisite, listing faculty).
+    2. Translate slang or conversational phrasing into formal academic terms.
+    3. Generate 3 distinct search strings:
+       - 'canonical': The formal, perfectly phrased version of the question.
+       - 'keyword_rich': A string of related academic nouns and synonyms (no fluff words).
+       - 'document_style': How the answer would literally look in a formal handbook or syllabus.
+
+    Respond ONLY with a valid JSON object in this exact format:
+    {{"canonical": "...", "keyword_rich": "...", "document_style": "..."}}
+    """
+    
+    try:
+        llm = get_generator_llm()
+        response = llm.invoke(prompt).content.strip()
+        
+        # Clean up in case the LLM added markdown formatting (like ```json)
+        if response.startswith("```json"):
+            response = response[7:-3].strip()
+        elif response.startswith("```"):
+            response = response[3:-3].strip()
+            
+        expanded = json.loads(response)
+        
+        # Return the distinct, optimized queries
+        return [
+            user_query, # Always keep the original just in case
+            expanded.get("canonical", ""),
+            expanded.get("keyword_rich", ""),
+            expanded.get("document_style", "")
+        ]
+    except Exception as e:
+        logger.error(f"Query Expansion failed: {e}")
+        return [user_query] # Safe fallback

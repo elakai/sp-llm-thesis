@@ -13,7 +13,7 @@ from src.core.semantics import (
     tokenize, detect_query_intent, is_listing_query, is_people_list_query,
     is_curriculum_list_query, is_incomplete_query, build_incomplete_query_variants,
     is_custodian_lookup_query, is_custodian_list_query, normalize_lab_aliases,
-    normalize_course_codes
+    normalize_course_codes, expand_and_normalize_query
 )
 from src.core.guardrails import verify_answer, validate_query, redact_pii
 from src.config.settings import get_generator_llm, get_embeddings, get_retriever
@@ -376,16 +376,27 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             time.sleep(0.02)
         return
 
-    is_complex = (not is_incomplete_input) and any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS)
-    sub_queries = [standalone_query]
-    if is_complex:
-        try: sub_queries = decompose_query(standalone_query)
-        except: pass
-
+# ── HOLISTIC SEMANTIC QUERY EXPANSION ──
+    # Instead of relying strictly on keywords, we use the LLM to normalize the query
+    sub_queries = []
+    
     if is_incomplete_input:
-        for variant in build_incomplete_query_variants(standalone_query, chat_history_list):
-            if variant not in sub_queries:
-                sub_queries.append(variant)
+        sub_queries.extend(build_incomplete_query_variants(standalone_query, chat_history_list))
+    else:
+        # This standardizes different phrasings into identical search vectors
+        expanded_queries = expand_and_normalize_query(standalone_query)
+        sub_queries.extend([q for q in expanded_queries if q])
+        
+        # If it's a complex comparative query, break it down further
+        if any(trigger in standalone_query.lower() for trigger in DECOMPOSE_TRIGGERS):
+            try: 
+                sub_queries.extend(decompose_query(standalone_query))
+            except: 
+                pass
+
+    # Ensure uniqueness to save Pinecone calls
+    sub_queries = list(dict.fromkeys(sub_queries))
+    # ───────────────────────────────────────
 
     has_course_code = bool(re.search(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query.upper()))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
@@ -612,7 +623,7 @@ Answer the question using ONLY the context below.
 5. **CLEAN UP LISTS**: Use `- **Name** - Role` for people. 
 6. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
 7. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
-8. **BE CONCISE**: Get to the point quickly.
+8. ELABORATE NATURALLY: Don't just give a one-sentence answer. If the context provides details (like what a thesis is about, or the specific goals of a program), include 1-2 extra sentences of explanation to be truly helpful.
 9. **LISTS**: When listing multiple items, always put each item on its own line with a blank line before the list starts.
 10. **ANALYTICAL QUERIES**: If asked to find the course with the most/least prerequisites, compare courses, or rank anything — count carefully, and give a definitive answer. 
 11. **MULTIPLE TABLES**: Give each table a clear bold label above it.

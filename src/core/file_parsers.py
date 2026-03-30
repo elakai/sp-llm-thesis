@@ -65,12 +65,20 @@ def convert_table_to_markdown(table_data: list) -> str:
     if not table_data: return ""
     filled = []
     for row in table_data:
-        filled_row, last_val = [], ""
-        for cell in row:
-            if cell is None or str(cell).strip() == "": filled_row.append(last_val)
+        filled_row = []
+        last_val = ""
+        for col_idx, cell in enumerate(row):
+            cell_str = str(cell).replace('\n', ' ').strip() if cell is not None else ""
+            
+            if cell_str == "":
+                # Only forward-fill Columns 0 and 1 (Code and Title)
+                if col_idx < 2:
+                    filled_row.append(last_val)
+                else:
+                    filled_row.append("None")
             else:
-                last_val = str(cell).replace('\n', ' ').strip()
-                filled_row.append(last_val)
+                last_val = cell_str
+                filled_row.append(cell_str)
         filled.append(filled_row)
         
     if not filled: return ""
