@@ -54,6 +54,26 @@ def render_login():
     # Load the CSS from file
     load_css("login.css")
     
+    # Add custom styling for guest button - white with orange glow
+    st.markdown(
+        """
+        <style>
+        [class*="st-key-guest_login_btn"] button {
+            background-color: white !important;
+            color: #FF950A !important;
+            border: 2px solid #FFE5B4 !important;
+            box-shadow: 0 0 15px rgba(255, 149, 10, 0.6) !important;
+            font-weight: 600 !important;
+        }
+        [class*="st-key-guest_login_btn"] button:hover {
+            background-color: #fff5e6 !important;
+            box-shadow: 0 0 25px rgba(255, 149, 10, 0.8) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    
     logo_base64 = get_base64_logo()
     if logo_base64:
         st.markdown(f'<div class="logo-container"><img src="data:image/png;base64,{logo_base64}" class="logo-image"><div class="logo-title" style="color: #FF950A;">AXIstant</div></div>', unsafe_allow_html=True)
@@ -89,6 +109,23 @@ def render_login():
                     st.rerun()
                 else:
                     st.error("Invalid credentials.")
+            
+            # Guest Login Button - same styling as Login button, inside form for same width
+            if st.form_submit_button("Login as Guest", use_container_width=True, key="guest_login_btn"):
+                st.session_state["authenticated"] = True
+                st.session_state["is_guest"] = True
+                st.session_state["user_id"] = f"guest_{str(uuid.uuid4())[:8]}"
+                st.session_state["email"] = None
+                st.session_state["full_name"] = "Guest"
+                st.session_state["role"] = "student"
+                st.session_state["show_welcome"] = True
+                st.session_state["guest_query_count"] = 0
+                
+                if "session_id" not in st.session_state:
+                    st.session_state["session_id"] = str(uuid.uuid4())
+                
+                st.session_state["view"] = "chat"
+                st.rerun()
 
     with tab2:
         with st.form("signup_form"):
@@ -184,11 +221,14 @@ def render_sidebar():
             st.rerun()
 
         logo_base64 = get_base64_logo()
+        is_guest = st.session_state.get("is_guest", False)
+
         if logo_base64 and sidebar_open:
             st.markdown(f"""
                 <div class="sidebar-brand-open" style="text-align: center; padding-bottom: 10px;">
                     <img src="data:image/png;base64,{logo_base64}" width="90" style="filter: drop-shadow(0 0 5px #F3B153);">
                     <div style="margin-top: 5px; font-size: 3rem; font-weight: 800; color: #FF950A; letter-spacing: 0.8px;">AXIstant</div>
+                    {"<div style='margin-top: -4px; font-size: 1rem; font-weight: 700; color: #111;'>Guest Mode</div>" if is_guest else ""}
                 </div>
             """, unsafe_allow_html=True)
         elif logo_base64 and not sidebar_open:
@@ -199,7 +239,8 @@ def render_sidebar():
             """, unsafe_allow_html=True)
         else:
             fallback_text = "AXIstant" if sidebar_open else "AXI"
-            st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>", unsafe_allow_html=True)
+            fallback_guest = "<div style='margin-top: -2px; font-size: 0.9rem; font-weight: 700; color: #111;'>Guest Mode</div>" if (sidebar_open and is_guest) else ""
+            st.markdown(f"<div class='sidebar-brand-fallback' style='text-align: center; padding-bottom: 10px; margin-top: 4px; font-size: 1.55rem; font-weight: 800; color: #111111; letter-spacing: 0.5px;'>{fallback_text}</div>{fallback_guest}", unsafe_allow_html=True)
         st.markdown("---")
         mobile_client = _is_mobile_client()
         
@@ -256,7 +297,47 @@ def render_sidebar():
                 st.rerun()
 
         st.markdown("---")
-        if sidebar_open:
+        
+        # Guest Mode Info
+        if st.session_state.get("is_guest"):
+            if "guest_query_count" not in st.session_state:
+                st.session_state.guest_query_count = 0
+            
+            remaining_queries = 10 - st.session_state.guest_query_count
+            
+            # Show expanded guest info when sidebar is open
+            if sidebar_open:
+                progress_percentage = (st.session_state.guest_query_count / 10) * 100
+                st.markdown(
+                    f"""
+                    <div style="padding: 0.8rem; border-radius: 0.5rem; background-color: rgba(255, 149, 10, 0.1); border-left: 4px solid #FF950A;">
+                        <h4 style='color: #000000; margin: 0 0 0.75rem 0; font-size: 0.95rem;'>Guest Mode</h4>
+                        <p style='margin: 0.5rem 0; font-size: 1.4rem; font-weight: 900; color: #000;'>{st.session_state.guest_query_count}/10</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                st.progress(progress_percentage / 100)
+            else:
+                # Show compact version when collapsed
+                st.markdown(
+                    f"""
+                    <div style="text-align: center; padding: 0.5rem; color: #000; font-weight: 900; font-size: 1.3rem;">
+                        {st.session_state.guest_query_count}/10
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            
+            # Sign In button with icon when collapsed, text when expanded
+            sign_in_label = "🔑" if not sidebar_open else "Sign In"
+            if st.button(sign_in_label, use_container_width=True, type="secondary", key="guest_sign_in"):
+                st.session_state["authenticated"] = False
+                st.session_state["is_guest"] = False
+                st.session_state.clear()
+                st.rerun()
+        # Regular User Profile
+        elif sidebar_open:
             user_email = st.session_state.get("email", "Guest")
             role = st.session_state.get("role", "Student").upper()
             st.markdown(f"<div class='user-profile'><strong>{role}</strong><br><small>{user_email}</small></div>", unsafe_allow_html=True)
