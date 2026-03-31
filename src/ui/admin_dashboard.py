@@ -10,7 +10,7 @@ from src.core.auth import supabase
 from src.core.ingestion import get_uploaded_files
 
 # ── SHARED CACHE HELPERS ──
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_eval_metrics():
     try:
         response = supabase.table("chat_logs") \
