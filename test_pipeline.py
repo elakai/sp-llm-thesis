@@ -14,8 +14,10 @@ with patch.object(st, 'session_state', mock_session_state):
     TEST_SUITES = {
         "1_THE_COURSE_CODE_FIX": [
             # Verifies our Rule 15 successfully triggers a short summary for naked course codes.
-            "where is deans office",
-            "where is dept chairperson office"
+            "when is holy week",
+            "when is midterms",
+            "when are finals",
+            "when is submission of grades"
         ]
     }
 

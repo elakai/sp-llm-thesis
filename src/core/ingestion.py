@@ -108,23 +108,31 @@ def ingest_uploaded_files(uploaded_files: list, category: str) -> tuple:
         if skipped: return True, f"All files already indexed: {', '.join(skipped)}"
         return False, "No content extracted."
 
-    table_docs = [d for d in all_docs if d.metadata.get("type") == "table"]
-    text_docs  = [d for d in all_docs if d.metadata.get("type") in ("text", "markdown")]
-
-    split_table_docs = []
-    for doc in table_docs:
-        split_table_docs.extend(split_table_by_rows(doc, max_rows=20))
-
-    split_text_docs = []
-    for doc in text_docs:
+    # ── THESIS FIX: CLASSIFIER-DRIVEN CHUNKING PIPELINE ──
+    final_chunks = []
+    
+    for doc in all_docs:
+        # 1. Classify EVERY document first (even Excel tables!)
         doc_type = classify_document(
             source=doc.metadata.get("source", ""),
             content=doc.page_content
         )
         doc.metadata["doc_type"] = doc_type.value
-        split_text_docs.extend(chunk_document(doc, doc_type))
+        logger.info(f"📄 Classified '{doc.metadata.get('source', '')}' as {doc_type.value}")
 
-    final_chunks = split_table_docs + split_text_docs
+        # 2. Route to the correct strategy
+        if doc_type == DocumentType.CALENDAR:
+            # If it's a calendar (even if it's Excel), keep it huge. Do NOT split by rows.
+            final_chunks.extend(chunk_document(doc, doc_type))
+            
+        elif doc.metadata.get("type") == "table":
+            # If it's a generic table (like tuition fees), split by 20 rows safely.
+            final_chunks.extend(split_table_by_rows(doc, max_rows=20))
+            
+        else:
+            # Standard Text/Markdown/Directories
+            final_chunks.extend(chunk_document(doc, doc_type))
+    # ─────────────────────────────────────────────────────
 
 
     for chunk in final_chunks:

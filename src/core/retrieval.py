@@ -322,6 +322,12 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
     # This guarantees a high vector match with headers like "Electronics Workshop Room".
     if re.search(r'\b(workshop|lab|laboratory)\b', standalone_query, re.IGNORECASE) and 'room' not in standalone_query.lower():
         standalone_query += " room"
+
+    # ── THESIS FIX: IMPLICIT CALENDAR CONTEXT ──
+    # Catch "when is" OR specific ADNU events and general holiday terms
+    calendar_triggers = r'\b(when is|when are|schedule|date of|pintakasi|traslacion|holy week|undas|intrams|enrollment|midterm|midterms|prefi|final|finals|peñafrancia|penafrancia|festival|holiday|vacation|break)\b'
+    if re.search(calendar_triggers, standalone_query, re.IGNORECASE) and 'calendar' not in standalone_query.lower():
+        standalone_query += " calendar 2025 2026"
     # ─────────────────────────────────────────────────
 
 # ── DIRECT ROUTING FOR EXTERNAL TOOLS (Estimator) ──
@@ -662,6 +668,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     
     retrieval_time = time.time() - retrieval_start
     gen_start = time.time()
+
+    # ── THESIS FIX: TIME-AWARENESS ──
+    from datetime import datetime
+    current_date = datetime.now().strftime("%B %d, %Y")
+    # ────────────────────────────────
     
     prompt = f"""You are AXIsstant, the friendly and helpful Academic AI assistant of Ateneo de Naga University's College of Science, Engineering, and Architecture (CSEA). You help students and faculty with academic questions in a warm, conversational tone.
 
@@ -687,6 +698,7 @@ Answer the question using ONLY the context below.
 17. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
 18. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
 19. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
+20. **TIME AWARENESS**: Today's date is {current_date}. If a user asks when a recurring event is (like midterms, finals, or enrollment), look at today's date and ONLY provide the dates for the current or upcoming semester. Do NOT list dates from past semesters unless explicitly asked.
 
 **Context:**
 {context}
@@ -713,11 +725,15 @@ Hard rules for suggested questions:
 
     try:
         # Update this boolean check in generate_response (around source: 334)
+        # ── THESIS FIX: PROTECT CALENDARS FROM DROPPING ──
+        is_calendar_query = 'calendar' in standalone_query.lower()
+        
         is_protected_query = (
             is_curriculum_query or is_facility_query or is_analytical_query or 
             is_download_query or is_incomplete_input or is_prerequisite_query or
-            has_course_code or intent == "history"  # <--- Add this!
+            has_course_code or intent == "history" or is_calendar_query  # <-- Added calendar here!
         )
+        # ─────────────────────────────────────────────────
 
         # if top_score < LOW_CONFIDENCE_THRESHOLD and not is_protected_query:
         #     logger.warning(f"🔇 Low Retrieval Score ({top_score:.2f}). Aborting generation.")
