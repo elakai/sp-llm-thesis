@@ -29,6 +29,7 @@ from src.ui.components import render_login, render_sidebar, render_main_styles
 from src.ui.admin_dashboard import render_admin_view
 from src.ui.document_management import render_indexed_documents_view
 from src.ui.views import render_history_view, render_chat_view
+from src.ui.guest_chat import render_guest_chat_view
 from src.core.feedback import load_chat_history
 from src.core.auth import normalize_role
 from src.config.logging_config import logger
@@ -59,6 +60,7 @@ render_main_styles()
 # Initialize ALL your session variables exactly as you had them
 if "session_id" not in st.session_state: st.session_state["session_id"] = str(uuid.uuid4())
 if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
+if "is_guest" not in st.session_state: st.session_state["is_guest"] = False
 if "messages" not in st.session_state: st.session_state["messages"] = []
 if "chat_history_loaded" not in st.session_state: st.session_state["chat_history_loaded"] = False
 if "view" not in st.session_state: st.session_state["view"] = "chat"
@@ -100,12 +102,20 @@ if not st.session_state["db_online"]:
     st.error("🚨 Database Connection Error. Please verify your Pinecone API Key and Index status.")
     st.stop()
 
+# Keep guest sessions authenticated so login/signup never reappears,
+# while still allowing normal view routing (chat/history) like users.
+if st.session_state.get("is_guest"):
+    st.session_state["authenticated"] = True
+
 if st.session_state.get("authenticated"):
     st.session_state["role"] = normalize_role(st.session_state.get("role"))
 
 if not st.session_state["authenticated"]:
     render_login()
     st.stop()
+
+# Render sidebar for all authenticated users (including guests)
+render_sidebar()
 
 role = normalize_role(st.session_state.get("role"))
 st.session_state["role"] = role
@@ -147,24 +157,30 @@ if not st.session_state["chat_history_loaded"]:
                         break
     st.session_state["chat_history_loaded"] = True
 
-render_sidebar()
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. VIEW CONTROLLER
 # ─────────────────────────────────────────────────────────────────────────────
 
-# --- OPTION A: ADMIN VIEW ---
-if st.session_state["view"] == "admin" and st.session_state.get("role") == "admin":
+# --- OPTION A: GUEST VIEWS ---
+if st.session_state.get("is_guest") and st.session_state["view"] == "history":
+    render_history_view()
+
+elif st.session_state.get("is_guest"):
+    render_main_styles()
+    render_guest_chat_view()
+
+# --- OPTION B: ADMIN VIEW ---
+elif st.session_state["view"] == "admin" and st.session_state.get("role") == "admin":
     render_admin_view()
 
-# --- OPTION B: INDEXED DOCUMENTS VIEW ---
+# --- OPTION C: INDEXED DOCUMENTS VIEW ---
 elif st.session_state["view"] == "indexed_docs" and st.session_state.get("role") == "admin":
     render_indexed_documents_view()
 
-# --- OPTION C: HISTORY VIEW ---
+# --- OPTION D: HISTORY VIEW ---
 elif st.session_state["view"] == "history":
     render_history_view()
 
-# --- OPTION D: MAIN CHAT VIEW ---
+# --- OPTION E: MAIN CHAT VIEW ---
 else:
     render_chat_view()

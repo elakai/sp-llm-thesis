@@ -5,9 +5,9 @@ from src.core.auth import supabase
 from src.config.constants import IGNORED_RESPONSES
 from src.config.logging_config import logger
 
-def log_conversation(query, response, user_email, session_id, context, metrics=None):
+def log_conversation(query, response, user_email, session_id, context, metrics=None, force_log=False):
     """Saves the chat interaction, context, and performance metrics to Supabase."""
-    if any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
+    if not force_log and any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
         return
 
     try:

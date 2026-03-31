@@ -372,22 +372,26 @@ def render_chat_view():
 def _process_user_query(query: str):
     """Process user query, generate response, and update chat state."""
 
-    # ── NEW: GUEST MODE LIMITATION ──
-    # Check if the user is a guest (no email in session state)
-    if not st.session_state.get("email"):
+    # ── GUEST MODE LIMITATION (Fallback - guests should use guest_chat.py) ──
+    # Check if the user is a guest via is_guest flag
+    if st.session_state.get("is_guest"):
         # Initialize guest counter if it doesn't exist
         if "guest_query_count" not in st.session_state:
             st.session_state.guest_query_count = 0
             
-        # Check if they hit the limit
-        if st.session_state.guest_query_count >= 5:
+        # Check if they hit the limit (10 queries for guests)
+        if st.session_state.guest_query_count >= 10:
             with st.chat_message("assistant", avatar="assets/logo.png"):
-                st.warning("🔒 **Guest Limit Reached!** \n\nYou have used your 5 free guest queries. Please log in with your `@gbox.adnu.edu.ph` account to continue using AXIsstant!")
+                st.error(
+                    "**Guest Limit Reached!**\n\n"
+                    "You have used all 10 free guest queries. "
+                    "Please sign in with your **@gbox.adnu.edu.ph** or **@adnu.edu.ph** account to continue using AXIstant with unlimited queries!"
+                )
             return # Stop processing
             
         # Increment counter
         st.session_state.guest_query_count += 1
-    # ────────────────────────────────
+    # ────────────────────────────────────────────────────────────────────────────
     
     user_ts = _now_pht()
     st.session_state.messages.append({"role": "user", "content": query, "timestamp": user_ts})
