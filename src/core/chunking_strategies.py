@@ -9,6 +9,8 @@ def chunk_document(doc: Document, doc_type: DocumentType) -> List[Document]:
         return _chunk_curriculum(doc)
     elif doc_type == DocumentType.DIRECTORY:
         return _chunk_directory(doc)
+    elif doc_type == DocumentType.CALENDAR: # ── NEW ──
+        return _chunk_calendar(doc)
     else:
         return _chunk_narrative(doc)
 
@@ -70,3 +72,14 @@ def _chunk_narrative(doc: Document) -> List[Document]:
             for subchunk in char_splitter.split_text(content):
                 chunks.append(Document(page_content=subchunk, metadata=meta))
     return chunks
+
+def _chunk_calendar(doc: Document) -> List[Document]:
+    """
+    Calendars (Excel or PDF) must stay intact so chronological context isn't lost.
+    We use massive 4000-character chunks with a large overlap.
+    """
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=4000, 
+        chunk_overlap=500
+    )
+    return char_splitter.split_documents([doc])
