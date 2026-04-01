@@ -291,6 +291,7 @@ def _process_guest_query(query: str):
             context=current_context,
             metrics=performance_metrics,
             force_log=True,
+            is_guest=True
         )
         
         asst_ts = _now_pht()

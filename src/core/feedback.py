@@ -5,7 +5,7 @@ from src.core.auth import supabase
 from src.config.constants import IGNORED_RESPONSES
 from src.config.logging_config import logger
 
-def log_conversation(query, response, user_email, session_id, context, metrics=None, force_log=False):
+def log_conversation(query, response, user_email, session_id, context, metrics=None, force_log=False, is_guest=False):
     """Saves the chat interaction, context, and performance metrics to Supabase."""
     if not force_log and any(response.startswith(phrase) for phrase in IGNORED_RESPONSES):
         return
@@ -20,6 +20,7 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
             "response": response,
             "context": safe_context,
             "created_at": datetime.utcnow().isoformat(),
+            "is_guest": is_guest,  # <--- Added this line to send the flag to Supabase
         }
 
         if metrics:
@@ -31,7 +32,6 @@ def log_conversation(query, response, user_email, session_id, context, metrics=N
         
     except Exception as e:
         logger.error(f"Backend Logging Error: {e}")
-
 
 def save_feedback(query: str, response: str, rating: str, user_email: str, session_id: str):
     """Updates the specific log entry for this session with a rating."""
