@@ -30,6 +30,7 @@ from src.config.constants import (
     POSITIONAL_SCORE_WEIGHT,
     SEMANTIC_CACHE_THRESHOLD,
     DOCS_FOLDER,
+    CAMPUS_MAP_URL,
 )
 from src.config.logging_config import logger
 
@@ -299,6 +300,10 @@ def get_llm_response(llm, prompt):
 def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None):
     if chat_history_list is None: chat_history_list = []
     start_time = time.time()
+    st.session_state["last_response_metadata"] = {
+        "source_certainty": "",
+        "suggested_questions": [],
+    }
     
     is_valid, clean_query = validate_query(query) 
     if not is_valid:
@@ -501,7 +506,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     is_prerequisite_query = any(kw in standalone_query.lower() for kw in ['prerequisite', 'pre-requisite', 'prereq', 'required before', 'failed', 'can i take', 'allowed to take', 'kailangan'])
 
     is_facility_query = any(
-        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
+        kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
     )
 
     top_score, second_score = float("-inf"), float("-inf")
@@ -817,6 +822,13 @@ Hard rules for suggested questions:
         final_verified_response = re.sub(r'(?<!\n)\s{2,}-\s+\*\*', r'\n- **', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
 
+        if is_facility_query and CAMPUS_MAP_URL and CAMPUS_MAP_URL not in final_verified_response:
+            campus_map_note = (
+                "For easier navigation, you can also check the "
+                f"[ADNU campus map]({CAMPUS_MAP_URL})."
+            )
+            final_verified_response = f"{final_verified_response}\n\n{campus_map_note}"
+
         clean_response_for_cache = final_verified_response
         add_to_cache(standalone_query, clean_response_for_cache)
 
@@ -830,6 +842,11 @@ Hard rules for suggested questions:
         if suggested_questions:
             suggestions_md = "\n\n---\n**You might also want to ask:**\n" + "\n".join(f"- {q}" for q in suggested_questions[:3])
             final_verified_response += suggestions_md
+
+        st.session_state["last_response_metadata"] = {
+            "source_certainty": certainty_note,
+            "suggested_questions": suggested_questions[:3],
+        }
         
         try:
             if _contains_markdown_table(final_verified_response):
@@ -847,4 +864,8 @@ Hard rules for suggested questions:
             
     except Exception as e:
         logger.error(f"❌ Generation Pipeline Failed: {e}")
+        st.session_state["last_response_metadata"] = {
+            "source_certainty": "",
+            "suggested_questions": [],
+        }
         yield "Something went wrong on my end. Give it another try in a bit!"
