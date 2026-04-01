@@ -1,4 +1,5 @@
 import re
+import uuid
 import html
 import streamlit as st
 import base64
@@ -7,7 +8,7 @@ from pathlib import Path
 
 from src.core.retrieval import generate_response
 from src.ui.suggested_questions import render_suggested_questions
-from src.core.feedback import log_conversation
+from src.core.feedback import log_conversation, save_feedback
 
 _PHT = timezone(timedelta(hours=8))
 
@@ -90,6 +91,9 @@ def _render_message_meta(source_certainty: str, timestamp: str = ""):
 def render_guest_chat_view():
     """Renders the guest chat interface with 5-query limit."""
     
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+
     # Initialize guest query counter if not exists
     if "guest_query_count" not in st.session_state:
         st.session_state.guest_query_count = 0
@@ -153,8 +157,15 @@ def render_guest_chat_view():
             if is_assistant and message.get("suggestions"):
                 render_suggested_questions(message["suggestions"], key_prefix=f"suggest_{idx}")
 
-        # Simplified feedback for guests - no database saving
+        # Feedback UI and Database Saving
         if role == "assistant":
+            current_feedback = st.session_state.message_feedback.get(idx, None)
+            query = _get_previous_user_query(st.session_state.messages, idx)
+            
+            # ROOT CAUSE FIX 1: Hardcode "Guest" to guarantee a database match
+            guest_user_label = "Guest"
+            current_session_id = st.session_state.get("session_id")
+
             st.markdown("<div class='eval-prompt'>Was this answer helpful?</div>", unsafe_allow_html=True)
             feedback_col1, feedback_col2 = st.columns(2)
 
@@ -162,13 +173,17 @@ def render_guest_chat_view():
                 if st.button(
                     "Helpful",
                     key=f"eval_helpful_{idx}",
-                    type="primary" if st.session_state.message_feedback.get(idx) == "helpful" else "secondary",
+                    type="primary" if current_feedback == "helpful" else "secondary",
+                    help="Click again to remove" if current_feedback == "helpful" else None,
                 ):
-                    if st.session_state.message_feedback.get(idx) == "helpful":
+                    if current_feedback == "helpful":
                         st.session_state.message_feedback[idx] = None
+                        # ROOT CAUSE FIX 2: Use None instead of "removed" for clean SQL NULLs
+                        save_feedback(query, message["content"], None, guest_user_label, current_session_id)
                         st.toast("Feedback removed")
                     else:
                         st.session_state.message_feedback[idx] = "helpful"
+                        save_feedback(query, message["content"], "helpful", guest_user_label, current_session_id)
                         st.toast("Thanks for your feedback!", icon="✅")
                     st.rerun()
 
@@ -176,24 +191,25 @@ def render_guest_chat_view():
                 if st.button(
                     "Not helpful",
                     key=f"eval_not_helpful_{idx}",
-                    type="primary" if st.session_state.message_feedback.get(idx) == "not_helpful" else "secondary",
+                    type="primary" if current_feedback == "not_helpful" else "secondary",
+                    help="Click again to remove" if current_feedback == "not_helpful" else None,
                 ):
-                    if st.session_state.message_feedback.get(idx) == "not_helpful":
+                    if current_feedback == "not_helpful":
                         st.session_state.message_feedback[idx] = None
+                        # ROOT CAUSE FIX 2: Use None instead of "removed"
+                        save_feedback(query, message["content"], None, guest_user_label, current_session_id)
                         st.toast("Feedback removed")
                     else:
                         st.session_state.message_feedback[idx] = "not_helpful"
+                        save_feedback(query, message["content"], "not_helpful", guest_user_label, current_session_id)
                         st.toast("We'll improve this answer.", icon="📝")
                     st.rerun()
 
-            current_feedback = st.session_state.message_feedback.get(idx)
             if current_feedback == "helpful":
                 st.markdown("<div class='feedback-indicator helpful'><span>✓</span> You marked this response as helpful</div>", unsafe_allow_html=True)
             elif current_feedback == "not_helpful":
                 st.markdown("<div class='feedback-indicator not-helpful'><span>✗</span> You marked this response as not helpful</div>", unsafe_allow_html=True)
 
-    # Process queued suggestion after the history loop so it renders as
-    # a separate chat turn, not inside the previous assistant message container.
     queued_query = st.session_state.pop("queued_query", None)
     if queued_query:
         _process_guest_query(queued_query)
@@ -280,7 +296,7 @@ def _process_guest_query(query: str):
             st.error(clean_response)
             suggestions = []
 
-        guest_user_label = st.session_state.get("email") or "Guest"
+        guest_user_label = "Guest"
         
         log_conversation(
             query=query,
