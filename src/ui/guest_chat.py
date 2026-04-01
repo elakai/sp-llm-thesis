@@ -280,9 +280,8 @@ def _process_guest_query(query: str):
             st.error(clean_response)
             suggestions = []
 
-        # Always log guest queries so they appear in admin live feedback logs,
-        # even when generation fails or returns guarded responses.
-        guest_user_label = st.session_state.get("user_id") or "Guest"
+        guest_user_label = st.session_state.get("email") or "Guest"
+        
         log_conversation(
             query=query,
             response=clean_response,

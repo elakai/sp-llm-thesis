@@ -10,11 +10,12 @@ from src.core.auth import supabase
 from src.core.ingestion import get_uploaded_files
 
 # ── SHARED CACHE HELPERS ──
-@st.cache_data(ttl=5, show_spinner=False)
 def fetch_eval_metrics():
     try:
         response = supabase.table("chat_logs") \
             .select("session_id, rating, query, user_email, created_at, retrieval_latency, generation_latency, total_latency") \
+            .order("created_at", desc=True) \
+            .limit(3000) \
             .execute()
         return pd.DataFrame(response.data)
     except Exception as e:
@@ -32,6 +33,15 @@ def fetch_evaluation_runs():
         return pd.DataFrame(response.data) if response.data else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_user_names():
+    """Fetches user full names from Supabase to map against emails."""
+    try:
+        response = supabase.table("users").select("email, full_name").execute()
+        return {row["email"]: row["full_name"] for row in response.data} if response.data else {}
+    except Exception:
+        return {}
 
 @st.cache_data(ttl=15, show_spinner=False)
 def get_manifest_cached():
@@ -124,8 +134,19 @@ def render_admin_view():
         </div>
     """, unsafe_allow_html=True)
 
+    # Fetch live data
     df_eval = fetch_eval_metrics()
-    df_runs = fetch_evaluation_runs()
+    df_runs = fetch_evaluation_runs().copy()
+    user_mapping = fetch_user_names()
+
+    # Apply mapping logic for Registered Users vs Guests
+    if not df_eval.empty and "user_email" in df_eval.columns:
+        def get_user_display(email):
+            if pd.isna(email) or not email or str(email).strip().lower() == "guest":
+                return "Guest"
+            return user_mapping.get(email, email)
+            
+        df_eval["full_name"] = df_eval["user_email"].apply(get_user_display)
 
     with st.container(border=True):
         st.markdown("""
@@ -206,7 +227,7 @@ def render_admin_view():
             st.markdown("""
                 <div style='padding: 20px; background-color: rgba(128,128,128,0.03); border-radius: 10px; border: 1px solid rgba(128,128,128,0.1); margin-bottom: 20px;'>
                     <h3 style='margin: 0; padding: 0; font-size: 1.5rem; font-weight: 700; color: inherit;'>⚡ System Performance Monitor</h3>
-                    <div style='font-size: 0.9rem; opacity: 0.7; margin-top: 5px;'>Track AI Response Speeds and Review Live  User Feedback Logs.</div>
+                    <div style='font-size: 0.9rem; opacity: 0.7; margin-top: 5px;'>Track AI Response Speeds and Review Live User Feedback Logs.</div>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -256,13 +277,14 @@ def render_admin_view():
                 """, unsafe_allow_html=True)
                 
                 if not df_eval.empty:
-                    display_cols = ["user_email", "created_at", "query", "rating"]
+                    display_cols = ["full_name", "created_at", "query", "rating"]
                     existing_cols = [c for c in display_cols if c in df_eval.columns]
                     
+                    # Because we added .order() in fetch_eval_metrics, it's naturally sorted. But we do it again just to be safe.
                     display_table = df_eval[existing_cols].sort_values(by="created_at", ascending=False)
                     
                     rename_dict = {
-                        "user_email": "User",
+                        "full_name": "User",
                         "created_at": "Time",
                         "query": "Query",
                         "rating": "Rating"
@@ -556,13 +578,13 @@ def render_admin_view():
                             </div>
                         """, unsafe_allow_html=True)
                         
-                        failed_cols = ["user_email", "query", "created_at"]
+                        failed_cols = ["full_name", "query", "created_at"]
                         existing_failed_cols = [c for c in failed_cols if c in bad_feedback.columns]
                         
                         failed_table = bad_feedback[existing_failed_cols].sort_values('created_at', ascending=False)
                         
                         failed_rename = {
-                            "user_email": "User",
+                            "full_name": "User",
                             "query": "Failed Query", 
                             "created_at": "Time"
                         }
