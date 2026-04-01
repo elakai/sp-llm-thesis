@@ -1,95 +1,28 @@
-import re
 import uuid
-import html
 import streamlit as st
-import base64
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 from src.core.retrieval import generate_response
 from src.ui.suggested_questions import render_suggested_questions
 from src.core.feedback import log_conversation, save_feedback
-
-_PHT = timezone(timedelta(hours=8))
-
-def _now_pht() -> str:
-    return datetime.now(_PHT).strftime("%I:%M %p")
-
-
-def _get_logo_base64() -> str:
-    logo_path = Path("assets/logo.png")
-    if logo_path.exists():
-        with open(logo_path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
-    return ""
-
-
-def _get_previous_user_query(messages, assistant_idx: int) -> str:
-    for cursor in range(assistant_idx - 1, -1, -1):
-        if messages[cursor].get("role") == "user":
-            return messages[cursor].get("content", "")
-    return ""
-
-def _strip_suggestions(text: str) -> str:
-    if not text:
-        return text
-    return re.sub(
-        r'\n\n---\n\*\*You might also want to ask:\*\*\n(?:- .+\n?)*',
-        '',
-        text
-    ).strip()
-
-def _extract_source_certainty(text: str) -> tuple[str, str]:
-    if not text:
-        return text, ""
-
-    pattern = re.compile(
-        r'\n?>\s*\*\*Source certainty:\*\*.*?(?=\n\n---|\Z)',
-        re.IGNORECASE | re.DOTALL,
-    )
-    match = pattern.search(text)
-    if not match:
-        return text.strip(), ""
-
-    source_block = match.group(0).strip()
-    source_plain = re.sub(r'^\s*>\s?', '', source_block, flags=re.MULTILINE).strip()
-    source_plain = re.sub(r'\*\*(.*?)\*\*', r'\1', source_plain)
-    source_plain = re.sub(r'\*(.*?)\*', r'\1', source_plain)
-
-    cleaned = (text[:match.start()] + text[match.end():]).strip()
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned, source_plain
-
-def _render_message_meta(source_certainty: str, timestamp: str = ""):
-    if not source_certainty and not timestamp:
-        return
-
-    certainty_html = ""
-    if source_certainty:
-        source_certainty = re.sub(r'\*\*(.*?)\*\*', r'\1', source_certainty)
-        source_certainty = source_certainty.replace('*', '')
-        count_match = re.search(r'based on\s+(\d+)\s+document', source_certainty, re.IGNORECASE)
-        badge_text = count_match.group(1) if count_match else "i"
-        tooltip = html.escape(source_certainty)
-        certainty_html = (
-            f"<div class='source-certainty-wrap'>"
-            f"<span class='source-certainty-btn'>{badge_text}</span>"
-            f"<div class='source-certainty-tooltip'>{tooltip}</div>"
-            f"</div>"
-        )
-
-    timestamp_html = ""
-    if timestamp:
-        timestamp_html = f"<span class='message-timestamp-inline'>{html.escape(timestamp)}</span>"
-
-    st.markdown(f"<div class='message-meta-row'>{certainty_html}{timestamp_html}</div>", unsafe_allow_html=True)
+from src.config.constants import GUEST_QUERY_LIMIT
+from src.config.logging_config import logger
+from src.ui.chat_utils import (
+    extract_source_certainty as _extract_source_certainty,
+    extract_suggestions as _extract_suggestions,
+    get_last_response_metadata as _get_last_response_metadata,
+    get_logo_base64 as _get_logo_base64,
+    get_previous_user_query as _get_previous_user_query,
+    now_pht as _now_pht,
+    render_message_meta as _render_message_meta,
+    strip_suggestions as _strip_suggestions,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GUEST CHAT VIEW
 # ─────────────────────────────────────────────────────────────────────────────
 def render_guest_chat_view():
-    """Renders the guest chat interface with 5-query limit."""
+    """Renders the guest chat interface with a fixed guest query limit."""
     
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
@@ -129,8 +62,11 @@ def render_guest_chat_view():
     st.markdown("<h1 style='color: #FFAF47; font-weight: bold;'>Your CSEA Information Assistant</h1>", unsafe_allow_html=True)
 
     if not st.session_state.messages:
-        st.info("Welcome to AXIstant Guest Mode! Try asking: 'What is the grading system?' or Ateneo de Naga's Dress Code.\n\n"
-                "You only have **10** free guest queries")
+        st.info(
+            "Welcome to AXIstant Guest Mode! Try asking: 'What is the grading system?' "
+            "or Ateneo de Naga's Dress Code.\n\n"
+            f"You only have **{GUEST_QUERY_LIMIT}** free guest queries"
+        )
 
     # Initialize feedback tracking if not exists
     if "message_feedback" not in st.session_state:
@@ -178,12 +114,27 @@ def render_guest_chat_view():
                 ):
                     if current_feedback == "helpful":
                         st.session_state.message_feedback[idx] = None
-                        # ROOT CAUSE FIX 2: Use None instead of "removed" for clean SQL NULLs
-                        save_feedback(query, message["content"], None, guest_user_label, current_session_id)
+                        save_feedback(
+                            query,
+                            message["content"],
+                            None,
+                            guest_user_label,
+                            current_session_id,
+                            log_id=message.get("log_id"),
+                            created_at=message.get("log_created_at"),
+                        )
                         st.toast("Feedback removed")
                     else:
                         st.session_state.message_feedback[idx] = "helpful"
-                        save_feedback(query, message["content"], "helpful", guest_user_label, current_session_id)
+                        save_feedback(
+                            query,
+                            message["content"],
+                            "helpful",
+                            guest_user_label,
+                            current_session_id,
+                            log_id=message.get("log_id"),
+                            created_at=message.get("log_created_at"),
+                        )
                         st.toast("Thanks for your feedback!", icon="✅")
                     st.rerun()
 
@@ -196,12 +147,27 @@ def render_guest_chat_view():
                 ):
                     if current_feedback == "not_helpful":
                         st.session_state.message_feedback[idx] = None
-                        # ROOT CAUSE FIX 2: Use None instead of "removed"
-                        save_feedback(query, message["content"], None, guest_user_label, current_session_id)
+                        save_feedback(
+                            query,
+                            message["content"],
+                            None,
+                            guest_user_label,
+                            current_session_id,
+                            log_id=message.get("log_id"),
+                            created_at=message.get("log_created_at"),
+                        )
                         st.toast("Feedback removed")
                     else:
                         st.session_state.message_feedback[idx] = "not_helpful"
-                        save_feedback(query, message["content"], "not_helpful", guest_user_label, current_session_id)
+                        save_feedback(
+                            query,
+                            message["content"],
+                            "not_helpful",
+                            guest_user_label,
+                            current_session_id,
+                            log_id=message.get("log_id"),
+                            created_at=message.get("log_created_at"),
+                        )
                         st.toast("We'll improve this answer.", icon="📝")
                     st.rerun()
 
@@ -221,21 +187,18 @@ def render_guest_chat_view():
 
 
 def _process_guest_query(query: str):
-    """Process guest user query with 5-query limit."""
+    """Process a guest query while enforcing a fixed free-query limit."""
     
     # Check if guest hit the limit
-    if st.session_state.guest_query_count >= 10:
+    if st.session_state.guest_query_count >= GUEST_QUERY_LIMIT:
         with st.chat_message("assistant", avatar="assets/logo.png"):
             st.error(
                 "**Limit Reached!**\n\n"
-                "You have used all 10 free guest queries. "
+                f"You have used all {GUEST_QUERY_LIMIT} free guest queries. "
                 "Please sign in with your **@gbox.adnu.edu.ph** account to continue using AXIstant with unlimited queries!"
             )
         st.stop()
         return
-    
-    # Increment counter
-    st.session_state.guest_query_count += 1
     
     user_ts = _now_pht()
     st.session_state.messages.append({"role": "user", "content": query, "timestamp": user_ts})
@@ -250,6 +213,7 @@ def _process_guest_query(query: str):
         clean_response = ""
         current_context = ""
         performance_metrics = {}
+        generation_succeeded = False
         try:
             with st.spinner("Thinking..."):
                 stream = generate_response(
@@ -262,43 +226,40 @@ def _process_guest_query(query: str):
                     full_response += chunk
                     stream_no_source, _ = _extract_source_certainty(full_response)
                     if '|' in stream_no_source:
-                        response_placeholder.markdown(stream_no_source, unsafe_allow_html=True)
+                        response_placeholder.markdown(stream_no_source)
                     else:
-                        response_placeholder.markdown(stream_no_source + "▌", unsafe_allow_html=True)
+                        response_placeholder.markdown(stream_no_source + "▌")
                 rendered_response = _strip_suggestions(full_response)
-                rendered_response_no_source, source_certainty = _extract_source_certainty(rendered_response)
-                response_placeholder.markdown(rendered_response_no_source, unsafe_allow_html=True)
+                rendered_response_no_source, parsed_source_certainty = _extract_source_certainty(rendered_response)
+                metadata_source_certainty, _ = _get_last_response_metadata()
+                source_certainty = metadata_source_certainty or parsed_source_certainty
+                response_placeholder.markdown(rendered_response_no_source)
                 _render_message_meta(source_certainty)
                 
             clean_response = _strip_suggestions(full_response)
-            clean_no_source, extracted_source_certainty = _extract_source_certainty(clean_response)
+            clean_no_source, parsed_source_certainty = _extract_source_certainty(clean_response)
             clean_response = clean_no_source
+
+            metadata_source_certainty, metadata_suggestions = _get_last_response_metadata()
+            extracted_source_certainty = metadata_source_certainty or parsed_source_certainty
 
             current_context = st.session_state.get("last_retrieved_context", "")
             performance_metrics = st.session_state.get("performance_metrics", {})
+            suggestions = metadata_suggestions or _extract_suggestions(full_response)
+            generation_succeeded = True
 
-            SUGGESTION_PATTERN = re.compile(
-                r'\n+---\n\*\*You might also want to ask:\*\*\n((?:- .+\n?)+)',
-                re.IGNORECASE
-            )
-            suggestion_match = SUGGESTION_PATTERN.search(full_response)
-            if suggestion_match:
-                suggestions = [
-                    re.sub(r'^- ', '', line).strip()
-                    for line in suggestion_match.group(1).strip().split('\n')
-                    if line.strip().startswith('- ')
-                ]
-            else:
-                suggestions = []
-            
         except Exception as e:
-            clean_response = f"⚠️ Backend Error: {str(e)}"
-            st.error(clean_response)
+            logger.error(f"Guest response generation failed: {e}")
+            clean_response = "I ran into a backend error while generating that answer. Please try again."
+            st.error(f"⚠️ {clean_response}")
             suggestions = []
 
         guest_user_label = "Guest"
-        
-        log_conversation(
+
+        if generation_succeeded:
+            st.session_state.guest_query_count += 1
+
+        log_metadata = log_conversation(
             query=query,
             response=clean_response,
             user_email=guest_user_label,
@@ -307,7 +268,7 @@ def _process_guest_query(query: str):
             metrics=performance_metrics,
             force_log=True,
             is_guest=True
-        )
+        ) or {}
         
         asst_ts = _now_pht()
         # Save the clean assistant response into session state
@@ -317,6 +278,8 @@ def _process_guest_query(query: str):
             "timestamp": asst_ts,
             "suggestions": suggestions,
             "source_certainty": extracted_source_certainty,
+            "log_created_at": log_metadata.get("created_at"),
+            "log_id": log_metadata.get("id"),
         })
         
         # Rerun to cleanly display from session state

@@ -68,3 +68,9 @@ HIGH_CONFIDENCE_MARGIN = 0.75
 
 # ⚡ UI Performance
 STREAM_DELAY = 0.003  # Seconds per word for the streaming effect
+
+# Guest mode
+GUEST_QUERY_LIMIT = 10
+
+# Campus map link used in location/facility responses.
+CAMPUS_MAP_URL = "https://vmsgllaubkzlewtytfkn.supabase.co/storage/v1/object/public/campus/campus%20map-1.png"
