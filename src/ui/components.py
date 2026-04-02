@@ -4,6 +4,7 @@ import base64
 import sys
 import uuid
 import copy
+from functools import lru_cache
 from pathlib import Path
 
 # Path Setup
@@ -28,18 +29,26 @@ def _is_mobile_client() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: CSS LOADER
 # ─────────────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=8)
+def _read_css_file(file_name: str) -> str:
+    css_path = project_root / "src" / "ui" / "styles" / file_name
+    with open(css_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 def load_css(file_name):
     """Reads a CSS file from src/ui/styles/ and injects it."""
-    css_path = project_root / "src" / "ui" / "styles" / file_name
     try:
-        with open(css_path, "r") as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+        css_text = _read_css_file(file_name)
+        st.markdown(f"<style>{css_text}</style>", unsafe_allow_html=True)
     except FileNotFoundError:
+        css_path = project_root / "src" / "ui" / "styles" / file_name
         st.error(f"⚠️ CSS file not found: {css_path}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGO HELPER
 # ─────────────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=1)
 def get_base64_logo():
     logo_path = Path("assets/logo.png") 
     if logo_path.exists():
@@ -149,64 +158,66 @@ def render_login():
 
 def render_sidebar():
     load_css("main.css")
-    st_components.html(
-        """
-        <script>
-        (function () {
-            let rootWindow = window;
-            let rootDocument = document;
-            try {
-                if (window.parent && window.parent !== window && window.parent.document) {
-                    rootWindow = window.parent;
-                    rootDocument = window.parent.document;
+    if not st.session_state.get("_mobile_sidebar_script_injected", False):
+        st_components.html(
+            """
+            <script>
+            (function () {
+                let rootWindow = window;
+                let rootDocument = document;
+                try {
+                    if (window.parent && window.parent !== window && window.parent.document) {
+                        rootWindow = window.parent;
+                        rootDocument = window.parent.document;
+                    }
+                } catch (err) {
+                    rootWindow = window;
+                    rootDocument = document;
                 }
-            } catch (err) {
-                rootWindow = window;
-                rootDocument = document;
-            }
 
-            if (rootWindow.__axiMobileTabSidebarAutoCollapseBound) {
-                return;
-            }
-            rootWindow.__axiMobileTabSidebarAutoCollapseBound = true;
-
-            function isMobileViewport() {
-                return rootWindow.matchMedia && rootWindow.matchMedia("(max-width: 768px)").matches;
-            }
-
-            function isSidebarOpenOnMobile() {
-                const styles = rootWindow.getComputedStyle(rootDocument.documentElement);
-                const widthValue = (styles.getPropertyValue("--axi-mobile-sidebar-width") || "").trim();
-                return widthValue && widthValue !== "0" && widthValue !== "0px";
-            }
-
-            function collapseSidebarIfNeeded() {
-                if (!isMobileViewport() || !isSidebarOpenOnMobile()) {
+                if (rootWindow.__axiMobileTabSidebarAutoCollapseBound) {
                     return;
                 }
-                const mobileToggle = rootDocument.querySelector('[class*="st-key-mobile_sidebar_toggle"] button');
-                if (mobileToggle) {
-                    mobileToggle.click();
-                }
-            }
+                rootWindow.__axiMobileTabSidebarAutoCollapseBound = true;
 
-            rootDocument.addEventListener(
-                "click",
-                function (event) {
-                    const clickedTab = event.target && event.target.closest('[data-baseweb="tab"], [role="tab"]');
-                    const clickedSidebarNav = event.target && event.target.closest('[class*="st-key-nav_"]');
-                    if (!clickedTab && !clickedSidebarNav) {
+                function isMobileViewport() {
+                    return rootWindow.matchMedia && rootWindow.matchMedia("(max-width: 768px)").matches;
+                }
+
+                function isSidebarOpenOnMobile() {
+                    const styles = rootWindow.getComputedStyle(rootDocument.documentElement);
+                    const widthValue = (styles.getPropertyValue("--axi-mobile-sidebar-width") || "").trim();
+                    return widthValue && widthValue !== "0" && widthValue !== "0px";
+                }
+
+                function collapseSidebarIfNeeded() {
+                    if (!isMobileViewport() || !isSidebarOpenOnMobile()) {
                         return;
                     }
-                    setTimeout(collapseSidebarIfNeeded, 120);
-                },
-                true
-            );
-        })();
-        </script>
-        """,
-        height=0,
-    )
+                    const mobileToggle = rootDocument.querySelector('[class*="st-key-mobile_sidebar_toggle"] button');
+                    if (mobileToggle) {
+                        mobileToggle.click();
+                    }
+                }
+
+                rootDocument.addEventListener(
+                    "click",
+                    function (event) {
+                        const clickedTab = event.target && event.target.closest('[data-baseweb="tab"], [role="tab"]');
+                        const clickedSidebarNav = event.target && event.target.closest('[class*="st-key-nav_"]');
+                        if (!clickedTab && !clickedSidebarNav) {
+                            return;
+                        }
+                        setTimeout(collapseSidebarIfNeeded, 120);
+                    },
+                    true
+                );
+            })();
+            </script>
+            """,
+            height=0,
+        )
+        st.session_state["_mobile_sidebar_script_injected"] = True
 
     if st.button("☰", key="mobile_sidebar_toggle", use_container_width=False):
         st.session_state["sidebar_open"] = not st.session_state.get("sidebar_open", True)

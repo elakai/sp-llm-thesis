@@ -1,6 +1,7 @@
 import base64
 import html
 import re
+from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -26,6 +27,7 @@ def now_pht() -> str:
     return datetime.now(_PHT).strftime("%I:%M %p")
 
 
+@lru_cache(maxsize=1)
 def get_logo_base64() -> str:
     logo_path = Path("assets/logo.png")
     if logo_path.exists():

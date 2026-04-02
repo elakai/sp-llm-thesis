@@ -36,6 +36,21 @@ from src.config.logging_config import logger
 from src.config.settings import PINECONE_INDEX_NAME
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def cached_pinecone_health() -> bool:
+    return check_pinecone_health()
+
+
+@st.cache_resource(show_spinner=False)
+def warmup_runtime_resources() -> None:
+    from src.config.settings import get_embeddings, get_generator_llm
+    from src.core.retrieval import get_reranker
+
+    get_embeddings()
+    get_generator_llm()
+    get_reranker()
+
+
 def check_pinecone_health() -> bool:
     """Lightweight health check — avoids importing heavy ingestion module."""
     try:
@@ -70,7 +85,7 @@ if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
 if "active_convo_idx" not in st.session_state: st.session_state["active_convo_idx"] = None
 if "sidebar_open" not in st.session_state: st.session_state["sidebar_open"] = True
 if "db_online" not in st.session_state:
-    st.session_state["db_online"] = check_pinecone_health()
+    st.session_state["db_online"] = cached_pinecone_health()
 
 sidebar_width = "280px" if st.session_state["sidebar_open"] else "92px"
 mobile_sidebar_width = "280px" if st.session_state["sidebar_open"] else "0px"
@@ -84,13 +99,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── FIX: REPLACED SPINNER BLOCK WITH FASTER COLD START ──
+# Warm heavy runtime resources once per server process instead of once per user session.
+warmup_runtime_resources()
 if "app_loaded" not in st.session_state:
-    from src.config.settings import get_embeddings, get_generator_llm
-    from src.core.retrieval import get_reranker
-    get_embeddings()
-    get_generator_llm()
-    get_reranker()
     st.session_state["app_loaded"] = True
     logger.info(f"App cold start completed in {time.time() - _app_start_time:.1f}s")
 
@@ -166,7 +177,6 @@ if st.session_state.get("is_guest") and st.session_state["view"] == "history":
     render_history_view()
 
 elif st.session_state.get("is_guest"):
-    render_main_styles()
     render_guest_chat_view()
 
 # --- OPTION B: ADMIN VIEW ---

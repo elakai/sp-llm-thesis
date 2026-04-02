@@ -136,6 +136,15 @@ button[kind="header"],
     background-attachment: fixed;
 }
 
+/* Respect reduced motion preferences and avoid expensive animations on constrained devices */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
+}
+
 /* Subtle animated gradient overlay */
 .stApp::before {
     content: none;
@@ -448,6 +457,19 @@ button[kind="header"],
         --axi-content-gutter: 1.25rem;
     }
 
+    .stApp {
+        background-attachment: scroll !important;
+    }
+
+    [data-testid="stSidebar"],
+    [data-testid="stSidebar"] > div,
+    [data-testid="stMainBlockContainer"],
+    [data-testid="stBottomBlockContainer"],
+    .user-profile,
+    [data-testid="stSidebar"] .stButton button[kind="primary"] {
+        transition: none !important;
+    }
+
     [class*="st-key-mobile_sidebar_toggle"] {
         display: block !important;
     }
@@ -499,6 +521,10 @@ button[kind="header"],
         padding: 12px !important;
         border-radius: 14px !important;
         margin-bottom: 10px !important;
+        animation: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
     }
 
     [data-testid="stChatMessage"] * {
@@ -541,6 +567,19 @@ button[kind="header"],
         height: 44px !important;
     }
 
+    [data-testid="stChatMessageAssistant"] [data-testid="stVerticalBlockBorderWrapper"],
+    [data-testid="stChatMessageAssistant"] [data-testid="stVerticalBlock"] {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+    }
+
+    [data-testid="stChatMessage"]:hover,
+    .scroll-to-bottom:hover,
+    [class*="st-key-eval_helpful_"] button:hover,
+    [class*="st-key-eval_not_helpful_"] button:hover {
+        transform: none !important;
+    }
+
     [data-testid="stChatMessage"] p,
     [data-testid="stChatMessage"] li,
     [data-testid="stChatMessage"] span:not(.timestamp) {
@@ -558,6 +597,13 @@ button[kind="header"],
 
     [data-testid="stChatInput"] > div {
         border-radius: 20px !important;
+    }
+
+    .thinking-dots span,
+    .scroll-to-bottom.has-new,
+    .feedback-pulse,
+    .feedback-indicator {
+        animation: none !important;
     }
 
     .suggested-title {
