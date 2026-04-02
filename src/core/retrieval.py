@@ -67,6 +67,12 @@ _CONTEXT_TRIGGERS = re.compile(
     re.IGNORECASE
 )
 
+_CANONICALIZE_TRIGGERS = re.compile(
+    r'\b(do you know|did you know|can you tell me|could you tell me|would you tell me|'
+    r'i want to know|may i ask|do you happen to know)\b',
+    re.IGNORECASE,
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. CONVERSATIONAL MEMORY & CACHING FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,26 +97,49 @@ def format_chat_history(messages: List[Dict[str, str]]) -> str:
 
 def contextualize_query(query: str, chat_history_list: List[Dict[str, str]]) -> str:
     history_to_process = chat_history_list[1:] if len(chat_history_list) > 1 else []
-    if not history_to_process: return query
-    if not _CONTEXT_TRIGGERS.search(query): return query
+    has_history = bool(history_to_process)
+    followup_context_trigger = has_history and bool(_CONTEXT_TRIGGERS.search(query))
+    canonicalize_trigger = bool(_CANONICALIZE_TRIGGERS.search(query))
+    if not (followup_context_trigger or canonicalize_trigger):
+        return query
         
-    history_text = format_chat_history(chat_history_list)
+    history_text = format_chat_history(chat_history_list) if has_history else "No previous context."
     session_id = st.session_state.get("session_id", "default")
     cache_key = (session_id, query, history_text[-300:]) 
     if cache_key in _REWRITE_CACHE: return _REWRITE_CACHE[cache_key]
         
-    prompt = f"""Given the following chat history and the user's latest question, formulate a standalone question that can be understood without the chat history.
-    Do NOT answer the question. Just reformulate it if needed. If it doesn't need reformulating, return it exactly as is.
+    prompt = f"""You are a query normalizer for an academic RAG assistant.
+Rewrite the latest question into ONE canonical standalone question so semantically similar questions map to the same retrieval intent.
+
+Rules:
+- Do NOT answer the question.
+- Preserve the original meaning, entities, course codes, and constraints.
+- Remove conversational wrappers/fillers (e.g., "do you know", "did you know", "can you tell me").
+- Resolve references using chat history when available.
+- Normalize phrasing for consistency:
+  * People/role lists -> "Who are the ...?"
+  * Range/value fact queries -> "What is the ... range?"
+  * Other factual queries -> use a direct factual question form.
+- Return exactly one question and nothing else.
+
+Examples:
+- "did you know the chairpersons" -> "Who are the chairpersons in CSEA?"
+- "do you know the range of CFRS" -> "What is the CFRS range?"
 
     Chat History:
     {history_text}
 
     Latest Question: {query}
-    Standalone Question:"""
+    Canonical Standalone Question:"""
     
     try:
         llm = get_generator_llm()
         standalone_query = llm.invoke(prompt).content.strip()
+        standalone_query = re.sub(r"^(?:canonical\s+)?standalone\s+question\s*:\s*", "", standalone_query, flags=re.IGNORECASE).strip()
+        standalone_query = standalone_query.strip('"\'')
+        standalone_query = re.sub(r"\s+", " ", standalone_query)
+        if standalone_query and not standalone_query.endswith("?"):
+            standalone_query += "?"
         _REWRITE_CACHE[cache_key] = standalone_query
         if len(_REWRITE_CACHE) > 100: _REWRITE_CACHE.pop(next(iter(_REWRITE_CACHE))) 
         return standalone_query
