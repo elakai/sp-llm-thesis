@@ -3,7 +3,7 @@ import time
 import numpy as np
 import streamlit as st
 import concurrent.futures
-from typing import List, Dict
+from typing import List, Dict, Set
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 import re
@@ -290,6 +290,238 @@ def _format_custodian_roster_response(roster: List[tuple[str, str]]) -> str:
     return "\n".join(lines).strip()
 # ─────────────────────────────────────────────────
 
+def _extract_person_name_candidates(context: str) -> List[str]:
+    if not context:
+        return []
+
+    blocked_words = {
+        "bachelor", "science", "engineering", "program", "title", "description",
+        "revised", "curriculum", "first", "second", "third", "fourth", "semester",
+        "laboratory", "lecture", "ateneo", "naga", "university", "college", "source",
+        "unknown", "methods", "research", "national", "service", "training", "physical",
+        "activities", "technology", "society", "introduction", "catholic", "faith",
+    }
+
+    pattern = re.compile(
+        r"\b(?:Dr\.?|Engr\.?|Prof\.?|Ar\.?)?\s*([A-Z][A-Za-z]+(?:\s+[A-Z]\.)?(?:\s+[A-Z][A-Za-z]+){1,3})\b"
+    )
+
+    candidates = []
+    seen = set()
+    for raw_name in pattern.findall(context):
+        parts = [part.strip(".,") for part in raw_name.split() if part.strip(".,")]
+        if sum(1 for part in parts if len(part) > 1) < 2:
+            continue
+        if any(any(ch.isdigit() for ch in part) for part in parts):
+            continue
+        if any(part.lower() in blocked_words for part in parts):
+            continue
+
+        normalized_parts = []
+        for part in parts:
+            if len(part) == 1:
+                normalized_parts.append(part.upper() + ".")
+            elif part.isupper():
+                normalized_parts.append(part.title())
+            else:
+                normalized_parts.append(part)
+
+        normalized = " ".join(normalized_parts)
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(normalized)
+
+    return candidates
+
+
+def _extract_person_query_tokens(query: str) -> List[str]:
+    q = (query or "").lower()
+    if not re.search(
+        r"\b(prof|professor|dr|engr|sir|maam|mr|ms|mrs|who is|sino si|teach|teaches|qualification|credentials)\b",
+        q,
+    ):
+        return []
+
+    words = re.findall(r"[a-zA-Z]+", q)
+    if not words:
+        return []
+
+    titles = {"prof", "professor", "dr", "engr", "sir", "maam", "mr", "ms", "mrs", "ar"}
+    stopwords = {
+        "what", "who", "is", "are", "the", "for", "of", "in", "on", "to", "about",
+        "tell", "me", "does", "do", "teach", "teaches", "teaching", "load", "loads",
+        "credential", "credentials", "qualification", "qualifications", "department",
+        "professor", "prof", "dr", "engr", "sir", "maam", "mr", "ms", "mrs", "ar",
+    }
+
+    preferred = []
+    for idx, word in enumerate(words):
+        if word in titles:
+            for offset in (1, 2):
+                next_idx = idx + offset
+                if next_idx < len(words):
+                    candidate = words[next_idx]
+                    if len(candidate) >= 3 and candidate not in stopwords:
+                        preferred.append(candidate)
+
+    candidates = preferred + [w for w in words if len(w) >= 3 and w not in stopwords]
+    deduped = []
+    seen = set()
+    for token in candidates:
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+def _build_people_disambiguation_message(query: str, context: str) -> str:
+    tokens = _extract_person_query_tokens(query)
+    if not tokens:
+        return ""
+
+    names = _extract_person_name_candidates(context)
+    if len(names) < 2:
+        return ""
+
+    for token in tokens:
+        matches = sorted({
+            name for name in names
+            if re.search(rf"\b{re.escape(token)}\b", name.lower())
+        })
+        if len(matches) > 1:
+            options = ", ".join(matches[:4])
+            return (
+                f"I found multiple faculty members matching \"{token.title()}\": {options}. "
+                "Please specify the full name so I can give the correct teaching load or credentials."
+            )
+
+    return ""
+
+
+def _is_prerequisite_policy_query(query: str) -> bool:
+    q = (query or "").lower()
+    if not q:
+        return False
+
+    prerequisite_terms = ["prerequisite", "pre-requisite", "prereq", "required before", "kailangan"]
+    fail_terms = ["fail", "failed", "failing", "bumagsak", "bagsak", "did not pass", "didn't pass"]
+    progression_terms = [
+        "can i take", "still take", "allowed to take", "pwede", "pwede ba", "take",
+        "enroll", "proceed", "advance", "next course", "subsequent course",
+        "ojt", "practicum", "internship",
+    ]
+
+    mentioned_course_codes = re.findall(r"\b[a-z]{2,5}\s*-?\s*\d{3}\b", q)
+
+    has_prerequisite = any(term in q for term in prerequisite_terms) or len(mentioned_course_codes) >= 2
+    has_fail_signal = any(term in q for term in fail_terms)
+    has_progression_signal = any(term in q for term in progression_terms)
+
+    return has_prerequisite and has_fail_signal and has_progression_signal
+
+
+_FACTOID_STOPWORDS: Set[str] = {
+    "what", "which", "who", "when", "where", "how", "is", "are", "was", "were",
+    "the", "a", "an", "for", "of", "in", "on", "to", "and", "or", "from", "with",
+    "course", "program", "student", "students", "adnu", "ateneo", "naga", "university",
+}
+
+_PROGRAM_HINTS = [
+    "computer engineering",
+    "civil engineering",
+    "electronics engineering",
+    "environmental management",
+    "mathematics",
+    "biology",
+    "architecture",
+]
+
+
+def _extract_course_codes(text: str) -> List[str]:
+    if not text:
+        return []
+    raw_codes = re.findall(r"\b[A-Za-z]{2,5}[-\s]*\d{3}\b", text)
+    return [re.sub(r"[-\s]", "", code).lower() for code in raw_codes]
+
+
+def _extract_factoid_keywords(query: str) -> List[str]:
+    words = re.findall(r"[a-zA-Z]{3,}", (query or "").lower())
+    deduped = []
+    seen = set()
+    for word in words:
+        if word in _FACTOID_STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        deduped.append(word)
+    return deduped
+
+
+def _prune_factoid_context_docs(query: str, docs: List[Document], max_docs: int = 4) -> List[Document]:
+    """Keeps the most query-relevant chunks for short factoid queries."""
+    if not docs:
+        return []
+
+    query_lower = (query or "").lower()
+    query_codes = _extract_course_codes(query)
+    query_keywords = _extract_factoid_keywords(query)
+    query_program_hints = [hint for hint in _PROGRAM_HINTS if hint in query_lower]
+
+    scored_docs = []
+    for idx, doc in enumerate(docs):
+        content = doc.page_content or ""
+        content_lower = content.lower()
+        content_norm = content_lower.replace(" ", "").replace("-", "")
+        source_lower = (doc.metadata.get("source", "") or "").lower()
+
+        score = 0.0
+        if query_codes and any(code in content_norm for code in query_codes):
+            score += 7.0
+
+        for hint in query_program_hints:
+            if hint in content_lower:
+                score += 4.0
+            elif "curriculum" in content_lower or "academic programs" in source_lower:
+                score -= 1.5
+
+        if query_program_hints:
+            mismatched_programs = [hint for hint in _PROGRAM_HINTS if hint in content_lower and hint not in query_program_hints]
+            if mismatched_programs:
+                score -= 4.0 * len(mismatched_programs)
+
+        overlap = sum(1 for keyword in query_keywords if keyword in content_lower)
+        score += overlap * 1.5
+
+        if "department" in query_lower and "department" in content_lower:
+            score += 2.0
+        if "admission" in query_lower and "admission" in content_lower:
+            score += 2.0
+        if "basis" in query_lower and ("based on cmo" in content_lower or "cmo" in content_lower):
+            score += 2.0
+        if "chapter" in query_lower and "chapter" in content_lower:
+            score += 1.5
+        if "unit" in query_lower and "unit" in content_lower:
+            score += 1.0
+        if "academic programs" in source_lower and any(k in query_lower for k in ["department", "admission", "program"]):
+            score += 1.0
+
+        # Keep slight positional preference from earlier ranking.
+        score += max(0.0, 0.35 - (idx * 0.03))
+        scored_docs.append((score, doc))
+
+    scored_docs.sort(key=lambda item: item[0], reverse=True)
+
+    top_doc_score = scored_docs[0][0]
+    min_score_to_keep = max(2.0, top_doc_score - 2.5)
+    pruned = [doc for score, doc in scored_docs if score >= min_score_to_keep][:max_docs]
+    if pruned:
+        return pruned
+
+    return [doc for _, doc in scored_docs[:max_docs]]
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def get_llm_response(llm, prompt):
     return llm.invoke(prompt)
@@ -363,10 +595,16 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     
     standalone_query = normalize_course_codes(standalone_query)
     standalone_query = normalize_lab_aliases(standalone_query)
+    is_prerequisite_policy_query = _is_prerequisite_policy_query(standalone_query)
     
     is_incomplete_input = is_incomplete_query(standalone_query)
     
-    if not is_incomplete_input and not is_listing_query(standalone_query) and not is_custodian_lookup_query(standalone_query):
+    if (
+        not is_incomplete_input
+        and not is_listing_query(standalone_query)
+        and not is_custodian_lookup_query(standalone_query)
+        and not is_prerequisite_policy_query
+    ):
         cached_answer = check_semantic_cache(standalone_query)
         if cached_answer:
             words = cached_answer.split(" ")
@@ -375,7 +613,10 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 time.sleep(0.01)
             return
     else:
-        logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
+        if is_prerequisite_policy_query:
+            logger.info(f"Prerequisite policy query detected: '{standalone_query}'. Skipping semantic cache for deterministic policy-safe response.")
+        else:
+            logger.info(f"Incomplete query detected: '{standalone_query}'. Skipping semantic cache for fresh closest-match retrieval.")
 
     if is_listing_query(standalone_query):
         logger.info(f"Listing query detected: '{standalone_query}'. Skipping semantic cache for complete list retrieval.")
@@ -449,6 +690,77 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     has_course_code = bool(re.search(r'\b[A-Za-z]{2,5}\d{3}\b', standalone_query.upper()))
     has_specific_target = has_course_code or any(kw in standalone_query.lower() for kw in ['intersession', 'summer', 'prerequisite', 'elective'])
 
+
+
+    def _extract_curriculum_version_label(context: str) -> str:
+        """Extracts the clearest curriculum version label from retrieved context."""
+        if not context:
+            return ""
+
+        text = re.sub(r"\r\n?", "\n", context)
+        revised_match = re.search(
+            r"((?:Revised|Newly\s+Revised|Updated)\s+Curriculum[^\n]*(?:\n(?:SY|AY)[^\n]*)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if revised_match:
+            version = revised_match.group(1)
+            version = re.sub(r"^\s*#+\s*", "", version, flags=re.MULTILINE)
+            version = re.sub(r"\s+", " ", version).strip(" -")
+            return version
+
+        sy_match = re.search(r"\b(?:SY|AY)\s*\d{4}\s*[-/]\s*\d{4}\b", text, re.IGNORECASE)
+        if sy_match:
+            return sy_match.group(0).strip()
+
+        return ""
+
+
+    def _extract_curriculum_note(context: str) -> str:
+        """Extracts a short curriculum blurb from rationale or program-description sections."""
+        if not context:
+            return ""
+
+        def _sanitize_paragraph(paragraph: str) -> str:
+            paragraph = re.sub(r"\[\[Source:[^\]]+\]\]", "", paragraph)
+            paragraph = re.sub(r"\s+", " ", paragraph).strip()
+            if not paragraph or len(paragraph) < 60:
+                return ""
+            if paragraph.startswith("|") or paragraph.startswith("-") or paragraph.startswith("#"):
+                return ""
+            if re.match(r"^(?:SY|AY)\b", paragraph, re.IGNORECASE):
+                return ""
+            sentences = re.split(r"(?<=[.!?])\s+", paragraph)
+            return " ".join(sentences[:2]).strip()
+
+        text = re.sub(r"\r\n?", "\n", context)
+        heading_patterns = [
+            r"##\s*Program Title and Description",
+            r"##\s*Program Description",
+            r"##\s*Rationale(?: of the Revision)?",
+            r"##\s*Rationale",
+        ]
+
+        for heading_pattern in heading_patterns:
+            heading_match = re.search(heading_pattern, text, re.IGNORECASE)
+            if not heading_match:
+                continue
+            tail = text[heading_match.end():]
+            for paragraph in re.split(r"\n\s*\n", tail):
+                cleaned = _sanitize_paragraph(paragraph)
+                if cleaned:
+                    return cleaned
+                if paragraph.strip().startswith("##"):
+                    break
+
+        for paragraph in re.split(r"\n\s*\n", text):
+            cleaned = _sanitize_paragraph(paragraph)
+            if cleaned and any(term in cleaned.lower() for term in ["curriculum", "program", "engineering"]):
+                return cleaned
+
+        return ""
+
+
     # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
     is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite', 'program', 'cpe', 'ece'])
     if is_curr_search:
@@ -498,6 +810,15 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
             'bsbio', 'bio', 'arch', 'bsarch', 'math', 'bsmath', 'em', 'bsem'
         ]
     )
+
+    is_curriculum_output_query = is_curriculum_query and (
+        is_curriculum_list_query(standalone_query) or any(
+            kw in standalone_query.lower() for kw in [
+                'curriculum', 'prospectus', 'subject', 'subjects', 'semester', 'year',
+                '1st year', '2nd year', '3rd year', '4th year'
+            ]
+        )
+    )
     
     is_analytical_query = any(kw in standalone_query.lower() for kw in ['most', 'least', 'highest', 'lowest', 'compare', 'which course', 'how many', 'most prerequisites', 'hardest', 'rank', 'full', 'entire', 'complete', 'all subjects', 'sum', 'total', 'count'])
     
@@ -507,6 +828,21 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
     is_facility_query = any(
         kw in standalone_query.lower() for kw in ['room', 'building', 'floor', 'lab', 'laboratory', 'office', 'located', 'where is', 'where', 'where are', 'nasaan', 'saan', 'campus', 'facility', 'location of']
+    )
+
+    is_listing_style_query = (
+        is_listing_query(standalone_query)
+        or is_curriculum_list_query(standalone_query)
+        or is_people_list_query(standalone_query)
+    )
+
+    is_concise_factoid_query = (
+        not is_listing_style_query
+        and not is_curriculum_output_query
+        and not is_analytical_query
+        and not is_facility_query
+        and not is_download_query
+        and re.search(r"^(what|which|who|when|where|how many|how much|is|are|does|do|can)\b", standalone_query.lower()) is not None
     )
 
     top_score, second_score = float("-inf"), float("-inf")
@@ -541,7 +877,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         query_intent = detect_query_intent(standalone_query)
         # ── HOLISTIC STRUCTURAL ROUTING ──
         # If the user asks for a comprehensive list (orgs, policies, directories)
-        if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
+        if is_listing_style_query:
             max_chunks = 25  # Open the floodgates to read the whole document
         # If it's a general domain query
         elif is_curriculum_query or query_intent == "people":
@@ -587,7 +923,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 if len(sorted_indices) > 1: second_score = float(scores[sorted_indices[1]])
                 
                 # ── HOLISTIC FIX: SCORE-BASED GUILLOTINE FOR LISTS ──
-                if is_listing_query(standalone_query) or is_curriculum_list_query(standalone_query) or is_people_list_query(standalone_query):
+                if is_listing_style_query:
                     # Keep chunks that are actually relevant (score > -2.5) to drop the random garbage.
                     # This prevents Context Dilution so the LLM doesn't get lazy reading massive texts.
                     valid_indices = [i for i in sorted_indices if scores[i] > -2.5]
@@ -664,12 +1000,36 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                     top_reranked.append(doc)
                     existing_contents.add(doc.page_content)
             if top_reranked: top_score = max(top_score, 5.0)
+
+    if is_concise_factoid_query and top_reranked:
+        top_reranked = _prune_factoid_context_docs(standalone_query, top_reranked, max_docs=4)
     
     logger.info(f"📊 Top score: {top_score:.2f} | Second: {second_score:.2f}")
     
     context_pieces = [f"[[Source: {doc.metadata.get('source', 'Unknown')}]\n{doc.page_content}" for doc in top_reranked]
     context = "\n\n".join(context_pieces)
     st.session_state["last_retrieved_context"] = context
+
+    people_disambiguation_message = ""
+    if detect_query_intent(standalone_query) == "people":
+        people_disambiguation_message = _build_people_disambiguation_message(standalone_query, context)
+
+    if people_disambiguation_message:
+        source_list = [doc.metadata.get('source', 'Unknown') for doc in top_reranked]
+        score_margin = top_score - second_score if second_score != float("-inf") else top_score
+        certainty_note = build_source_certainty_note(top_score, score_margin, source_list)
+
+        final_people_response = f"{people_disambiguation_message}\n\n{certainty_note}"
+        st.session_state["last_response_metadata"] = {
+            "source_certainty": certainty_note,
+            "suggested_questions": [],
+        }
+
+        chunk_size = 40
+        for i in range(0, len(final_people_response), chunk_size):
+            yield final_people_response[i:i+chunk_size]
+            time.sleep(STREAM_DELAY)
+        return
     
     retrieval_time = time.time() - retrieval_start
     gen_start = time.time()
@@ -690,7 +1050,7 @@ Answer the question using ONLY the context below.
 4. **USE TABLES FOR STRUCTURED DATA**: When the context contains curriculum subjects, grading scales, schedules, or faculty lists, reproduce the ACTUAL data in a Markdown table. **SHOW EVERY ROW** — never truncate or skip rows. Do NOT include rows where every cell contains only dashes (---).
 5. **RESPECT MARKDOWN HEADERS**: The context uses markdown headers (## and ###). If a user asks for a specific category (like "CSEA orgs" or "CSEA"), ONLY list the items explicitly found underneath that specific matching header. Do NOT include items from other headers like "## EXTRACURRICULAR".
 6. **CONCISE LISTING**: When the user asks for a "list" or "all" items, provide the NAME of every single item found in that section. For each item, provide only a 1-sentence summary of its purpose. Do NOT copy the full paragraphs from the context. This ensures a complete but readable response.
-7. **EXHAUST ALL ITEMS**: When listing items from a section, you MUST output every single one. Include their full descriptions exactly as written. Never summarize, never skip items, and never say "no detailed description provided".
+7. **EXHAUST ALL ITEMS**: When listing items from a section, include every item from that section and never skip entries. Keep each item concise according to Rule 6.
 8. **CLEAN UP LISTS**: Use `- **Name** - Role` for people.
 9. **STRICTLY FACTUAL & DYNAMIC FALLBACKS**: Use ONLY the provided context. If the answer is missing, or if the question is subjective (e.g., "who is the best teacher"), DO NOT use a robotic fallback. Respond conversationally and warmly based on their exact question (e.g., "As much as I'd love to tell you who the best prof is, I only have access to official documents..."). Suggest they ask a classmate or their department chair, and offer to help with curriculum/policies instead.
 10. **CURRICULUM QUERIES**: When asked about subjects for a specific year, present ALL semesters for that year.
@@ -703,8 +1063,16 @@ Answer the question using ONLY the context below.
 17. **NO SPECULATION OR ASSUMPTIONS**: NEVER guess, infer, or use phrases like "let's assume" or "assuming that". If a user's question requires variables that are missing from the context (e.g., specific class hours, exact unit loads), you MUST refuse to calculate it and explicitly state what missing information is needed to answer them.
 18. **PREREQUISITES**: When showing curriculum subjects, ALWAYS include the prerequisite column in the table. If a subject has no prerequisite, write "None" in that cell.
 19. **VAGUE COURSE QUERIES**: If the user just asks "What is [Course Code]?" or "[Course Code]", do not fail. Reply with a short sentence containing the Course Title, Credit Units, and Prerequisites.
-20. **TIME AWARENESS**: Today's date is {current_date}. If a user asks when a recurring event is (like midterms, finals, or enrollment), look at today's date and ONLY provide the dates for the current or upcoming semester. Do NOT list dates from past semesters unless explicitly asked.
+20. **TIME AWARENESS**: Today's date is {current_date}. If the user asks for the current date or time, answer them directly. If a user asks when a recurring event is (like midterms, finals, or enrollment), look at today's date and ONLY provide the dates for the current or upcoming semester. Do NOT list dates from past semesters unless explicitly asked.
+21. **CURRICULUM VERSION DISCLAIMER**: If the query is about curriculum, subjects, or prospectus, ALWAYS begin with this format: "⚠️ **Disclaimer:** This information is based on the **[version found in context]**. If you belong to an older batch, your curriculum may be different. Please verify with your department." Then add a short 1-2 sentence curriculum note using rationale/program description from context before listing subject details.
+22. **FAILED PREREQUISITE POLICY**: For ANY course with a prerequisite (including OJT/practicum/internship), if a student fails the prerequisite subject, they cannot take the subsequent course yet. They must first retake and pass the failed prerequisite subject in the semester it is offered. Do NOT use unrelated policies (like absences or reduced loads) for this.
+23. **DIRECT FACT ANSWERS**: If the user asks for a single fact (e.g., department, chapter, basis, units, course title, requirement), answer in 1-2 concise sentences and put the exact fact in the first sentence.
 
+### FACULTY & CREDENTIALS RULES ###
+1. Fuzzy Name Matching: You MUST be highly forgiving with faculty names. Users will frequently omit titles and middle names. For example, if a user asks about "Juan Dela Cruz", you MUST confidently match them to "Engr. Juan P. Dela Cruz" if they exist in the context.
+2. Comprehensive Extraction: Once you match a faculty member, you MUST look at the text to identify their Department and Role. Your answer MUST clearly state their exact full name, title (if any), department, role, and the degree listed next to their name. Do NOT claim information is missing if it is physically in the text.
+3. Disambiguation: If the user asks for a last name that belongs to multiple faculty members, you MUST stop and ask the user to clarify which specific professor they mean. Do not guess.
+4. Degrees vs. Subjects Taught: If a name is listed next to a degree, that is the degree they HOLD, not the subject they teach. NEVER claim a professor teaches the degree they graduated with.
 **Context:**
 {context}
 
@@ -817,10 +1185,33 @@ Hard rules for suggested questions:
             cleaned_non_speculative = remove_speculative_sentences(final_verified_response)
             final_verified_response = cleaned_non_speculative if cleaned_non_speculative else "I couldn't find an explicit answer for that detail in the retrieved documents."
 
+        if is_prerequisite_policy_query:
+            final_verified_response = (
+                "If you fail a prerequisite subject, you cannot take the subsequent course that requires it, including OJT/practicum/internship. "
+                "You need to retake and pass the failed prerequisite first during the semester it is offered before enrolling in that next course."
+            )
+
         final_verified_response = fix_markdown_tables(final_verified_response)
         final_verified_response = re.sub(r'\s+(\d+\.\s)', r'\n\1', final_verified_response)
         final_verified_response = re.sub(r'(?<!\n)\s{2,}-\s+\*\*', r'\n- **', final_verified_response)
         final_verified_response = format_raw_links(final_verified_response)
+
+        if is_curriculum_output_query:
+            version_label = _extract_curriculum_version_label(context) or "the latest curriculum document in the retrieved context"
+            curriculum_disclaimer = (
+                f"**Disclaimer:** This information is based on the **{version_label}** curriculum. "
+                "If you belong to an older batch, your curriculum may be different. Please verify with your department."
+            )
+            curriculum_note = _extract_curriculum_note(context)
+            note_block = f"**Curriculum note:** {curriculum_note}" if curriculum_note else ""
+
+            if not final_verified_response.lstrip().startswith("⚠️ **Disclaimer:**"):
+                prefix_parts = [curriculum_disclaimer]
+                if note_block:
+                    prefix_parts.append(note_block)
+                final_verified_response = f"{'\\n\\n'.join(prefix_parts)}\\n\\n{final_verified_response}"
+            elif note_block and "**Curriculum note:**" not in final_verified_response:
+                final_verified_response = f"{final_verified_response}\\n\\n{note_block}"
 
         if is_facility_query and CAMPUS_MAP_URL and CAMPUS_MAP_URL not in final_verified_response:
             campus_map_note = (

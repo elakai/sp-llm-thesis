@@ -14,7 +14,7 @@ Usage:
 
 import os
 import sys
-import time
+import re
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
@@ -230,7 +230,6 @@ def evaluate_from_dataset(csv_path: str = "csea_evaluation_dataset.csv"):
             answers.append(answer)
             all_contexts.append(contexts)
             scores.append(score)
-            time.sleep(2)  # Groq rate-limit buffer
         except Exception as e:
             print(f"  ⚠️ Error: {e}")
             answers.append("Error generating response.")
@@ -258,7 +257,7 @@ def evaluate_from_dataset(csv_path: str = "csea_evaluation_dataset.csv"):
         metrics=metrics,
         llm=eval_llm,
         embeddings=eval_embeddings,
-        run_config=RunConfig(max_workers=1, timeout=180),
+        run_config=RunConfig(max_workers=8, timeout=180), # Increased max_workers for speed
     )
 
     # Save reports
@@ -266,6 +265,10 @@ def evaluate_from_dataset(csv_path: str = "csea_evaluation_dataset.csv"):
     report_path = f"data/eval_report_{timestamp}.csv"
     result_df = result.to_pandas()
     result_df["confidence_score"] = scores
+    
+    # Ensure data directory exists
+    os.makedirs("data", exist_ok=True)
+    
     result_df.to_csv(report_path, index=False)
     result_df.to_csv("final_evaluation_report.csv", index=False)
 
@@ -300,19 +303,16 @@ def evaluate_from_logs(limit: int = 10):
     eval_llm = LangchainLLMWrapper(llm)
     eval_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
-    # Parse contexts: split "[[Source: ...]] content" into a list of chunks
+    # Parse contexts safely using regex
     questions = [x["query"] for x in logs]
     answers = [x["response"] for x in logs]
     contexts = []
+    
     for log in logs:
-        ctx = log["context"]
-        chunks = [c.strip() for c in ctx.split("[[Source:") if c.strip()]
-        clean_chunks = []
-        for chunk in chunks:
-            lines = chunk.split("\n", 1)
-            clean_chunks.append(
-                lines[1].strip() if len(lines) > 1 else chunk
-            )
+        ctx = log.get("context", "")
+        # Splits by the [[Source: ...]] tags safely regardless of exact whitespace
+        chunks = re.split(r'\[\[Source:.*?\]\]\n?', ctx)
+        clean_chunks = [c.strip() for c in chunks if c.strip()]
         contexts.append(clean_chunks if clean_chunks else [ctx])
 
     eval_dataset = Dataset.from_dict({
@@ -331,11 +331,15 @@ def evaluate_from_logs(limit: int = 10):
         metrics=metrics,
         llm=eval_llm,
         embeddings=eval_embeddings,
-        run_config=RunConfig(max_workers=1, timeout=180),
+        run_config=RunConfig(max_workers=8, timeout=180), # Increased max_workers for speed
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = f"data/live_eval_{timestamp}.csv"
+    
+    # Ensure data directory exists
+    os.makedirs("data", exist_ok=True)
+    
     result.to_pandas().to_csv(report_path, index=False)
 
     _log_to_supabase(result, len(logs), mode="live")
@@ -388,6 +392,8 @@ def export_ground_truth_from_logs():
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = f"data/real_ground_truth_{timestamp}.csv"
+    
+    os.makedirs("data", exist_ok=True)
     df_eval.to_csv(path, index=False)
     return f"Exported {len(df_eval)} ground truth pairs to {path}"
 
