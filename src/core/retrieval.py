@@ -575,6 +575,17 @@ def generate_response(query: str, chat_history_list: List[Dict[str, str]] = None
             yield word + " "
             time.sleep(0.02)
         return
+
+    # ── DIRECT ROUTING FOR TIME & DATE ──
+    date_keywords = ['what date', 'date today', 'current date', 'what day is it', 'what time is it', 'current time']
+    if any(kw in standalone_query.lower() for kw in date_keywords) and 'enrollment' not in standalone_query.lower() and 'midterm' not in standalone_query.lower():
+        from datetime import datetime
+        now_str = datetime.now().strftime("%A, %B %d, %Y")
+        msg = f"Today is {now_str}! If you need to know about specific academic dates like midterms or enrollment, just ask me about the calendar."
+        for word in msg.split():
+            yield word + " "
+            time.sleep(0.02)
+        return
         
     # ── PAASCU & ACCREDITATION BOOST ──
     if "paascu" in standalone_query.lower() or "accreditation" in standalone_query.lower():
@@ -627,6 +638,14 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     except Exception as e:
         logger.warning(f"Router fallback triggered: {e}")
         intent = "search"
+
+    # ── THESIS FIX: FORCE PEOPLE INTENT ──
+    # If they mention any of these words, force the pipeline to treat it as a faculty search
+    # so it triggers your custom ranking and penalties!
+    people_keywords = ['chairperson', 'chairpersons', 'chair', 'chairs', 'dean', 'deans', 'faculty', 'teacher', 'professor', 'mam', 'maam', 'sir', 'prof', 'custodian']
+    if any(kw in standalone_query.lower() for kw in people_keywords):
+        intent = "people"
+    # ───────────────────────────────────────
 
     if intent in ["greeting", "off_topic"]:
         if intent == "greeting":
