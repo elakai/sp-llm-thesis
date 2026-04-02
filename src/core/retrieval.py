@@ -68,7 +68,7 @@ _CONTEXT_TRIGGERS = re.compile(
 )
 
 _CANONICALIZE_TRIGGERS = re.compile(
-    r'\b(do you know|did you know|can you tell me|could you tell me|would you tell me|'
+    r'\b(do you know|do u know|did you know|can you tell me|could you tell me|would you tell me|'
     r'i want to know|may i ask|do you happen to know)\b',
     re.IGNORECASE,
 )
@@ -406,6 +406,79 @@ def _extract_person_query_tokens(query: str) -> List[str]:
     return deduped
 
 
+def _extract_person_name_query_parts(query: str) -> List[str]:
+    if not query:
+        return []
+
+    words = re.findall(r"\b[a-zA-Z]{2,}\b", query.lower())
+    stopwords = {
+        "who", "what", "when", "where", "which", "how", "is", "are", "the", "a", "an",
+        "tell", "me", "about", "prof", "professor", "dr", "engr", "sir", "maam", "mr", "ms", "mrs",
+        "faculty", "staff", "teacher", "instructor", "dean", "chair", "chairperson", "department",
+        "course", "curriculum", "subject", "subjects", "program", "room", "building", "lab", "laboratory",
+        "do", "you", "u", "know", "did", "can", "could", "would", "happen", "want", "ask", "please", "pls", "po", "sino",
+    }
+
+    parts = []
+    seen = set()
+    for word in words:
+        if word in stopwords or word in seen:
+            continue
+        seen.add(word)
+        parts.append(word)
+    return parts
+
+
+def _count_name_part_matches(text: str, query_parts: List[str]) -> int:
+    if not text or not query_parts:
+        return 0
+    text_lower = text.lower()
+    return sum(1 for part in query_parts if re.search(rf"\b{re.escape(part)}\b", text_lower))
+
+
+def _score_people_chunk_for_debug(doc: Document, query: str) -> float:
+    source = (doc.metadata.get("source") or "").lower()
+    content = (doc.page_content or "").lower()
+    q = (query or "").lower()
+    ask_chairpersons = any(term in q for term in ["chair", "chairperson", "chairpersons", "department chair"])
+
+    score = 0.0
+    if any(key in source for key in ["organizational", "faculty", "staff"]):
+        score += 4.0
+    if "csea" in source or "csea" in content:
+        score += 2.0
+    if any(key in content for key in ["faculty", "instructor", "professor", "staff"]):
+        score += 2.0
+    if ask_chairpersons and any(key in content for key in ["chairperson", "department chair"]):
+        score += 2.0
+    if "committee chairperson" in content:
+        score -= 2.5
+
+    return score + min(len(content) / 5000.0, 1.5)
+
+
+def _log_people_rerank_debug(query: str, ranked_docs: List[Document], name_parts: List[str], limit: int = 6):
+    if not ranked_docs:
+        logger.info("[PeopleDebug] No ranked people chunks available.")
+        return
+
+    logger.info(
+        f"[PeopleDebug] Query='{query}' | name_parts={name_parts} | candidates={len(ranked_docs)} | top_logged={min(limit, len(ranked_docs))}"
+    )
+
+    for idx, doc in enumerate(ranked_docs[:limit], start=1):
+        content = doc.page_content or ""
+        source = doc.metadata.get("source", "Unknown")
+        base_score = _score_people_chunk_for_debug(doc, query)
+        name_matches = _count_name_part_matches(content, name_parts) if len(name_parts) >= 1 else 0
+        name_boost = 25.0 if name_matches >= 1 else 0.0
+        final_score = base_score + name_boost
+        preview = re.sub(r"\s+", " ", content).strip()[:120]
+        logger.info(
+            f"[PeopleDebug] #{idx} source='{source}' base={base_score:.2f} boost={name_boost:.2f} final={final_score:.2f} matches={name_matches} preview='{preview}'"
+        )
+
+
 def _build_people_disambiguation_message(query: str, context: str) -> str:
     tokens = _extract_person_query_tokens(query)
     if not tokens:
@@ -672,7 +745,8 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     # If they mention any of these words, force the pipeline to treat it as a faculty search
     # so it triggers your custom ranking and penalties!
     people_keywords = ['chairperson', 'chairpersons', 'chair', 'chairs', 'dean', 'deans', 'faculty', 'teacher', 'professor', 'mam', 'maam', 'sir', 'prof', 'custodian']
-    if any(kw in standalone_query.lower() for kw in people_keywords):
+    people_phrase_trigger = re.search(r"\b(who is|who are|sino si|tell me about)\b", standalone_query.lower())
+    if detect_query_intent(standalone_query) == "people" or any(kw in standalone_query.lower() for kw in people_keywords) or people_phrase_trigger:
         intent = "people"
     # ───────────────────────────────────────
 
@@ -695,7 +769,11 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 # ── THESIS FEATURE: SEMANTIC QUERY EXPANSION ──
     # 1. Translate Taglish/Slang into formal academic terms
 # STEP 1: Expand query FIRST (before k is determined)
-    expanded_query = expand_query_semantics(standalone_query)
+    if intent == "people":
+        expanded_query = standalone_query
+        logger.info("Bypassing semantic expansion for people intent to protect literal name strings.")
+    else:
+        expanded_query = expand_query_semantics(standalone_query)
     effective_query = expanded_query if expanded_query != standalone_query else standalone_query
 
     sub_queries = [standalone_query]
@@ -727,6 +805,12 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         v = (variant or "").strip()
         if v and v not in sub_queries:
             sub_queries.append(v)
+
+    # Add a retrieval bait query so people lookups reliably pull org-structure chunks.
+    if intent == "people":
+        bait_query = f"{standalone_query} CSEA faculty directory org structure"
+        if bait_query not in sub_queries:
+            sub_queries.append(bait_query)
 
     # Ensure uniqueness to save Pinecone calls
     sub_queries = list(dict.fromkeys(sub_queries))
@@ -811,7 +895,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
     # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
     is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite', 'program', 'cpe', 'ece'])
-    if is_curr_search:
+    if is_curr_search or intent == "people":
         dynamic_k = max(base_k, 150)
     else:
         dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
@@ -906,12 +990,39 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                     hybrid_results.append(doc)
     # ────────────────────────────────
 
-    if detect_query_intent(standalone_query) == "people":
+    if intent == "people":
         people_pool = filter_to_people_docs(latest_per_source, standalone_query)
         people_pool = boost_people_list_docs(standalone_query, people_pool, dynamic_k)
         ranked_people = rank_people_list_docs(people_pool, standalone_query)
+        people_name_parts = _extract_person_name_query_parts(standalone_query)
+
+        # ── THESIS FIX: NAME RESCUE OVERRIDE ──
+        # For specific-person queries, scan the full raw haystack and force matching chunks in.
+        if len(people_name_parts) >= 1:
+            ranked_contents = {doc.page_content for doc in ranked_people}
+            for doc in latest_per_source:
+                if _count_name_part_matches(doc.page_content or "", people_name_parts) >= 1:
+                    if doc.page_content not in ranked_contents:
+                        ranked_people.insert(0, doc)
+                        ranked_contents.add(doc.page_content)
+
+        scored_people = []
+        for doc in ranked_people:
+            base_people_score = _score_people_chunk_for_debug(doc, standalone_query)
+            name_matches = _count_name_part_matches(doc.page_content or "", people_name_parts) if len(people_name_parts) >= 1 else 0
+            name_boost = 25.0 if name_matches >= 1 else 0.0
+            final_people_score = base_people_score + name_boost
+            scored_people.append((final_people_score, base_people_score, name_matches, doc))
+
+        scored_people.sort(key=lambda row: (row[2], row[0], row[1]), reverse=True)
+        ranked_people = [row[3] for row in scored_people]
         top_reranked = ranked_people[:max(RERANKER_TOP_K, 16)]
-        if top_reranked: top_score = max(top_score, 5.0)
+        _log_people_rerank_debug(standalone_query, ranked_people, people_name_parts, limit=6)
+
+        if scored_people:
+            top_score = max(top_score, 5.0, float(scored_people[0][0]))
+            if len(scored_people) > 1:
+                second_score = max(second_score, float(scored_people[1][0]))
 
     elif is_analytical_query and is_curriculum_query:
         all_program_docs = filter_to_program(latest_per_source, standalone_query)
@@ -949,6 +1060,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                 # ── THE CROSS-ENCODER SAFETY NET ──
                 raw_codes = re.findall(r'\b[A-Za-z]{2,5}[-\s]*\d{3}\b', standalone_query)
                 course_codes = [re.sub(r'[-\s]', '', c).lower() for c in raw_codes]
+                people_name_parts = _extract_person_name_query_parts(standalone_query)
                 
                 subject_keywords = [w for w in re.findall(r'\b[a-zA-Z]{4,}\b', standalone_query.lower()) if w not in {"what", "when", "where", "which", "who", "how", "course", "code", "subject", "for", "and", "the"}]
 
@@ -958,11 +1070,16 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
                     
                     if course_codes and any(code in content_norm for code in course_codes):
                         scores[i] += 50.0
-                        
                     elif '|' in content_lower and '---' in content_lower:
                         match_count = sum(1 for kw in subject_keywords if kw in content_lower)
                         if match_count > 0:
                             scores[i] += (match_count * 15.0) 
+
+                    if len(people_name_parts) >= 1:
+                        name_matches = _count_name_part_matches(content_lower, people_name_parts)
+                        if name_matches >= 1:
+                            scores[i] += 25.0
+                            logger.info(f"🚀 Fuzzy name match boost (+25) for {people_name_parts} with {name_matches} matched parts.")
                 # ─────────────────────────────────────────
 
                 sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
@@ -1059,7 +1176,7 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
     st.session_state["last_retrieved_context"] = context
 
     people_disambiguation_message = ""
-    if detect_query_intent(standalone_query) == "people":
+    if intent == "people":
         people_disambiguation_message = _build_people_disambiguation_message(standalone_query, context)
 
     if people_disambiguation_message:
