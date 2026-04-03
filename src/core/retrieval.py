@@ -895,7 +895,8 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
 
     # ── MASSIVE HAYSTACK TO BEAT VECTOR DILUTION ──
     is_curr_search = has_course_code or any(kw in standalone_query.lower() for kw in ['curriculum', 'subject', 'course', 'prerequisite', 'program', 'cpe', 'ece'])
-    if is_curr_search or intent == "people":
+    is_policy_search = any(kw in standalone_query.lower() for kw in ['dress code', 'uniform', 'haircut', 'policy', 'rules', 'handbook', 'offense', 'wash day', 'guidelines'])
+    if is_curr_search or intent == "people" or is_policy_search:
         dynamic_k = max(base_k, 150)
     else:
         dynamic_k = max(base_k, 30) if (is_incomplete_input or has_specific_target) else base_k
@@ -943,10 +944,13 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         ]
     )
 
-    is_curriculum_output_query = is_curriculum_query and (
+    procedural_keywords = ['change', 'drop', 'add', 'shift', 'enroll', 'where', 'how to', 'procedure']
+    is_procedural_query = any(kw in standalone_query.lower() for kw in procedural_keywords)
+
+    is_curriculum_output_query = (is_curriculum_query and not is_procedural_query) and (
         is_curriculum_list_query(standalone_query) or any(
             kw in standalone_query.lower() for kw in [
-                'curriculum', 'prospectus', 'subject', 'subjects', 'semester', 'year',
+                'curriculum', 'prospectus', 'subjects', 'semester', 'year',
                 '1st year', '2nd year', '3rd year', '4th year'
             ]
         )
@@ -1038,8 +1042,8 @@ Respond warmly and conversationally in 2-3 sentences. Acknowledge what they aske
         # If the user asks for a comprehensive list (orgs, policies, directories)
         if is_listing_style_query:
             max_chunks = 25  # Open the floodgates to read the whole document
-        # If it's a general domain query
-        elif is_curriculum_query or query_intent == "people":
+        # If it's a general domain query or a policy question
+        elif is_curriculum_query or query_intent == "people" or is_policy_search:
             max_chunks = 12           
         # If it's a highly specific factoid (prevent hallucination)
         else:
