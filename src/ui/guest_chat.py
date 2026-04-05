@@ -11,9 +11,11 @@ from src.ui.chat_utils import (
     extract_suggestions as _extract_suggestions,
     get_last_response_metadata as _get_last_response_metadata,
     get_logo_base64 as _get_logo_base64,
+    prepare_message_content as _prepare_message_content,
     get_previous_user_query as _get_previous_user_query,
     now_pht as _now_pht,
     render_message_meta as _render_message_meta,
+    stream_response_with_throttle as _stream_response_with_throttle,
     strip_suggestions as _strip_suggestions,
 )
 
@@ -79,11 +81,10 @@ def render_guest_chat_view():
         avatar = "assets/logo.png" if is_assistant else None
         
         with st.chat_message(role, avatar=avatar):
-            content = _strip_suggestions(message["content"])
-            source_certainty = (message.get("source_certainty") or "").strip()
-            content, content_source_certainty = _extract_source_certainty(content)
-            if not source_certainty and content_source_certainty:
-                source_certainty = content_source_certainty
+            content, source_certainty = _prepare_message_content(
+                message.get("content", ""),
+                message.get("source_certainty", ""),
+            )
             st.markdown(content)
             if is_assistant:
                 _render_message_meta(source_certainty, message.get("timestamp", ""))
@@ -221,14 +222,7 @@ def _process_guest_query(query: str):
                     chat_history_list=st.session_state.messages
                 )
                 response_placeholder = st.empty()
-                full_response = ""
-                for chunk in stream:
-                    full_response += chunk
-                    stream_no_source, _ = _extract_source_certainty(full_response)
-                    if '|' in stream_no_source:
-                        response_placeholder.markdown(stream_no_source)
-                    else:
-                        response_placeholder.markdown(stream_no_source + "▌")
+                full_response = _stream_response_with_throttle(stream, response_placeholder)
                 rendered_response = _strip_suggestions(full_response)
                 rendered_response_no_source, parsed_source_certainty = _extract_source_certainty(rendered_response)
                 metadata_source_certainty, _ = _get_last_response_metadata()
