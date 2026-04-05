@@ -1,10 +1,11 @@
 import base64
 import html
 import re
+import time
 from functools import lru_cache
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import streamlit as st
 
@@ -83,6 +84,40 @@ def extract_suggestions(text: str) -> List[str]:
             if suggestion:
                 suggestions.append(suggestion)
     return suggestions
+
+
+@lru_cache(maxsize=2048)
+def prepare_message_content(text: str, source_certainty: str = "") -> Tuple[str, str]:
+    """Preprocesses message content for rendering and caches repeated rerun work."""
+    cleaned = strip_suggestions(text or "")
+    cleaned, parsed_source = extract_source_certainty(cleaned)
+    final_source = (source_certainty or "").strip() or parsed_source
+    return cleaned, final_source
+
+
+def stream_response_with_throttle(stream: Iterable[str], response_placeholder: Any, min_interval_s: float = 0.045) -> str:
+    """Renders streamed chunks at a capped cadence to reduce UI update overhead."""
+    full_response = ""
+    last_render_at = time.perf_counter()
+    chunk_counter = 0
+
+    for chunk in stream:
+        full_response += chunk
+        chunk_counter += 1
+
+        now = time.perf_counter()
+        should_render = (chunk_counter % 3 == 0) or ((now - last_render_at) >= min_interval_s) or ("\n" in chunk)
+        if not should_render:
+            continue
+
+        stream_no_source, _ = extract_source_certainty(full_response)
+        if "|" in stream_no_source:
+            response_placeholder.markdown(stream_no_source)
+        else:
+            response_placeholder.markdown(stream_no_source + "▌")
+        last_render_at = now
+
+    return full_response
 
 
 def get_last_response_metadata() -> Tuple[str, List[str]]:

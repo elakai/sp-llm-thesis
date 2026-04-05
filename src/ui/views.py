@@ -1,6 +1,5 @@
 import streamlit as st
 import uuid
-import copy
 
 from src.core.retrieval import generate_response
 from src.ui.suggested_questions import render_suggested_questions
@@ -12,9 +11,11 @@ from src.ui.chat_utils import (
     extract_suggestions as _extract_suggestions,
     get_last_response_metadata as _get_last_response_metadata,
     get_logo_base64 as _get_logo_base64,
+    prepare_message_content as _prepare_message_content,
     get_previous_user_query as _get_previous_user_query,
     now_pht as _now_pht,
     render_message_meta as _render_message_meta,
+    stream_response_with_throttle as _stream_response_with_throttle,
     strip_suggestions as _strip_suggestions,
 )
 
@@ -150,7 +151,7 @@ def render_history_view():
                 with col1:
                     if st.button("Continue", key=f"load_{i}"):
                         # Pass only the messages list to the chat window
-                        st.session_state["messages"] = copy.deepcopy(messages)
+                        st.session_state["messages"] = [dict(msg) for msg in messages]
                         st.session_state["active_convo_idx"] = actual_idx
                         # Reuse the historical session ID
                         st.session_state["session_id"] = session_id
@@ -229,11 +230,10 @@ def render_chat_view():
         avatar = "assets/logo.png" if is_assistant else None
         
         with st.chat_message(role, avatar=avatar):
-            content = _strip_suggestions(message["content"])
-            source_certainty = (message.get("source_certainty") or "").strip()
-            content, content_source_certainty = _extract_source_certainty(content)
-            if not source_certainty and content_source_certainty:
-                source_certainty = content_source_certainty
+            content, source_certainty = _prepare_message_content(
+                message.get("content", ""),
+                message.get("source_certainty", ""),
+            )
             st.markdown(content)
             if is_assistant:
                 _render_message_meta(source_certainty, message.get("timestamp", ""))
@@ -375,14 +375,7 @@ def _process_user_query(query: str):
                     chat_history_list=st.session_state.messages
                 )
                 response_placeholder = st.empty()
-                full_response = ""
-                for chunk in stream:
-                    full_response += chunk
-                    stream_no_source, _ = _extract_source_certainty(full_response)
-                    if '|' in stream_no_source:
-                        response_placeholder.markdown(stream_no_source)
-                    else:
-                        response_placeholder.markdown(stream_no_source + "▌")
+                full_response = _stream_response_with_throttle(stream, response_placeholder)
                 rendered_response = _strip_suggestions(full_response)
                 rendered_response_no_source, parsed_source_certainty = _extract_source_certainty(rendered_response)
                 metadata_source_certainty, _ = _get_last_response_metadata()
@@ -437,6 +430,7 @@ def _process_user_query(query: str):
         
         active_idx = st.session_state.get("active_convo_idx")
         chat_history = st.session_state["chat_history"]
+        message_snapshot = [dict(msg) for msg in st.session_state["messages"]]
         
         # Validate active_idx is still valid
         if active_idx is not None and isinstance(active_idx, int) and 0 <= active_idx < len(chat_history):
@@ -445,13 +439,13 @@ def _process_user_query(query: str):
             s_id = existing.get("session_id") if isinstance(existing, dict) else st.session_state.get("session_id")
             chat_history[active_idx] = {
                 "session_id": s_id,
-                "messages": copy.deepcopy(st.session_state["messages"])
+                "messages": message_snapshot
             }
         else:
             # New conversation - store as dict with session_id so feedback scope works
             chat_history.append({
                 "session_id": st.session_state.get("session_id"),
-                "messages": copy.deepcopy(st.session_state["messages"])
+                "messages": message_snapshot
             })
             st.session_state["active_convo_idx"] = len(chat_history) - 1
 
